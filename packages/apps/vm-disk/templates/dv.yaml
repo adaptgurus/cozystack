@@ -1,4 +1,38 @@
 {{- $existingDV := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" .Release.Namespace .Release.Name }}
+{{- /* Build the desired source spec from .Values so it can be both rendered and compared. */}}
+{{- $desiredSource := dict }}
+{{- if .Values.source }}
+  {{- if gt (len .Values.source) 1 }}
+    {{- fail "Exactly one type of source is expected!" }}
+  {{- end }}
+  {{- if hasKey .Values.source "image" }}
+    {{- $desiredSource = dict "pvc" (dict "name" (printf "vm-default-images-%s" (required "A valid .Values.source.image.name entry required!" .Values.source.image.name)) "namespace" "cozy-public") }}
+  {{- else if hasKey .Values.source "http" }}
+    {{- $desiredSource = dict "http" (dict "url" (required "A valid .Values.source.http.url entry required!" .Values.source.http.url)) }}
+  {{- else if hasKey .Values.source "upload" }}
+    {{- $desiredSource = dict "upload" dict }}
+  {{- else if hasKey .Values.source "disk" }}
+    {{- $desiredSource = dict "pvc" (dict "name" (printf "vm-disk-%s" (required "A valid .Values.source.disk.name entry required!" .Values.source.disk.name)) "namespace" .Release.Namespace) }}
+  {{- end }}
+{{- else }}
+  {{- $desiredSource = dict "blank" dict }}
+{{- end }}
+{{- /*
+  DataVolume.spec is immutable in CDI. If the existing DataVolume was created with a
+  different storageClass or source, silently reusing the old spec would report success
+  while the cluster keeps diverging from the CR. Fail loudly instead, mirroring the
+  explicit size handling in pvc-resize-hook.yaml. Size growth is intentionally excluded —
+  that is handled by the resize hook.
+*/}}
+{{- if $existingDV }}
+  {{- $existingSC := $existingDV.spec.storage.storageClassName | toString }}
+  {{- if and .Values.storageClass (ne ($existingSC) (.Values.storageClass | toString)) }}
+    {{- fail (printf "VMDisk storageClass is immutable after creation (current: %q, requested: %q). Delete and recreate the disk to change it." $existingSC .Values.storageClass) }}
+  {{- end }}
+  {{- if ne (toYaml $existingDV.spec.source) (toYaml $desiredSource) }}
+    {{- fail (printf "VMDisk source is immutable after creation (current: %s, requested: %s). Delete and recreate the disk to change it." (toJson $existingDV.spec.source) (toJson $desiredSource)) }}
+  {{- end }}
+{{- end }}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
@@ -13,31 +47,10 @@ metadata:
 spec:
   {{- if $existingDV }}
     {{- toYaml $existingDV.spec | nindent 2 }}
-  {{- else }} 
-  contentType: kubevirt
-  {{- if .Values.source }}
-  {{- if gt (len .Values.source) 1 }}
-    {{- fail "Exactly one type of source is expected!" }}
-  {{- end }}
-  source:
-    {{- if hasKey .Values.source "image" }}
-    pvc:
-      name: vm-default-images-{{ required "A valid .Values.source.image.name entry required!" .Values.source.image.name }}
-      namespace: cozy-public
-    {{- else if hasKey .Values.source "http" }}
-    http:
-      url: {{ required "A valid .Values.source.http.url entry required!" .Values.source.http.url }}
-    {{- else if hasKey .Values.source "upload" }}
-    upload: {}
-    {{- else if hasKey .Values.source "disk" }}
-    pvc:
-      name: vm-disk-{{ required "A valid .Values.source.disk.name entry required!" .Values.source.disk.name }}
-      namespace: {{ $.Release.Namespace }}
-    {{- end }}
   {{- else }}
+  contentType: kubevirt
   source:
-    blank: {}
-  {{- end }}
+    {{- toYaml $desiredSource | nindent 4 }}
   storage:
     resources:
       requests:

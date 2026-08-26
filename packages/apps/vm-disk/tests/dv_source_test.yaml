@@ -1,0 +1,79 @@
+suite: vm-disk DataVolume source rendering on initial creation
+
+# When no DataVolume exists yet, dv.yaml builds spec.source from .Values.source.
+# This pins the refactor that routes every source type through the shared
+# $desiredSource variable (used both for rendering and for the immutability
+# comparison), so a regression there is caught without a live cluster.
+release:
+  name: test-vm-disk
+  namespace: tenant-test
+templates:
+  - templates/dv.yaml
+tests:
+  - it: renders a blank source by default
+    asserts:
+      - equal:
+          path: spec.source.blank
+          value: {}
+      - equal:
+          path: spec.storage.storageClassName
+          value: replicated
+
+  - it: renders an http source from values
+    set:
+      source:
+        http:
+          url: https://example.com/img.qcow2
+    asserts:
+      - equal:
+          path: spec.source.http.url
+          value: https://example.com/img.qcow2
+
+  - it: renders an image source as a cozy-public pvc clone
+    set:
+      source:
+        image:
+          name: ubuntu
+    asserts:
+      - equal:
+          path: spec.source.pvc.name
+          value: vm-default-images-ubuntu
+      - equal:
+          path: spec.source.pvc.namespace
+          value: cozy-public
+
+  - it: renders a disk source as an in-namespace pvc clone
+    set:
+      source:
+        disk:
+          name: other
+    asserts:
+      - equal:
+          path: spec.source.pvc.name
+          value: vm-disk-other
+      - equal:
+          path: spec.source.pvc.namespace
+          value: tenant-test
+
+  - it: renders an upload source and requests immediate bind
+    set:
+      source:
+        upload: {}
+    asserts:
+      - equal:
+          path: spec.source.upload
+          value: {}
+      - equal:
+          path: metadata.annotations["cdi.kubevirt.io/storage.bind.immediate.requested"]
+          value: ""
+
+  - it: rejects more than one source type
+    set:
+      source:
+        http:
+          url: https://example.com/img.qcow2
+        image:
+          name: ubuntu
+    asserts:
+      - failedTemplate:
+          errorMessage: Exactly one type of source is expected!

@@ -1,0 +1,83 @@
+suite: vm-disk DataVolume immutable fields (storageClass/source)
+
+# Regression for #2985: editing storageClass/source on an existing VMDisk used
+# to be silently ignored — dv.yaml reused the existing DataVolume.spec verbatim
+# and the edit rendered as a no-op while the HelmRelease reported success. The
+# template now fails loudly when the requested storageClass/source differs from
+# the existing (immutable) DataVolume. Mock the existing DataVolume via the
+# kubernetes provider so the lookup in dv.yaml resolves without a live cluster.
+release:
+  name: test-vm-disk
+  namespace: tenant-test
+templates:
+  - templates/dv.yaml
+kubernetesProvider:
+  scheme:
+    "cdi.kubevirt.io/v1beta1/DataVolume":
+      gvr:
+        group: cdi.kubevirt.io
+        version: v1beta1
+        resource: datavolumes
+      namespaced: true
+  objects:
+    - kind: DataVolume
+      apiVersion: cdi.kubevirt.io/v1beta1
+      metadata:
+        name: test-vm-disk
+        namespace: tenant-test
+      spec:
+        contentType: kubevirt
+        source:
+          http:
+            url: https://example.com/original.qcow2
+        storage:
+          resources:
+            requests:
+              storage: 5Gi
+          storageClassName: replicated
+tests:
+  - it: rejects a storageClass change on an existing DataVolume
+    set:
+      storageClass: other
+      source:
+        http:
+          url: https://example.com/original.qcow2
+    asserts:
+      - failedTemplate:
+          errorPattern: 'VMDisk storageClass is immutable after creation'
+
+  - it: rejects a source change on an existing DataVolume
+    set:
+      storageClass: replicated
+      source:
+        http:
+          url: https://example.com/changed.qcow2
+    asserts:
+      - failedTemplate:
+          errorPattern: 'VMDisk source is immutable after creation'
+
+  - it: reuses the existing spec when storageClass and source are unchanged
+    set:
+      storageClass: replicated
+      source:
+        http:
+          url: https://example.com/original.qcow2
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.storage.storageClassName
+          value: replicated
+      - equal:
+          path: spec.source.http.url
+          value: https://example.com/original.qcow2
+
+  - it: allows a storage grow while immutable fields are unchanged
+    set:
+      storageClass: replicated
+      storage: 10Gi
+      source:
+        http:
+          url: https://example.com/original.qcow2
+    asserts:
+      - notFailedTemplate: {}
