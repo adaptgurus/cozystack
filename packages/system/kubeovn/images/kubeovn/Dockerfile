@@ -1,8 +1,8 @@
-# syntax = docker/dockerfile:experimental
+# syntax = docker/dockerfile:experimental@sha256:600e5c62eedff338b3f7a0850beb7c05866e0ef27b2d2e8c02aa468e78496ff5
 ARG VERSION="1.15.10"
 ARG BASE_TAG=v$VERSION
 
-FROM golang:1.26-bookworm as builder
+FROM golang:1.26-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514 as builder
 
 ARG TAG="v1.15.10"
 RUN git clone --branch ${TAG} --depth 1 https://github.com/kubeovn/kube-ovn /source

@@ -1,6 +1,6 @@
 # Source: https://github.com/cloudlena/s3manager/blob/main/Dockerfile
 
-FROM docker.io/library/golang:1.26@sha256:079e59808d2d252516e27e3f3a9c003740dee7f75e55aa71528766d52bcfc16a AS builder
+FROM docker.io/library/golang:1.26@sha256:dc2521c2a906db43073b8b4d99f491b6341cf15610b6ebbab187c45153f9959e AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
