@@ -28,10 +28,6 @@ const (
 	managedByValue     = "vm-template-controller"
 )
 
-// Capabilities describes the exact KubeVirt template capability visible to the
-// product layer. Native templates are usable only when all three controls are
-// present; this lets the branch disable the alpha v1.8.x API without changing
-// the stable Cozystack-facing workflow.
 type Capabilities struct {
 	SnapshotGate       bool
 	TemplateGate       bool
@@ -42,13 +38,11 @@ func (c Capabilities) NativeTemplatesReady() bool {
 	return c.SnapshotGate && c.TemplateGate && c.TemplateDeployment
 }
 
-// TemplateRef identifies a tenant-local native KubeVirt template.
 type TemplateRef struct {
 	Namespace string
 	Name      string
 }
 
-// CreateRequest is the minimal immutable input accepted by the native backend.
 type CreateRequest struct {
 	Namespace    string
 	RequestName  string
@@ -56,27 +50,27 @@ type CreateRequest struct {
 	SourceVMName string
 }
 
-// TemplateState is the verified result of a completed native request.
+// TemplateState has an empty RequestName when no capture request exists yet.
+// This lets a controller restart distinguish "not started" from "in progress"
+// without relying on process-local state.
 type TemplateState struct {
 	RequestName  string
 	TemplateName string
 	Ready        bool
 }
 
-// Backend is the compatibility boundary used by the higher-level Cozystack
-// template transaction. Clone-to-VMInstance is intentionally owned by that
-// higher layer so native KubeVirt processing can never leave raw writable PVCs
-// and a VM outside Cozystack VMDisk/VMInstance lifecycle.
 type Backend interface {
 	DiscoverCapabilities(context.Context) (Capabilities, error)
 	ValidateSource(context.Context, TemplateRef, SourcePolicy) (SourceSummary, error)
 	CreateTemplate(context.Context, CreateRequest) (TemplateState, error)
 	VerifyTemplate(context.Context, TemplateRef, string) (TemplateState, error)
-	DeleteTemplate(context.Context, TemplateRef) error
+	DeleteTemplate(context.Context, TemplateRef, string) error
 }
 
-// KubeVirtTemplateBackend implements Backend with dynamic clients to avoid
-// coupling Cozystack's stable product API to KubeVirt's alpha Go API types.
+// KubeVirtTemplateBackend uses unstructured/dynamic clients so the stable
+// Cozystack product API is not compiled against KubeVirt's alpha template Go
+// API. The exact v1.8.4 resource shape is still verified by tests and the HCI
+// feature-gate render gate.
 type KubeVirtTemplateBackend struct {
 	Client dynamic.Interface
 }
@@ -181,6 +175,9 @@ func (b *KubeVirtTemplateBackend) VerifyTemplate(ctx context.Context, ref Templa
 		return TemplateState{}, fmt.Errorf("template namespace/name and request name are required")
 	}
 	request, err := b.Client.Resource(gvrRequest).Namespace(ref.Namespace).Get(ctx, requestName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return TemplateState{}, nil
+	}
 	if err != nil {
 		return TemplateState{}, fmt.Errorf("get VirtualMachineTemplateRequest %s/%s: %w", ref.Namespace, requestName, err)
 	}
@@ -195,6 +192,10 @@ func (b *KubeVirtTemplateBackend) VerifyTemplate(ctx context.Context, ref Templa
 		return TemplateState{}, fmt.Errorf("VirtualMachineTemplateRequest %s/%s created template %q, expected %q", ref.Namespace, requestName, state.TemplateName, ref.Name)
 	}
 	template, err := b.Client.Resource(gvrTemplate).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		state.Ready = false
+		return state, nil
+	}
 	if err != nil {
 		return TemplateState{}, fmt.Errorf("get VirtualMachineTemplate %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
@@ -205,19 +206,23 @@ func (b *KubeVirtTemplateBackend) VerifyTemplate(ctx context.Context, ref Templa
 	return state, nil
 }
 
-func (b *KubeVirtTemplateBackend) DeleteTemplate(ctx context.Context, ref TemplateRef) error {
+// DeleteTemplate removes both native objects owned by one Cozystack template
+// operation. Deletion is idempotent and intentionally does not touch snapshots
+// or source VMDisk/PVC data by name; KubeVirt's template controller owns its
+// generated storage lifecycle and reference protection is enforced above this
+// adapter.
+func (b *KubeVirtTemplateBackend) DeleteTemplate(ctx context.Context, ref TemplateRef, requestName string) error {
 	if b == nil || b.Client == nil {
 		return fmt.Errorf("Kubernetes dynamic client is required")
 	}
-	if ref.Namespace == "" || ref.Name == "" {
-		return fmt.Errorf("template namespace and name are required")
+	if ref.Namespace == "" || ref.Name == "" || requestName == "" {
+		return fmt.Errorf("template namespace/name and request name are required")
 	}
-	err := b.Client.Resource(gvrTemplate).Namespace(ref.Namespace).Delete(ctx, ref.Name, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
+	if err := b.Client.Resource(gvrTemplate).Namespace(ref.Namespace).Delete(ctx, ref.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete VirtualMachineTemplate %s/%s: %w", ref.Namespace, ref.Name, err)
+	}
+	if err := b.Client.Resource(gvrRequest).Namespace(ref.Namespace).Delete(ctx, requestName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete VirtualMachineTemplateRequest %s/%s: %w", ref.Namespace, requestName, err)
 	}
 	return nil
 }
@@ -259,8 +264,6 @@ func conditionTrue(obj *unstructured.Unstructured, conditionType string) bool {
 	return false
 }
 
-// FeatureGateNames is useful for deterministic status/debug output without
-// exposing the complete KubeVirt object.
 func FeatureGateNames(c Capabilities) []string {
 	out := []string{}
 	if c.SnapshotGate {
