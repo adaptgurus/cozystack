@@ -41,5 +41,39 @@ jobs:
       - name: Test VM template safety backend and transaction controller
         run: go test ./pkg/vmtemplate ./pkg/vmtemplatecontroller
 
+      - name: Test VM Template product charts and generated schema parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm lint packages/apps/vm-template --set sourceVM=source-vm
+          helm unittest packages/apps/vm-template
+          helm lint packages/system/vm-template-crd
+          helm lint packages/system/vm-template-controller
+          helm lint packages/system/vm-template-rd
+          helm template vm-template packages/apps/vm-template --namespace tenant-test --set sourceVM=source-vm > /tmp/vm-template.yaml
+          grep -q 'kind: VMTemplateOperation' /tmp/vm-template.yaml
+          grep -q 'sourceVM: "source-vm"' /tmp/vm-template.yaml
+          grep -q 'scope: Tenant' /tmp/vm-template.yaml
+          grep -q 'requireHalted: true' /tmp/vm-template.yaml
+          grep -q 'name: cozystack.vm-template-application' packages/core/platform/sources/vm-template-application.yaml
+          grep -q 'cozystack.vm-template-application' packages/core/platform/templates/bundles/iaas-vm-template.yaml
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          src = json.loads(Path('packages/apps/vm-template/values.schema.json').read_text())
+          lines = Path('packages/system/vm-template-rd/cozyrds/vm-template.yaml').read_text().splitlines()
+          for i, line in enumerate(lines):
+              if line.strip() == 'openAPISchema: |-':
+                  generated = json.loads(lines[i + 1].strip())
+                  break
+          else:
+              raise SystemExit('VMTemplate ApplicationDefinition has no openAPISchema')
+          if src != generated:
+              raise SystemExit('VMTemplate generated ApplicationDefinition schema drift')
+          if src['properties']['sourceVM']['x-cozystack-options']['source'] != 'vminstance':
+              raise SystemExit('VMTemplate sourceVM is not wired to tenant VMInstance options')
+          PY
+
       - name: Run HCI v1.6.2 gate
         run: ./hack/test-hci-v1.6.2.sh
