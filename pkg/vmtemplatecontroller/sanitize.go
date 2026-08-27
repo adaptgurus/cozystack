@@ -4,10 +4,7 @@ package vmtemplatecontroller
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/cozystack/cozystack/pkg/vmtemplate"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,55 +16,61 @@ var nativeTemplateGVK = schema.GroupVersionKind{Group: "template.kubevirt.io", V
 
 const opticalSanitizedAnnotation = "virtualization.cozystack.io/optical-sanitized"
 
-// ensureOpticalMediaSanitized durably removes preflight-identified CD/DVD
-// attachments from the native template before Copy is reported Ready or
-// Convert is allowed to retire the source VMInstance. It returns true only
-// after a fresh Kubernetes read proves the expected sanitation fingerprint is
-// already persisted and no excluded attachments remain.
-func (r *Reconciler) ensureOpticalMediaSanitized(ctx context.Context, op *unstructured.Unstructured, ref vmtemplate.TemplateRef) (bool, error) {
-	excluded, found, err := unstructured.NestedStringSlice(op.Object, "status", "excludedOpticalVolumes")
-	if err != nil {
-		return false, fmt.Errorf("read excluded optical media checkpoint: %w", err)
+// SanitizingBackend decorates the native KubeVirt template backend. It never
+// reports a template Ready while CD/DVD devices remain in the captured VM.
+// This is intentionally a backend invariant rather than a dashboard option:
+// reusable HCI templates must not replicate installer or VirtIO media into
+// every future VM, and Convert must not retire its source before the sanitized
+// definition has been durably persisted.
+type SanitizingBackend struct {
+	vmtemplate.Backend
+	Client client.Client
+}
+
+func (b *SanitizingBackend) VerifyTemplate(ctx context.Context, ref vmtemplate.TemplateRef, requestName string) (vmtemplate.TemplateState, error) {
+	if b == nil || b.Backend == nil || b.Client == nil {
+		return vmtemplate.TemplateState{}, fmt.Errorf("sanitizing template backend and Kubernetes client are required")
 	}
-	if !found || len(excluded) == 0 {
-		return true, nil
+	state, err := b.Backend.VerifyTemplate(ctx, ref, requestName)
+	if err != nil || !state.Ready {
+		return state, err
 	}
-	sort.Strings(excluded)
-	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(excluded, "\x00"))))
 
 	tpl := &unstructured.Unstructured{}
 	tpl.SetGroupVersionKind(nativeTemplateGVK)
-	if err := r.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, tpl); err != nil {
-		return false, fmt.Errorf("get native VirtualMachineTemplate %s/%s for sanitation: %w", ref.Namespace, ref.Name, err)
+	if err := b.Client.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, tpl); err != nil {
+		return vmtemplate.TemplateState{}, fmt.Errorf("get native VirtualMachineTemplate %s/%s for sanitation: %w", ref.Namespace, ref.Name, err)
 	}
-
-	// Even when the annotation is already present, prove the spec remains
-	// sanitized. This protects against manual/external mutation after capture.
-	probe := tpl.DeepCopy()
-	probeResult, err := vmtemplate.StripOpticalVolumes(probe, excluded)
+	optical, err := vmtemplate.TemplateOpticalVolumes(tpl)
 	if err != nil {
-		return false, err
+		return vmtemplate.TemplateState{}, err
 	}
-	if tpl.GetAnnotations()[opticalSanitizedAnnotation] == fingerprint && !probeResult.Changed {
-		return true, nil
+	if len(optical) == 0 {
+		return state, nil
 	}
 
 	base := tpl.DeepCopy()
-	result, err := vmtemplate.StripOpticalVolumes(tpl, excluded)
+	result, err := vmtemplate.StripOpticalVolumes(tpl, optical)
 	if err != nil {
-		return false, err
+		return vmtemplate.TemplateState{}, err
+	}
+	if !result.Changed {
+		return vmtemplate.TemplateState{}, fmt.Errorf("native template %s/%s reports optical devices %v but sanitation made no change", ref.Namespace, ref.Name, optical)
 	}
 	annotations := tpl.GetAnnotations()
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	annotations[opticalSanitizedAnnotation] = fingerprint
-	annotations["virtualization.cozystack.io/excluded-optical-count"] = fmt.Sprintf("%d", len(excluded))
+	annotations[opticalSanitizedAnnotation] = "true"
+	annotations["virtualization.cozystack.io/excluded-optical-count"] = fmt.Sprintf("%d", len(optical))
 	tpl.SetAnnotations(annotations)
-	if err := r.Patch(ctx, tpl, client.MergeFrom(base)); err != nil {
-		return false, fmt.Errorf("persist sanitized VirtualMachineTemplate %s/%s: %w", ref.Namespace, ref.Name, err)
+	if err := b.Client.Patch(ctx, tpl, client.MergeFrom(base)); err != nil {
+		return vmtemplate.TemplateState{}, fmt.Errorf("persist sanitized VirtualMachineTemplate %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
-	// Re-read on the next reconcile before allowing a source VM deletion.
-	_ = result
-	return false, nil
+
+	// Force a fresh read/reconcile before the transaction can finish. For
+	// Convert this is the barrier that prevents source VM deletion before the
+	// sanitized template is committed to the API server.
+	state.Ready = false
+	return state, nil
 }
