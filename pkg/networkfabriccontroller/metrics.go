@@ -93,7 +93,9 @@ func NewInstrumentedReconciler(inner *Reconciler) *InstrumentedReconciler {
 
 func (r *InstrumentedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	started := time.Now()
-	result, reconcileErr := r.Inner.Reconcile(ctx, req)
+	// Production reconciliation always reserves physical Talos ownership before
+	// the transactional reconciler is allowed to inspect or mutate a node.
+	result, reconcileErr := (&ConflictGuardedReconciler{Inner: r.Inner}).Reconcile(ctx, req)
 	fabricName := req.Name
 	outcome := "success"
 	if reconcileErr != nil {
