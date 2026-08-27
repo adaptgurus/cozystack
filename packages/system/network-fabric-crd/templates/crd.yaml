@@ -113,6 +113,8 @@ spec:
                 phase:
                   type: string
                   enum: [Pending, Reconciling, Ready, Degraded, RollingBack, Failed]
+                activeNode:
+                  type: string
                 conditions:
                   type: array
                   x-kubernetes-list-type: map
@@ -148,9 +150,37 @@ spec:
                         type: string
                       phase:
                         type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
                       lastAppliedRevision:
                         type: string
                       managementReachable:
                         type: boolean
                       message:
                         type: string
+                migration:
+                  type: object
+                  properties:
+                    configured:
+                      type: boolean
+                    network:
+                      type: string
+                    bridge:
+                      type: string
+                    readyNodes:
+                      type: array
+                      items:
+                        type: string
+                    unavailableNodes:
+                      type: array
+                      x-kubernetes-list-type: map
+                      x-kubernetes-list-map-keys: [name]
+                      items:
+                        type: object
+                        required: [name, reason]
+                        properties:
+                          name:
+                            type: string
+                          reason:
+                            type: string
