@@ -1,0 +1,15 @@
+{{- $networks := .Values.networks | default .Values.subnets -}}
+{{- $seenNetworks := dict -}}
+{{- range $net := $networks -}}
+{{-   if not $net.name -}}
+{{-     fail "Network attachment name must not be empty" -}}
+{{-   end -}}
+{{-   if hasKey $seenNetworks $net.name -}}
+{{-     fail (printf "Duplicate network attachment: %s" $net.name) -}}
+{{-   end -}}
+{{-   $_ := set $seenNetworks $net.name true -}}
+{{-   $nad := lookup "k8s.cni.cncf.io/v1" "NetworkAttachmentDefinition" $.Release.Namespace $net.name -}}
+{{-   if not $nad -}}
+{{-     fail (printf "Specified network does not exist in tenant namespace %s: %s" $.Release.Namespace $net.name) -}}
+{{-   end -}}
+{{- end -}}

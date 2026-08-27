@@ -1,0 +1,54 @@
+suite: vm-instance external network rendering
+
+release:
+  name: test-vm
+  namespace: tenant-test
+templates:
+  - templates/vm.yaml
+set:
+  fullnameOverride: test-vm
+  instanceType: ""
+  instanceProfile: ""
+  cloudInitSeed: network-test
+  resources:
+    cpu: 2
+    sockets: 1
+    memory: 2Gi
+  disks: []
+tests:
+  - it: preserves the default pod network and attaches one tenant external network
+    set:
+      networks:
+        - name: prod-vlan120
+    asserts:
+      - equal:
+          path: spec.template.spec.domain.devices.interfaces[0].name
+          value: default
+      - equal:
+          path: spec.template.spec.domain.devices.interfaces[1].name
+          value: prod-vlan120
+      - equal:
+          path: spec.template.spec.networks[0].name
+          value: default
+      - equal:
+          path: spec.template.spec.networks[1].multus.networkName
+          value: tenant-test/prod-vlan120
+
+  - it: attaches multiple tenant external networks without replacing the default network
+    set:
+      networks:
+        - name: prod-vlan120
+        - name: backup-vlan130
+    asserts:
+      - equal:
+          path: spec.template.spec.domain.devices.interfaces[1].name
+          value: prod-vlan120
+      - equal:
+          path: spec.template.spec.domain.devices.interfaces[2].name
+          value: backup-vlan130
+      - equal:
+          path: spec.template.spec.networks[1].multus.networkName
+          value: tenant-test/prod-vlan120
+      - equal:
+          path: spec.template.spec.networks[2].multus.networkName
+          value: tenant-test/backup-vlan130

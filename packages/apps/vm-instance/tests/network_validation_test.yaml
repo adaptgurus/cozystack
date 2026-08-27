@@ -1,0 +1,48 @@
+suite: vm-instance external network validation
+
+release:
+  name: test-vm
+  namespace: tenant-test
+templates:
+  - templates/validate-networks.yaml
+kubernetesProvider:
+  scheme:
+    "k8s.cni.cncf.io/v1/NetworkAttachmentDefinition":
+      gvr:
+        group: k8s.cni.cncf.io
+        version: v1
+        resource: network-attachment-definitions
+      namespaced: true
+  objects:
+    - apiVersion: k8s.cni.cncf.io/v1
+      kind: NetworkAttachmentDefinition
+      metadata:
+        name: prod-vlan120
+        namespace: tenant-test
+      spec:
+        config: '{}'
+tests:
+  - it: rejects duplicate external network attachments
+    set:
+      networks:
+        - name: prod-vlan120
+        - name: prod-vlan120
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Duplicate network attachment: prod-vlan120'
+
+  - it: rejects a network that is not present in the VM tenant namespace
+    set:
+      networks:
+        - name: missing-vlan130
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Specified network does not exist in tenant namespace tenant-test: missing-vlan130'
+
+  - it: rejects an empty network attachment name
+    set:
+      networks:
+        - name: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Network attachment name must not be empty'
