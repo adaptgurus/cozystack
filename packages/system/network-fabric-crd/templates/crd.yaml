@@ -37,6 +37,7 @@ spec:
               type: object
               required:
                 - provider
+                - nodeSelector
                 - protectedManagementInterfaces
                 - networks
               properties:
@@ -46,15 +47,17 @@ spec:
                   description: Node network authority. v1alpha1 supports Talos only.
                 nodeSelector:
                   type: object
+                  minProperties: 1
                   additionalProperties:
                     type: string
-                  description: Kubernetes node labels selecting KubeVirt nodes managed by this fabric.
+                  description: Explicit Kubernetes node labels selecting the dedicated nodes/node pool managed by this fabric. Empty selectors are rejected to prevent cluster-wide mutation.
                 protectedManagementInterfaces:
                   type: array
                   minItems: 1
                   items:
                     type: string
                     minLength: 1
+                    maxLength: 15
                   description: Interfaces whose management connectivity must remain reachable before and after every node change.
                 rollout:
                   type: object
@@ -84,15 +87,18 @@ spec:
                       uplink:
                         type: string
                         minLength: 1
+                        maxLength: 15
                       vlan:
                         type: integer
                         minimum: 0
                         maximum: 4094
                       vlanInterface:
                         type: string
+                        maxLength: 15
                       bridge:
                         type: string
                         minLength: 1
+                        maxLength: 15
                       mtu:
                         type: integer
                         minimum: 0
