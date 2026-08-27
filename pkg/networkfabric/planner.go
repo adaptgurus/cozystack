@@ -57,10 +57,10 @@ func PlanForNode(spec Spec, state NodeState) (Plan, error) {
 	return plan, nil
 }
 
-// Orchestrator owns the safety transaction around one Talos node. Any failure
-// of post-apply management verification triggers rollback before the node can
-// be considered reconciled. Cluster rollout sequencing remains a controller
-// concern above this type.
+// Orchestrator owns the safety transaction around one Talos node. The adapter
+// first applies the change in Talos try mode. Only after management verification
+// succeeds is the change confirmed; otherwise rollback is attempted immediately
+// and Talos' own try-mode timeout remains a second safety net.
 type Orchestrator struct {
 	Adapter TalosAdapter
 }
@@ -90,6 +90,13 @@ func (o Orchestrator) ReconcileNode(ctx context.Context, spec Spec, node string)
 			return fmt.Errorf("management verification failed on node %q: %v; rollback to revision %q also failed: %w", node, err, receipt.Revision, rollbackErr)
 		}
 		return fmt.Errorf("management verification failed on node %q after network apply; rolled back to revision %q: %w", node, receipt.Revision, err)
+	}
+	if err := o.Adapter.Confirm(ctx, node, receipt); err != nil {
+		rollbackErr := o.Adapter.Rollback(ctx, node, receipt)
+		if rollbackErr != nil {
+			return fmt.Errorf("failed to confirm network configuration on node %q: %v; rollback to revision %q also failed: %w", node, err, receipt.Revision, rollbackErr)
+		}
+		return fmt.Errorf("failed to confirm network configuration on node %q; rolled back to revision %q: %w", node, receipt.Revision, err)
 	}
 	return nil
 }
