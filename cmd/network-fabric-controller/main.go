@@ -58,9 +58,20 @@ func main() {
 
 	fabric := &unstructured.Unstructured{}
 	fabric.SetGroupVersionKind(networkfabriccontroller.NetworkFabricGVK)
-	if err := ctrl.NewControllerManagedBy(mgr).For(fabric).Complete(reconciler); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).Named("networkfabric-talos").For(fabric).Complete(reconciler); err != nil {
 		panic(err)
 	}
+
+	capabilityReconciler := &networkfabriccontroller.CapabilityReconciler{
+		Client:       mgr.GetClient(),
+		RequeueAfter: requeue,
+	}
+	capabilityFabric := &unstructured.Unstructured{}
+	capabilityFabric.SetGroupVersionKind(networkfabriccontroller.NetworkFabricGVK)
+	if err := ctrl.NewControllerManagedBy(mgr).Named("networkfabric-capabilities").For(capabilityFabric).Complete(capabilityReconciler); err != nil {
+		panic(err)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		panic(err)
 	}
