@@ -78,6 +78,7 @@ func TestPlanForTransitionDeletesOnlyStaleOwnedDocuments(t *testing.T) {
 	}
 	spec := Spec{
 		Provider:                      ProviderTalos,
+		NodeSelector:                  map[string]string{"hci.cozystack.io/networking": "enabled"},
 		ProtectedManagementInterfaces: []string{"eth0"},
 		Rollout:                       Rollout{MaxUnavailable: 1},
 		Networks: []Network{
@@ -85,13 +86,13 @@ func TestPlanForTransitionDeletesOnlyStaleOwnedDocuments(t *testing.T) {
 		},
 	}
 	state := NodeState{Name: "node-1", ManagementReachable: true, Interfaces: map[string]InterfaceState{
-		"eth0":     {Name: "eth0", Up: true},
-		"eth1":     {Name: "eth1", Up: true},
-		"eth2":     {Name: "eth2", Up: true},
-		"eth1.120": {Name: "eth1.120", Kind: "vlan", Up: true},
-		"br-old":   {Name: "br-old", Kind: "bridge", Up: true},
-		"eth2.130": {Name: "eth2.130", Kind: "vlan", Up: true},
-		"br-keep":  {Name: "br-keep", Kind: "bridge", Up: true},
+		"eth0":     {Name: "eth0", Up: true, MTU: 1500},
+		"eth1":     {Name: "eth1", Up: true, MTU: 1500},
+		"eth2":     {Name: "eth2", Up: true, MTU: 1500},
+		"eth1.120": {Name: "eth1.120", Kind: "vlan", Up: true, MTU: 1500},
+		"br-old":   {Name: "br-old", Kind: "bridge", Up: true, MTU: 1500},
+		"eth2.130": {Name: "eth2.130", Kind: "vlan", Up: true, MTU: 1500},
+		"br-keep":  {Name: "br-keep", Kind: "bridge", Up: true, MTU: 1500},
 	}}
 	plan, err := PlanForTransition(spec, previous, state)
 	if err != nil {
