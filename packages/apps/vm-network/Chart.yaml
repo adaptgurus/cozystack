@@ -1,0 +1,7 @@
+apiVersion: v2
+name: vm-network
+description: External physical network attachment for KubeVirt virtual machines
+icon: /logos/network.svg
+type: application
+version: 0.0.0
+appVersion: 0.1.0
