@@ -17,9 +17,10 @@
       "enum": ["Copy", "Convert"]
     },
     "excludeOpticalMedia": {
-      "description": "Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template.",
+      "description": "Reusable templates always exclude installer, VirtIO-driver, rescue and other CD/DVD media before becoming Ready.",
       "type": "boolean",
-      "default": true
+      "default": true,
+      "enum": [true]
     },
     "description": {
       "description": "Optional human-readable template description.",
