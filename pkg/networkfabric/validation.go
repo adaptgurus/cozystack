@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package networkfabric
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
+)
+
+func Validate(spec Spec) error {
+	var errs []string
+	if spec.Provider != ProviderTalos {
+		errs = append(errs, fmt.Sprintf("provider must be %q", ProviderTalos))
+	}
+	if len(spec.ProtectedManagementInterfaces) == 0 {
+		errs = append(errs, "at least one protectedManagementInterface is required")
+	}
+	if spec.Rollout.MaxUnavailable != 0 && spec.Rollout.MaxUnavailable != 1 {
+		errs = append(errs, "rollout.maxUnavailable must be 1 (or 0 to use the safe default of 1)")
+	}
+
+	protected := map[string]struct{}{}
+	for _, name := range spec.ProtectedManagementInterfaces {
+		if name == "" {
+			errs = append(errs, "protectedManagementInterfaces must not contain an empty name")
+			continue
+		}
+		protected[name] = struct{}{}
+	}
+
+	names := map[string]struct{}{}
+	bridges := map[string]struct{}{}
+	vlanIfaces := map[string]struct{}{}
+	migrationNetworks := 0
+	for i, network := range spec.Networks {
+		prefix := fmt.Sprintf("networks[%d]", i)
+		if problems := k8svalidation.IsDNS1123Label(network.Name); len(problems) > 0 {
+			errs = append(errs, fmt.Sprintf("%s.name %q is invalid: %s", prefix, network.Name, strings.Join(problems, "; ")))
+		}
+		if _, exists := names[network.Name]; exists {
+			errs = append(errs, fmt.Sprintf("duplicate network name %q", network.Name))
+		}
+		names[network.Name] = struct{}{}
+
+		if network.Uplink == "" {
+			errs = append(errs, prefix+".uplink is required")
+		}
+		if network.Bridge == "" {
+			errs = append(errs, prefix+".bridge is required")
+		} else {
+			if _, exists := bridges[network.Bridge]; exists {
+				errs = append(errs, fmt.Sprintf("duplicate bridge %q", network.Bridge))
+			}
+			bridges[network.Bridge] = struct{}{}
+			if _, management := protected[network.Bridge]; management {
+				errs = append(errs, fmt.Sprintf("%s.bridge %q cannot replace a protected management interface", prefix, network.Bridge))
+			}
+		}
+		if network.Bridge != "" && network.Bridge == network.Uplink {
+			errs = append(errs, prefix+".bridge must differ from uplink; node changes must be additive")
+		}
+		if network.VLAN < 0 || network.VLAN > 4094 {
+			errs = append(errs, prefix+".vlan must be between 0 and 4094")
+		}
+		if network.MTU != 0 && (network.MTU < 576 || network.MTU > 9216) {
+			errs = append(errs, prefix+".mtu must be 0 or between 576 and 9216")
+		}
+		if network.VLAN == 0 && network.VLANInterface != "" {
+			errs = append(errs, prefix+".vlanInterface must be empty for an untagged/native network")
+		}
+		if network.VLAN > 0 {
+			if network.VLANInterface == "" {
+				errs = append(errs, prefix+".vlanInterface is required when vlan is non-zero")
+			} else {
+				if network.VLANInterface == network.Uplink || network.VLANInterface == network.Bridge {
+					errs = append(errs, prefix+".vlanInterface must differ from uplink and bridge")
+				}
+				if _, exists := vlanIfaces[network.VLANInterface]; exists {
+					errs = append(errs, fmt.Sprintf("duplicate vlanInterface %q", network.VLANInterface))
+				}
+				vlanIfaces[network.VLANInterface] = struct{}{}
+			}
+		}
+		if network.Migration {
+			migrationNetworks++
+		}
+	}
+	if migrationNetworks > 1 {
+		errs = append(errs, "only one network may be marked as the live-migration network")
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	sort.Strings(errs)
+	return fmt.Errorf("invalid NetworkFabric: %s", strings.Join(errs, "; "))
+}
