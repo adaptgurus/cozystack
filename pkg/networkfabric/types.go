@@ -40,10 +40,19 @@ type NodeState struct {
 	Interfaces          map[string]InterfaceState
 }
 
+// InterfaceState is the topology-normalized subset of Talos LinkStatus needed
+// to prove a VM network is wired as requested. Parent is resolved from
+// LinkStatus.linkIndex, Members from masterIndex, and VLAN from vlan.vlanID.
+// This keeps controller validation independent from Talos' numeric link indexes.
 type InterfaceState struct {
-	Name string
-	MTU  int
-	Up   bool
+	Name    string
+	Kind    string
+	Index   uint32
+	MTU     int
+	Up      bool
+	Parent  string
+	VLAN    int
+	Members []string
 }
 
 type OperationKind string
@@ -51,6 +60,8 @@ type OperationKind string
 const (
 	EnsureVLAN   OperationKind = "EnsureVLAN"
 	EnsureBridge OperationKind = "EnsureBridge"
+	DeleteVLAN   OperationKind = "DeleteVLAN"
+	DeleteBridge OperationKind = "DeleteBridge"
 )
 
 type Operation struct {
