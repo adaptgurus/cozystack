@@ -33,7 +33,10 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewHandler(vmnetworkadmission.NewDynamicDependencyReader(dyn)))
+	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewHandler(
+		vmnetworkadmission.NewDynamicDependencyReader(dyn),
+		vmnetworkadmission.NewDynamicFabricReader(dyn),
+	))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
