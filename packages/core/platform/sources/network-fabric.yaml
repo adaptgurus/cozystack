@@ -19,3 +19,8 @@ spec:
           install:
             namespace: cozy-system
             releaseName: network-fabric-crd
+        - name: network-fabric-controller
+          path: system/network-fabric-controller
+          install:
+            namespace: cozy-network-fabric-controller
+            releaseName: network-fabric-controller

@@ -1,0 +1,17 @@
+networkFabricController:
+  image: "ghcr.io/cozystack/cozystack/network-fabric-controller:v1.6.2"
+  replicas: 2
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+  healthRequeue: "2m"
+  talosTryTimeout: "2m"
+  talosconfig:
+    secretName: network-fabric-talosconfig
+    key: talosconfig
+  resources:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-fabric-controller
+  labels:
+    app.kubernetes.io/name: network-fabric-controller
+spec:
+  replicas: {{ .Values.networkFabricController.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: network-fabric-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: network-fabric-controller
+    spec:
+      serviceAccountName: network-fabric-controller
+      priorityClassName: system-cluster-critical
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: network-fabric-controller
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: controller
+        image: {{ .Values.networkFabricController.image | quote }}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --metrics-bind-address={{ .Values.networkFabricController.metricsBindAddress }}
+        - --health-probe-bind-address={{ .Values.networkFabricController.healthProbeBindAddress }}
+        - --health-requeue={{ .Values.networkFabricController.healthRequeue }}
+        - --talos-try-timeout={{ .Values.networkFabricController.talosTryTimeout }}
+        - --talosconfig=/var/run/secrets/talos.dev/config
+        - --talosctl=/usr/local/bin/talosctl
+        ports:
+        - name: metrics
+          containerPort: 8080
+        - name: health
+          containerPort: 8081
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+{{ toYaml .Values.networkFabricController.resources | indent 10 }}
+        volumeMounts:
+        - name: talosconfig
+          mountPath: /var/run/secrets/talos.dev
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: talosconfig
+        secret:
+          secretName: {{ .Values.networkFabricController.talosconfig.secretName | quote }}
+          items:
+          - key: {{ .Values.networkFabricController.talosconfig.key | quote }}
+            path: config
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
