@@ -12,6 +12,7 @@ import (
 func validSpec() Spec {
 	return Spec{
 		Provider:                      ProviderTalos,
+		NodeSelector:                  map[string]string{"cozystack.io/virtualization": "true"},
 		ProtectedManagementInterfaces: []string{"eth0"},
 		Rollout:                       Rollout{MaxUnavailable: 1},
 		Networks: []Network{
@@ -30,6 +31,14 @@ func validState() NodeState {
 			"eth1": {Name: "eth1", Up: true, MTU: 1500},
 			"eth2": {Name: "eth2", Up: true, MTU: 9000},
 		},
+	}
+}
+
+func TestValidateRejectsEmptyNodeSelector(t *testing.T) {
+	spec := validSpec()
+	spec.NodeSelector = nil
+	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "nodeSelector must explicitly select") {
+		t.Fatalf("expected empty selector rejection, got %v", err)
 	}
 }
 
@@ -217,6 +226,7 @@ func TestPlanForTransitionInverseRestoresChangedOwnedTopology(t *testing.T) {
 	previous := []Network{{Name: "prod", Uplink: "eth1", VLAN: 120, VLANInterface: "eth1.120", Bridge: "br-prod", MTU: 1500}}
 	spec := Spec{
 		Provider:                      ProviderTalos,
+		NodeSelector:                  map[string]string{"cozystack.io/virtualization": "true"},
 		ProtectedManagementInterfaces: []string{"eth0"},
 		Rollout:                       Rollout{MaxUnavailable: 1},
 		Networks:                      []Network{{Name: "prod", Uplink: "eth2", VLAN: 220, VLANInterface: "eth2.220", Bridge: "br-prod", MTU: 9000}},
