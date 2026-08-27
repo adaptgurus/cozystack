@@ -1,0 +1,20 @@
+apiVersion: apps.cozystack.io/v1alpha1
+kind: PackageSource
+metadata:
+  name: vm-network
+  namespace: cozy-public
+spec:
+  application:
+    name: vm-network
+    displayName: VM Network
+    icon: "/logos/network.svg"
+  generator:
+    helm:
+      chart:
+        name: vm-network
+        sourceRef:
+          kind: HelmRepository
+          name: cozystack-apps
+          namespace: cozy-public
+      repository:
+        url: https://cozystack.github.io/cozystack/

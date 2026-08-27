@@ -1,0 +1,33 @@
+apiVersion: cozystack.io/v1alpha1
+kind: ApplicationDefinition
+metadata:
+  name: vm-network
+spec:
+  application:
+    kind: VMNetwork
+    singular: vmnetwork
+    plural: vmnetworks
+    openAPISchema: |-
+      {"title":"Chart Values","type":"object","required":["bridge"],"properties":{"bridge":{"description":"Linux bridge on KubeVirt-capable nodes that carries this external VM network.","type":"string","minLength":1},"vlan":{"description":"802.1Q VLAN ID. Use 0 for an untagged/native network.","type":"integer","default":0,"minimum":0,"maximum":4094},"mtu":{"description":"Interface MTU. Use 0 to inherit/default; otherwise use 576-9216.","type":"integer","default":0,"minimum":0,"maximum":9216,"x-kubernetes-validations":[{"rule":"self == 0 || self >= 576","message":"mtu must be 0 or between 576 and 9216"}]},"description":{"description":"Human-readable description of the physical VM network.","type":"string","default":""},"promiscMode":{"description":"Enable promiscuous mode on the bridge CNI interface.","type":"boolean","default":false},"macspoofchk":{"description":"Enable MAC spoof checking when supported by the bridge CNI.","type":"boolean","default":false},"hairpinMode":{"description":"Enable bridge hairpin mode for this network.","type":"boolean","default":false}}}
+  release:
+    prefix: vm-network-
+    labels:
+      sharding.fluxcd.io/key: tenants
+    chartRef:
+      kind: ExternalArtifact
+      name: cozystack-vm-network-application-default-vm-network
+      namespace: cozy-system
+  dashboard:
+    category: IaaS
+    singular: VM Network
+    plural: VM Networks
+    description: Tenant-scoped external network for virtual machines
+    weight: 52
+    tags:
+      - networking
+      - virtual-machine
+    icon: PHN2ZyB3aWR0aD0iMTQ0IiBoZWlnaHQ9IjE0NCIgdmlld0JveD0iMCAwIDE0NCAxNDQiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIxNDQiIGhlaWdodD0iMTQ0IiByeD0iMjQiIGZpbGw9InVybCgjYmcpIi8+CjxwYXRoIGQ9Ik0yOCA0NGgyOHYyMEgyOFY0NFptNjAgMGgyOHYyMEg4OFY0NFpNMjggODBoMjh2MjBIMjhWODBabTYwIDBoMjh2MjBIOThWODBaTTU2IDU0aDMyTTQyIDY0djE2TTEwMiA2NHYxNk01NiA5MGgzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSI3IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjE0NCIgeTE9IjE0NCIgeDI9IjAiIHkyPSIwIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHN0b3Agc3RvcC1jb2xvcj0iIzAwMDgyRSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzJFMzA2NyIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPgo8L3N2Zz4K
+    keysOrder: [["apiVersion"],["appVersion"],["kind"],["metadata"],["metadata","name"],["spec","bridge"],["spec","vlan"],["spec","mtu"],["spec","description"],["spec","promiscMode"],["spec","macspoofchk"],["spec","hairpinMode"],["spec","ipam"]]
+  secrets:
+    exclude: []
+    include: []

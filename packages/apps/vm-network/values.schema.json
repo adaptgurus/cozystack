@@ -1,0 +1,54 @@
+{
+  "title": "Chart Values",
+  "type": "object",
+  "required": [
+    "bridge"
+  ],
+  "properties": {
+    "bridge": {
+      "description": "Linux bridge on KubeVirt-capable nodes that carries this external VM network.",
+      "type": "string",
+      "minLength": 1
+    },
+    "vlan": {
+      "description": "802.1Q VLAN ID. Use 0 for an untagged/native network.",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 4094
+    },
+    "mtu": {
+      "description": "Interface MTU. Use 0 to inherit/default; otherwise use 576-9216.",
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 9216,
+      "x-kubernetes-validations": [
+        {
+          "rule": "self == 0 || self >= 576",
+          "message": "mtu must be 0 or between 576 and 9216"
+        }
+      ]
+    },
+    "description": {
+      "description": "Human-readable description of the physical VM network.",
+      "type": "string",
+      "default": ""
+    },
+    "promiscMode": {
+      "description": "Enable promiscuous mode on the bridge CNI interface.",
+      "type": "boolean",
+      "default": false
+    },
+    "macspoofchk": {
+      "description": "Enable MAC spoof checking when supported by the bridge CNI.",
+      "type": "boolean",
+      "default": false
+    },
+    "hairpinMode": {
+      "description": "Enable bridge hairpin mode for this network.",
+      "type": "boolean",
+      "default": false
+    }
+  }
+}
