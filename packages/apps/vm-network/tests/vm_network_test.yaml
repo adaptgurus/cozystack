@@ -14,7 +14,7 @@ set:
   description: Production VLAN 120
 
 tests:
-  - it: renders a tenant-scoped bridge NAD with VLAN and MTU
+  - it: renders a tenant-scoped bridge NAD backed by a Talos-owned VLAN bridge
     documentIndex: 0
     asserts:
       - isKind:
@@ -31,6 +31,9 @@ tests:
       - equal:
           path: metadata.annotations["vm-network.cozystack.io/vlan"]
           value: "120"
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/vlan-owner"]
+          value: talos-node-network
       - matchRegex:
           path: spec.config
           pattern: '"type":"bridge"'
@@ -39,13 +42,13 @@ tests:
           pattern: '"bridge":"br-vlan120"'
       - matchRegex:
           path: spec.config
-          pattern: '"vlan":120'
-      - matchRegex:
-          path: spec.config
           pattern: '"mtu":1500'
       - matchRegex:
           path: spec.config
           pattern: '"ipam":\{\}'
+      - notMatchRegex:
+          path: spec.config
+          pattern: '"vlan":'
 
   - it: records network metadata for inventory and diagnostics
     documentIndex: 1
@@ -55,6 +58,9 @@ tests:
       - equal:
           path: data.networkName
           value: tenant-test/prod-vlan120
+      - equal:
+          path: data.vlanOwner
+          value: talos-node-network
       - equal:
           path: data.addressing
           value: guest-or-external-dhcp
