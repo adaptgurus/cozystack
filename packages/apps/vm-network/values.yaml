@@ -1,0 +1,21 @@
+# Name is the Helm release name. Install this chart into the target tenant namespace.
+# The physical Linux bridge must already exist on every VM-capable node that may run a VM using this network.
+bridge: ""
+
+# Optional VLAN ID. Use 0 or omit to send untagged traffic through the bridge.
+vlan: 0
+
+# Optional MTU. Use 0 to leave MTU selection to the CNI/bridge environment.
+mtu: 0
+
+# Optional human-readable description stored as metadata.
+description: ""
+
+# Bridge CNI controls.
+promiscMode: false
+macspoofchk: false
+hairpinMode: false
+
+# External L2 networks intentionally do not allocate guest addresses.
+# Configure guest IP, gateway and DNS inside the VM or through an external DHCP service.
+ipam: {}
