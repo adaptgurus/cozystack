@@ -7,6 +7,9 @@
 {{- if and (ne (int .Values.mtu) 0) (or (lt (int .Values.mtu) 576) (gt (int .Values.mtu) 9216)) }}
 {{- fail "mtu must be 0 or between 576 and 9216" }}
 {{- end }}
+{{- if or (and .Values.fabricRef (not .Values.fabricNetwork)) (and .Values.fabricNetwork (not .Values.fabricRef)) }}
+{{- fail "fabricRef and fabricNetwork must be set together" }}
+{{- end }}
 
 {{- $config := dict
   "cniVersion" "0.3.1"
@@ -19,6 +22,11 @@
 -}}
 {{- if gt (int .Values.mtu) 0 }}
 {{- $_ := set $config "mtu" (int .Values.mtu) }}
+{{- end }}
+{{- $capabilityLabel := "" -}}
+{{- if and .Values.fabricRef .Values.fabricNetwork -}}
+{{- $canonical := printf "%s|%s|%s|%d|%d" .Values.fabricRef .Values.fabricNetwork .Values.bridge (int .Values.vlan) (int .Values.mtu) -}}
+{{- $capabilityLabel = printf "networkfabric.cozystack.io/cap-%s" (trunc 16 (sha256sum $canonical)) -}}
 {{- end }}
 
 apiVersion: k8s.cni.cncf.io/v1
@@ -36,6 +44,11 @@ metadata:
     vm-network.cozystack.io/vlan: {{ int .Values.vlan | quote }}
     vm-network.cozystack.io/mtu: {{ int .Values.mtu | quote }}
     vm-network.cozystack.io/vlan-owner: "talos-node-network"
+    {{- if $capabilityLabel }}
+    vm-network.cozystack.io/fabric-ref: {{ .Values.fabricRef | quote }}
+    vm-network.cozystack.io/fabric-network: {{ .Values.fabricNetwork | quote }}
+    vm-network.cozystack.io/capability-label: {{ $capabilityLabel | quote }}
+    {{- end }}
     {{- with .Values.description }}
     vm-network.cozystack.io/description: {{ . | quote }}
     {{- end }}
@@ -57,3 +70,8 @@ data:
   mtu: {{ int .Values.mtu | quote }}
   vlanOwner: "talos-node-network"
   addressing: "guest-or-external-dhcp"
+  {{- if $capabilityLabel }}
+  fabricRef: {{ .Values.fabricRef | quote }}
+  fabricNetwork: {{ .Values.fabricNetwork | quote }}
+  capabilityLabel: {{ $capabilityLabel | quote }}
+  {{- end }}

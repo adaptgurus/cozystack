@@ -1,18 +1,22 @@
 # External VM network published into the tenant namespace.
 #
-# IMPORTANT: bridge must already exist on every VM-capable Talos node that may
-# schedule a VM using this network. For a tagged physical VLAN, create the VLAN
-# at the Talos node layer and attach that VLAN interface to this Linux bridge.
-# The tenant NAD intentionally does NOT apply an additional VLAN tag.
+# IMPORTANT: bridge must exist on every VM-capable Talos node that may schedule
+# a VM using this network. When fabricRef/fabricNetwork are set, NetworkFabric
+# verifies the node bridge/VLAN/MTU and publishes a scheduling capability label.
 bridge: ""
 
 # VLAN is inventory/validation metadata describing the physical fabric backing
-# this bridge. It is not inserted into the bridge-CNI config because tagging is
-# performed by the Talos VLAN interface underneath the Linux bridge.
+# this bridge. It is not inserted into bridge-CNI because tagging is performed
+# by the Talos VLAN interface underneath the Linux bridge.
 vlan: 0
 
 # Optional expected MTU. Use 0 to inherit the node bridge/CNI environment.
 mtu: 0
+
+# Optional NetworkFabric binding. Set both fields together for production-managed
+# physical networks. Leaving both empty preserves the legacy direct-bridge path.
+fabricRef: ""
+fabricNetwork: ""
 
 # Optional human-readable description stored as metadata.
 description: ""

@@ -50,6 +50,22 @@ tests:
           path: spec.config
           pattern: '"vlan":'
 
+  - it: emits verified placement metadata for a NetworkFabric-backed network
+    documentIndex: 0
+    set:
+      fabricRef: fabric-prod
+      fabricNetwork: prod
+    asserts:
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/fabric-ref"]
+          value: fabric-prod
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/fabric-network"]
+          value: prod
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/capability-label"]
+          value: networkfabric.cozystack.io/cap-0fde7a2f04747fd4
+
   - it: records network metadata for inventory and diagnostics
     documentIndex: 1
     asserts:
@@ -64,6 +80,14 @@ tests:
       - equal:
           path: data.addressing
           value: guest-or-external-dhcp
+
+  - it: rejects an incomplete NetworkFabric binding
+    set:
+      fabricRef: fabric-prod
+      fabricNetwork: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: fabricRef and fabricNetwork must be set together
 
   - it: rejects missing physical bridge
     set:

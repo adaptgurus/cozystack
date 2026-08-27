@@ -15,6 +15,7 @@ type Config struct {
 	Spec          ConfigSpec `json:"spec,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="(self.fabricRef == '' && self.fabricNetwork == '') || (self.fabricRef != '' && self.fabricNetwork != '')",message="fabricRef and fabricNetwork must be set together"
 type ConfigSpec struct {
 	// Linux bridge on KubeVirt-capable nodes that carries this external VM network.
 	Bridge string `json:"bridge"`
@@ -29,6 +30,12 @@ type ConfigSpec struct {
 	// +kubebuilder:validation:Maximum=9216
 	// +kubebuilder:validation:XValidation:rule="self == 0 || self >= 576",message="mtu must be 0 or between 576 and 9216"
 	Mtu int64 `json:"mtu"`
+	// Optional cluster NetworkFabric backing this tenant network. Set together with fabricNetwork for verified node placement.
+	// +kubebuilder:default:=""
+	FabricRef string `json:"fabricRef"`
+	// Network name inside fabricRef. Set together with fabricRef.
+	// +kubebuilder:default:=""
+	FabricNetwork string `json:"fabricNetwork"`
 	// Human-readable description of the physical VM network.
 	// +kubebuilder:default:=""
 	Description string `json:"description"`

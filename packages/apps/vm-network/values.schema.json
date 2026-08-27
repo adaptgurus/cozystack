@@ -4,6 +4,12 @@
   "required": [
     "bridge"
   ],
+  "x-kubernetes-validations": [
+    {
+      "rule": "(self.fabricRef == '' && self.fabricNetwork == '') || (self.fabricRef != '' && self.fabricNetwork != '')",
+      "message": "fabricRef and fabricNetwork must be set together"
+    }
+  ],
   "properties": {
     "bridge": {
       "description": "Linux bridge on KubeVirt-capable nodes that carries this external VM network.",
@@ -29,6 +35,16 @@
           "message": "mtu must be 0 or between 576 and 9216"
         }
       ]
+    },
+    "fabricRef": {
+      "description": "Optional cluster NetworkFabric backing this tenant network. Set together with fabricNetwork for verified node placement.",
+      "type": "string",
+      "default": ""
+    },
+    "fabricNetwork": {
+      "description": "Network name inside fabricRef. Set together with fabricRef.",
+      "type": "string",
+      "default": ""
     },
     "description": {
       "description": "Human-readable description of the physical VM network.",

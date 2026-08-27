@@ -113,12 +113,11 @@ spec:
             secret:
               secretName: {{ include "virtual-machine.fullname" $ }}-ssh-keys
           propagationMethod:
-            # keys will be injected into metadata part of cloud-init disk
             noCloud: {}
       {{- end }}
       terminationGracePeriodSeconds: 30
 
-      {{- include "virtual-machine.nodeAffinity" . | nindent 6 }}
+      {{- include "virtual-machine.hciNodeAffinity" . | nindent 6 }}
 
       volumes:
       {{- range .Values.disks }}
