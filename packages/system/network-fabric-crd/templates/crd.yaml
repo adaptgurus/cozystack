@@ -1,0 +1,156 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: networkfabrics.infrastructure.cozystack.io
+spec:
+  group: infrastructure.cozystack.io
+  scope: Cluster
+  names:
+    plural: networkfabrics
+    singular: networkfabric
+    kind: NetworkFabric
+    shortNames:
+      - netfabric
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Observed
+          type: integer
+          jsonPath: .status.observedGeneration
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - provider
+                - protectedManagementInterfaces
+                - networks
+              properties:
+                provider:
+                  type: string
+                  enum: [talos]
+                  description: Node network authority. v1alpha1 supports Talos only.
+                nodeSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Kubernetes node labels selecting KubeVirt nodes managed by this fabric.
+                protectedManagementInterfaces:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    minLength: 1
+                  description: Interfaces whose management connectivity must remain reachable before and after every node change.
+                rollout:
+                  type: object
+                  properties:
+                    maxUnavailable:
+                      type: integer
+                      minimum: 1
+                      maximum: 1
+                      default: 1
+                  description: Safety rollout policy. v1alpha1 intentionally allows only one node at a time.
+                networks:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                  items:
+                    type: object
+                    required: [name, uplink, vlan, bridge]
+                    x-kubernetes-validations:
+                      - rule: "self.bridge != self.uplink"
+                        message: bridge must differ from uplink; fabric changes are additive
+                      - rule: "self.vlan == 0 ? !has(self.vlanInterface) || self.vlanInterface == '' : has(self.vlanInterface) && self.vlanInterface != ''"
+                        message: vlanInterface is required for tagged VLANs and must be empty for native VLAN 0
+                    properties:
+                      name:
+                        type: string
+                        minLength: 1
+                      uplink:
+                        type: string
+                        minLength: 1
+                      vlan:
+                        type: integer
+                        minimum: 0
+                        maximum: 4094
+                      vlanInterface:
+                        type: string
+                      bridge:
+                        type: string
+                        minLength: 1
+                      mtu:
+                        type: integer
+                        minimum: 0
+                        maximum: 9216
+                        default: 0
+                        x-kubernetes-validations:
+                          - rule: "self == 0 || self >= 576"
+                            message: mtu must be 0 or between 576 and 9216
+                      migration:
+                        type: boolean
+                        default: false
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                phase:
+                  type: string
+                  enum: [Pending, Reconciling, Ready, Degraded, RollingBack, Failed]
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+                  items:
+                    type: object
+                    required: [lastTransitionTime, message, reason, status, type]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", Unknown]
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                nodes:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                  items:
+                    type: object
+                    required: [name, phase]
+                    properties:
+                      name:
+                        type: string
+                      phase:
+                        type: string
+                      lastAppliedRevision:
+                        type: string
+                      managementReachable:
+                        type: boolean
+                      message:
+                        type: string

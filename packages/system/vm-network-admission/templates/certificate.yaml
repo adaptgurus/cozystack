@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vm-network-admission-selfsigned
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vm-network-admission-serving-cert
+  namespace: {{ .Release.Namespace }}
+spec:
+  secretName: vm-network-admission-tls
+  dnsNames:
+    - vm-network-admission.{{ .Release.Namespace }}.svc
+    - vm-network-admission.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: vm-network-admission-selfsigned

@@ -1,0 +1,21 @@
+---
+apiVersion: cozystack.io/v1alpha1
+kind: PackageSource
+metadata:
+  name: cozystack.network-fabric
+spec:
+  sourceRef:
+    kind: OCIRepository
+    name: cozystack-packages
+    namespace: cozy-system
+    path: /
+  variants:
+    - name: talos
+      dependsOn:
+        - cozystack.networking
+      components:
+        - name: network-fabric-crd
+          path: system/network-fabric-crd
+          install:
+            namespace: cozy-system
+            releaseName: network-fabric-crd

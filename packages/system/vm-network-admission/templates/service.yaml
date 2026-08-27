@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-network-admission
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: vm-network-admission
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
