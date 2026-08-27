@@ -17,6 +17,9 @@ func Validate(spec Spec) error {
 	if spec.Provider != ProviderTalos {
 		errs = append(errs, fmt.Sprintf("provider must be %q", ProviderTalos))
 	}
+	if len(spec.NodeSelector) == 0 {
+		errs = append(errs, "nodeSelector must explicitly select the nodes or node pool managed by this NetworkFabric")
+	}
 	if len(spec.ProtectedManagementInterfaces) == 0 {
 		errs = append(errs, "at least one protectedManagementInterface is required")
 	}
