@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"log"
 	"net/http"
@@ -33,11 +34,13 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewHandler(
+	validator := vmnetworkadmission.NewHandler(
 		vmnetworkadmission.NewDynamicDependencyReader(dyn),
 		vmnetworkadmission.NewDynamicFabricReader(dyn),
-	))
+	)
+	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(validator, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
@@ -49,6 +52,10 @@ func main() {
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
