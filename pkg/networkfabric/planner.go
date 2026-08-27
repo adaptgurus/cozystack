@@ -93,8 +93,23 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 
 	networks := sortedNetworks(spec.Networks)
 	for _, network := range networks {
-		if _, ok := state.Interfaces[network.Uplink]; !ok {
+		uplink, ok := state.Interfaces[network.Uplink]
+		if !ok {
 			return Plan{}, fmt.Errorf("node %q is missing uplink %q required by network %q", state.Name, network.Uplink, network.Name)
+		}
+		if !uplink.Up {
+			return Plan{}, fmt.Errorf("node %q uplink %q required by network %q is down", state.Name, network.Uplink, network.Name)
+		}
+		if network.MTU > 0 {
+			if uplink.MTU <= 0 {
+				return Plan{}, fmt.Errorf("node %q uplink %q MTU is unknown; cannot prove requested MTU %d for network %q", state.Name, network.Uplink, network.MTU, network.Name)
+			}
+			if uplink.MTU < network.MTU {
+				return Plan{}, fmt.Errorf("node %q uplink %q MTU %d cannot carry requested MTU %d for network %q", state.Name, network.Uplink, uplink.MTU, network.MTU, network.Name)
+			}
+		}
+		if master := unrelatedMaster(state, network.Uplink, previousBridges); master != "" {
+			return Plan{}, fmt.Errorf("node %q uplink %q required by network %q is already a member of unmanaged interface %q; refusing destructive takeover", state.Name, network.Uplink, network.Name, master)
 		}
 		parent := network.Uplink
 		if network.VLAN > 0 {
@@ -118,6 +133,21 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 	}
 	plan.RollbackOperations = buildRollbackOperations(previous, spec.Networks)
 	return plan, nil
+}
+
+func unrelatedMaster(state NodeState, uplink string, previousBridges map[string]Network) string {
+	for name, link := range state.Interfaces {
+		for _, member := range link.Members {
+			if member != uplink {
+				continue
+			}
+			if _, owned := previousBridges[name]; owned {
+				return ""
+			}
+			return name
+		}
+	}
+	return ""
 }
 
 // buildRollbackOperations creates an exact inverse for only the Talos
