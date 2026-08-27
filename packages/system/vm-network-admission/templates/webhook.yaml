@@ -18,7 +18,7 @@ webhooks:
         path: /validate-vmnetwork
         port: 443
     rules:
-      - operations: ["UPDATE", "DELETE"]
+      - operations: ["CREATE", "UPDATE", "DELETE"]
         apiGroups: ["apps.cozystack.io"]
         apiVersions: ["v1alpha1"]
         resources: ["vmnetworks"]
