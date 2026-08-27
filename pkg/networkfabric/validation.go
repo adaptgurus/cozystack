@@ -10,6 +10,8 @@ import (
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
+const linuxInterfaceNameMaxBytes = 15
+
 func Validate(spec Spec) error {
 	var errs []string
 	if spec.Provider != ProviderTalos {
@@ -27,6 +29,12 @@ func Validate(spec Spec) error {
 		if name == "" {
 			errs = append(errs, "protectedManagementInterfaces must not contain an empty name")
 			continue
+		}
+		if problem := validateLinuxInterfaceName(name); problem != "" {
+			errs = append(errs, fmt.Sprintf("protectedManagementInterface %q is invalid: %s", name, problem))
+		}
+		if _, duplicate := protected[name]; duplicate {
+			errs = append(errs, fmt.Sprintf("duplicate protectedManagementInterface %q", name))
 		}
 		protected[name] = struct{}{}
 	}
@@ -47,10 +55,20 @@ func Validate(spec Spec) error {
 
 		if network.Uplink == "" {
 			errs = append(errs, prefix+".uplink is required")
+		} else {
+			if problem := validateLinuxInterfaceName(network.Uplink); problem != "" {
+				errs = append(errs, fmt.Sprintf("%s.uplink %q is invalid: %s", prefix, network.Uplink, problem))
+			}
+			if _, management := protected[network.Uplink]; management {
+				errs = append(errs, fmt.Sprintf("%s.uplink %q is a protected management interface and cannot be used as a NetworkFabric uplink", prefix, network.Uplink))
+			}
 		}
 		if network.Bridge == "" {
 			errs = append(errs, prefix+".bridge is required")
 		} else {
+			if problem := validateLinuxInterfaceName(network.Bridge); problem != "" {
+				errs = append(errs, fmt.Sprintf("%s.bridge %q is invalid: %s", prefix, network.Bridge, problem))
+			}
 			if _, exists := bridges[network.Bridge]; exists {
 				errs = append(errs, fmt.Sprintf("duplicate bridge %q", network.Bridge))
 			}
@@ -72,14 +90,18 @@ func Validate(spec Spec) error {
 			if network.VLANInterface != "" {
 				errs = append(errs, prefix+".vlanInterface must be empty for an untagged/native network")
 			}
-			if _, management := protected[network.Uplink]; management {
-				errs = append(errs, fmt.Sprintf("%s.uplink %q is a protected management interface and cannot be enslaved into a native bridge", prefix, network.Uplink))
-			}
 		}
 		if network.VLAN > 0 {
 			if network.VLANInterface == "" {
 				errs = append(errs, prefix+".vlanInterface is required when vlan is non-zero")
 			} else {
+				if problem := validateLinuxInterfaceName(network.VLANInterface); problem != "" {
+					errs = append(errs, fmt.Sprintf("%s.vlanInterface %q is invalid: %s", prefix, network.VLANInterface, problem))
+				}
+				expected := fmt.Sprintf("%s.%d", network.Uplink, network.VLAN)
+				if network.VLANInterface != expected {
+					errs = append(errs, fmt.Sprintf("%s.vlanInterface must be the deterministic derived name %q", prefix, expected))
+				}
 				if network.VLANInterface == network.Uplink || network.VLANInterface == network.Bridge {
 					errs = append(errs, prefix+".vlanInterface must differ from uplink and bridge")
 				}
@@ -105,4 +127,20 @@ func Validate(spec Spec) error {
 	}
 	sort.Strings(errs)
 	return fmt.Errorf("invalid NetworkFabric: %s", strings.Join(errs, "; "))
+}
+
+func validateLinuxInterfaceName(name string) string {
+	if name == "" {
+		return "name must not be empty"
+	}
+	if len(name) > linuxInterfaceNameMaxBytes {
+		return fmt.Sprintf("name exceeds Linux IFNAMSIZ limit of %d bytes", linuxInterfaceNameMaxBytes)
+	}
+	if name == "." || name == ".." {
+		return "name must not be . or .."
+	}
+	if strings.ContainsAny(name, "/:\t\n\r ") {
+		return "name contains characters prohibited by Linux interface naming rules"
+	}
+	return ""
 }
