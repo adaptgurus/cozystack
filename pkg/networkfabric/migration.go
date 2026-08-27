@@ -6,7 +6,7 @@ import "sort"
 
 // MigrationReport summarizes whether every selected KubeVirt node can carry
 // the configured migration network. KubeVirt migrations must not be advertised
-// as ready when a possible destination lacks the bridge or has an MTU mismatch.
+// as ready when a possible destination lacks the exact VLAN/bridge topology.
 type MigrationReport struct {
 	Configured       bool
 	Network          string
@@ -40,17 +40,8 @@ func ValidateMigrationCompatibility(spec Spec, states []NodeState) MigrationRepo
 			report.UnavailableNodes[state.Name] = "Talos management API is unreachable"
 			continue
 		}
-		link, ok := state.Interfaces[migration.Bridge]
-		if !ok {
-			report.UnavailableNodes[state.Name] = "migration bridge is absent"
-			continue
-		}
-		if !link.Up {
-			report.UnavailableNodes[state.Name] = "migration bridge is down"
-			continue
-		}
-		if migration.MTU > 0 && link.MTU > 0 && link.MTU != migration.MTU {
-			report.UnavailableNodes[state.Name] = "migration bridge MTU mismatch"
+		if err := ValidateNetworkTopology(state, *migration); err != nil {
+			report.UnavailableNodes[state.Name] = err.Error()
 			continue
 		}
 		report.ReadyNodes = append(report.ReadyNodes, state.Name)
