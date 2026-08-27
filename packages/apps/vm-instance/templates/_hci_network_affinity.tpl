@@ -20,10 +20,9 @@ that label only on nodes that passed live Talos capability verification.
   {{- end -}}
 {{- end -}}
 
-{{- $dedicatedWindows := false -}}
-{{- if .Values._cluster.scheduling -}}
-  {{- $dedicatedWindows = eq (get .Values._cluster.scheduling "dedicatedNodesForWindowsVMs") "true" -}}
-{{- end -}}
+{{- $cluster := .Values._cluster | default (dict) -}}
+{{- $scheduling := get $cluster "scheduling" | default (dict) -}}
+{{- $dedicatedWindows := eq (toString (get $scheduling "dedicatedNodesForWindowsVMs" | default "false")) "true" -}}
 {{- $isWindows := hasPrefix "windows" (toString .Values.instanceProfile) -}}
 {{- $windowsRequired := and $dedicatedWindows $isWindows -}}
 {{- $windowsPreferred := and $dedicatedWindows (not $isWindows) -}}
