@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-template-controller-metrics
+  labels:
+    app.kubernetes.io/name: vm-template-controller
+spec:
+  selector:
+    app.kubernetes.io/name: vm-template-controller
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics
