@@ -24,11 +24,13 @@ import (
 func main() {
 	var metricsAddr, healthAddr, talosconfig string
 	var requeue, tryTimeout time.Duration
+	var allowControlPlaneNetworking bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics bind address")
 	flag.StringVar(&healthAddr, "health-probe-bind-address", ":8081", "health probe bind address")
 	flag.StringVar(&talosconfig, "talosconfig", "/var/run/secrets/talos.dev/config", "path to Talos client configuration")
 	flag.DurationVar(&requeue, "health-requeue", 2*time.Minute, "periodic NetworkFabric health recheck")
 	flag.DurationVar(&tryTimeout, "talos-try-timeout", 2*time.Minute, "Talos try-mode automatic rollback timeout")
+	flag.BoolVar(&allowControlPlaneNetworking, "allow-control-plane-networking", false, "allow NetworkFabric Talos mutation on Ready control-plane nodes explicitly selected by a fabric (disabled by default)")
 	flag.Parse()
 
 	scheme := runtime.NewScheme()
@@ -49,6 +51,9 @@ func main() {
 		Client:       mgr.GetClient(),
 		RequeueAfter: requeue,
 		AdapterFactory: func(node *corev1.Node) (networkfabric.TalosAdapter, error) {
+			if err := validateKubernetesNodeForTalosMutation(node, allowControlPlaneNetworking); err != nil {
+				return nil, err
+			}
 			endpoint, err := networkfabriccontroller.TalosEndpoint(node)
 			if err != nil {
 				return nil, err
@@ -87,6 +92,28 @@ func main() {
 		ctrl.Log.Error(err, "controller manager stopped")
 		os.Exit(1)
 	}
+}
+
+func validateKubernetesNodeForTalosMutation(node *corev1.Node, allowControlPlane bool) error {
+	if node == nil {
+		return fmt.Errorf("Kubernetes Node is required before Talos mutation")
+	}
+	ready := false
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			ready = condition.Status == corev1.ConditionTrue
+			break
+		}
+	}
+	if !ready {
+		return fmt.Errorf("Kubernetes Node %q is not Ready; refusing Talos network mutation", node.Name)
+	}
+	_, controlPlane := node.Labels["node-role.kubernetes.io/control-plane"]
+	_, legacyMaster := node.Labels["node-role.kubernetes.io/master"]
+	if (controlPlane || legacyMaster) && !allowControlPlane {
+		return fmt.Errorf("Kubernetes Node %q is a control-plane node; physical network mutation is disabled by default", node.Name)
+	}
+	return nil
 }
 
 func talosConfigReadyz(path string) healthz.Checker {
