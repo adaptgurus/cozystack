@@ -15,6 +15,7 @@ spec:
         app.kubernetes.io/name: network-fabric-controller
     spec:
       serviceAccountName: network-fabric-controller
+      enableServiceLinks: false
       priorityClassName: system-cluster-critical
       terminationGracePeriodSeconds: 30
       tolerations:
@@ -42,6 +43,10 @@ spec:
             app.kubernetes.io/name: network-fabric-controller
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -54,7 +59,6 @@ spec:
         - --health-requeue={{ .Values.networkFabricController.healthRequeue }}
         - --talos-try-timeout={{ .Values.networkFabricController.talosTryTimeout }}
         - --talosconfig=/var/run/secrets/talos.dev/config
-        - --talosctl=/usr/local/bin/talosctl
         ports:
         - name: metrics
           containerPort: {{ trimPrefix ":" .Values.networkFabricController.metricsBindAddress }}
@@ -85,16 +89,11 @@ spec:
         - name: talosconfig
           mountPath: /var/run/secrets/talos.dev
           readOnly: true
-        - name: tmp
-          mountPath: /tmp
       volumes:
       - name: talosconfig
         secret:
           secretName: {{ .Values.networkFabricController.talosconfig.secretName | quote }}
+          defaultMode: 0440
           items:
           - key: {{ .Values.networkFabricController.talosconfig.key | quote }}
             path: config
-      - name: tmp
-        emptyDir:
-          medium: Memory
-          sizeLimit: 16Mi
