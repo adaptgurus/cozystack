@@ -4,19 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-printf '\n[1/6] Checking patch whitespace against v1.6.2...\n'
+printf '\n[1/7] Checking patch whitespace against v1.6.2...\n'
 git diff --check v1.6.2...HEAD
 
-printf '\n[2/6] Running tenant resolver unit tests...\n'
+printf '\n[2/7] Running tenant resolver unit tests...\n'
 go test ./pkg/tenantresolver
 
-printf '\n[3/6] Linting external VM network chart...\n'
+printf '\n[3/7] Running tenant-scoped API option-provider tests...\n'
+go test ./pkg/registry/core/option
+
+printf '\n[4/7] Linting external VM network chart...\n'
 helm lint packages/apps/vm-network \
   --set bridge=br-vlan120 \
   --set vlan=120 \
   --set mtu=1500
 
-printf '\n[4/6] Rendering and validating external VM network NAD...\n'
+printf '\n[5/7] Rendering and validating external VM network NAD...\n'
 rendered="$(mktemp)"
 trap 'rm -f "$rendered"' EXIT
 helm template prod-vlan120 packages/apps/vm-network \
@@ -28,18 +31,18 @@ helm template prod-vlan120 packages/apps/vm-network \
 grep -q 'kind: NetworkAttachmentDefinition' "$rendered"
 grep -q 'name: prod-vlan120' "$rendered"
 grep -q 'namespace: tenant-test' "$rendered"
-grep -q '\\"type\\":\\"bridge\\"' "$rendered"
-grep -q '\\"bridge\\":\\"br-vlan120\\"' "$rendered"
-grep -q '\\"mtu\\":1500' "$rendered"
-grep -q '\\"ipam\\":{}' "$rendered"
-if grep -q '\\"vlan\\":120' "$rendered"; then
+grep -q '\"type\":\"bridge\"' "$rendered"
+grep -q '\"bridge\":\"br-vlan120\"' "$rendered"
+grep -q '\"mtu\":1500' "$rendered"
+grep -q '\"ipam\":{}' "$rendered"
+if grep -q '\"vlan\":120' "$rendered"; then
   echo 'FAIL: bridge CNI is applying VLAN 120; VLAN tagging must remain at the Talos node-network layer.' >&2
   exit 1
 fi
 grep -q 'vm-network.cozystack.io/vlan: "120"' "$rendered"
 grep -q 'vm-network.cozystack.io/vlan-owner: "talos-node-network"' "$rendered"
 
-printf '\n[5/6] Validating native VMNetwork package/application wiring...\n'
+printf '\n[6/7] Validating native VMNetwork package/application wiring...\n'
 source_file='packages/core/platform/sources/vm-network-application.yaml'
 iaas_file='packages/core/platform/templates/bundles/iaas-vm-network.yaml'
 rd_file='packages/system/vm-network-rd/cozyrds/vm-network.yaml'
@@ -56,7 +59,7 @@ if grep -q '\["spec","ipam"\]' "$rd_file"; then
   exit 1
 fi
 
-printf '\n[6/6] Running Helm regression tests when helm-unittest is installed...\n'
+printf '\n[7/7] Running Helm regression tests when helm-unittest is installed...\n'
 if helm plugin list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx unittest; then
   helm unittest packages/apps/vm-instance -f 'tests/*_test.yaml'
   helm unittest packages/apps/vm-network -f 'tests/*_test.yaml'
