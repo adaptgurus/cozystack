@@ -48,11 +48,58 @@ func TestValidateRejectsManagementReplacementAndUnsafeRollout(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNativeBridgeOverProtectedManagementUplink(t *testing.T) {
-	spec := validSpec()
-	spec.Networks = []Network{{Name: "native", Uplink: "eth0", Bridge: "br-native", VLAN: 0, MTU: 1500}}
-	if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "cannot be enslaved into a native bridge") {
-		t.Fatalf("expected protected native-uplink rejection, got %v", err)
+func TestValidateRejectsProtectedManagementUplinkForTaggedAndNativeNetworks(t *testing.T) {
+	for _, vlan := range []int{0, 120} {
+		spec := validSpec()
+		network := Network{Name: "unsafe", Uplink: "eth0", Bridge: "br-unsafe", VLAN: vlan, MTU: 1500}
+		if vlan > 0 {
+			network.VLANInterface = "eth0.120"
+		}
+		spec.Networks = []Network{network}
+		if err := Validate(spec); err == nil || !strings.Contains(err.Error(), "cannot be used as a NetworkFabric uplink") {
+			t.Fatalf("vlan=%d: expected protected-uplink rejection, got %v", vlan, err)
+		}
+	}
+}
+
+func TestValidateRejectsUnsafeLinuxInterfaceNamesAndNonDeterministicVLANName(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Spec)
+		want string
+	}{
+		{
+			name: "bridge too long",
+			edit: func(spec *Spec) { spec.Networks[0].Bridge = "bridge-name-is-too-long" },
+			want: "IFNAMSIZ",
+		},
+		{
+			name: "uplink whitespace",
+			edit: func(spec *Spec) {
+				spec.Networks[0].Uplink = "eth 1"
+				spec.Networks[0].VLANInterface = "eth 1.120"
+			},
+			want: "prohibited by Linux interface naming rules",
+		},
+		{
+			name: "vlan name not derived",
+			edit: func(spec *Spec) { spec.Networks[0].VLANInterface = "custom120" },
+			want: "deterministic derived name \"eth1.120\"",
+		},
+		{
+			name: "duplicate protected management interface",
+			edit: func(spec *Spec) { spec.ProtectedManagementInterfaces = []string{"eth0", "eth0"} },
+			want: "duplicate protectedManagementInterface",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validSpec()
+			tt.edit(&spec)
+			if err := Validate(spec); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected validation error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }
 
@@ -78,6 +125,75 @@ func TestPlanForNodeBuildsVLANBeforeBridgeAndInverseDeletesBridgeBeforeVLAN(t *t
 	if plan.RollbackOperations[0].Kind != DeleteBridge || plan.RollbackOperations[1].Kind != DeleteBridge ||
 		plan.RollbackOperations[2].Kind != DeleteVLAN || plan.RollbackOperations[3].Kind != DeleteVLAN {
 		t.Fatalf("new-network inverse must delete bridges before VLANs: %#v", plan.RollbackOperations)
+	}
+}
+
+func TestPlanForNodeRejectsDownUnknownMTUInsufficientMTUAndUnmanagedMaster(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Spec, *NodeState)
+		want string
+	}{
+		{
+			name: "down uplink",
+			edit: func(_ *Spec, state *NodeState) {
+				link := state.Interfaces["eth1"]
+				link.Up = false
+				state.Interfaces["eth1"] = link
+			},
+			want: "is down",
+		},
+		{
+			name: "unknown explicit mtu",
+			edit: func(_ *Spec, state *NodeState) {
+				link := state.Interfaces["eth1"]
+				link.MTU = 0
+				state.Interfaces["eth1"] = link
+			},
+			want: "MTU is unknown",
+		},
+		{
+			name: "insufficient mtu",
+			edit: func(spec *Spec, state *NodeState) {
+				spec.Networks = spec.Networks[:1]
+				spec.Networks[0].MTU = 9000
+				link := state.Interfaces["eth1"]
+				link.MTU = 1500
+				state.Interfaces["eth1"] = link
+			},
+			want: "cannot carry requested MTU 9000",
+		},
+		{
+			name: "unmanaged master",
+			edit: func(spec *Spec, state *NodeState) {
+				spec.Networks = spec.Networks[:1]
+				state.Interfaces["bond0"] = InterfaceState{Name: "bond0", Kind: "bond", Up: true, MTU: 1500, Members: []string{"eth1"}}
+			},
+			want: "already a member of unmanaged interface \"bond0\"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := validSpec()
+			state := validState()
+			tt.edit(&spec, &state)
+			if _, err := PlanForNode(spec, state); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected preflight failure containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestPlanForNodeAllowsUnknownMTUOnlyWhenNoExplicitMTURequested(t *testing.T) {
+	spec := validSpec()
+	spec.Networks = spec.Networks[:1]
+	spec.Networks[0].MTU = 0
+	state := validState()
+	link := state.Interfaces["eth1"]
+	link.MTU = 0
+	state.Interfaces["eth1"] = link
+	if _, err := PlanForNode(spec, state); err != nil {
+		t.Fatalf("MTU=0 should allow an unknown observed MTU, got %v", err)
 	}
 }
 
