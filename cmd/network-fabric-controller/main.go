@@ -50,6 +50,7 @@ func main() {
 	baseReconciler := &networkfabriccontroller.Reconciler{
 		Client:       mgr.GetClient(),
 		RequeueAfter: requeue,
+		TryTimeout:   tryTimeout,
 		AdapterFactory: func(node *corev1.Node) (networkfabric.TalosAdapter, error) {
 			if err := validateKubernetesNodeForTalosMutation(node, allowControlPlaneNetworking); err != nil {
 				return nil, err

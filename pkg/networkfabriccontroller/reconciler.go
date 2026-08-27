@@ -40,6 +40,7 @@ type Reconciler struct {
 	client.Client
 	AdapterFactory AdapterFactory
 	RequeueAfter   time.Duration
+	TryTimeout     time.Duration
 }
 
 type FabricReference struct {
@@ -81,6 +82,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	statuses := readNodeStatuses(fabric)
+	if result, handled, recoveryErr := r.recoverPendingTransaction(ctx, fabric, spec, statuses); handled || recoveryErr != nil {
+		return result, recoveryErr
+	}
 	references, err := r.referencingVMNetworks(ctx, fabric.GetName())
 	if err != nil {
 		_ = r.setFailureStatus(ctx, fabric, "ReferenceLookupFailed", err.Error())
@@ -157,9 +161,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 
 		orchestrator := networkfabric.Orchestrator{Adapter: adapter}
-		receipt, err := orchestrator.ReconcileNodeTransitionValidated(ctx, spec, previous, target.Name, func(state networkfabric.NodeState) error {
-			return ValidateNodeCapabilities(spec, state)
-		})
+		receipt, err := orchestrator.ReconcileNodeTransitionObserved(ctx, spec, previous, target.Name, func(state networkfabric.NodeState) error {
+			return networkfabric.ValidateTransitionTopology(state, previous, spec.Networks)
+		}, r.transactionObserver(ctx, fabric, statuses, target.Name, spec.Networks))
 		if err != nil {
 			return r.nodeFailed(ctx, fabric, statuses, target.Name, "NodeReconcileFailed", receipt, err)
 		}
@@ -245,6 +249,9 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, fabric *unstructured.U
 	}
 
 	statuses := readNodeStatuses(fabric)
+	if result, handled, recoveryErr := r.recoverPendingTransaction(ctx, fabric, spec, statuses); handled || recoveryErr != nil {
+		return result, recoveryErr
+	}
 	for _, name := range sortedStatusNames(statuses) {
 		previous := ownedNetworks(statuses[name], spec, fabric.GetGeneration())
 		if len(previous) == 0 {
@@ -255,6 +262,19 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, fabric *unstructured.U
 			return ctrl.Result{Requeue: true}, nil
 		}
 		return r.cleanupNode(ctx, fabric, spec, statuses, name, previous, "Deleting")
+	}
+
+	// Re-check authoritative VMNetwork references immediately before removing
+	// the finalizer. A VMNetwork may have been created after the first
+	// lookup while node cleanup was progressing.
+	references, err = r.referencingVMNetworks(ctx, fabric.GetName())
+	if err != nil {
+		_ = r.setFailureStatus(ctx, fabric, "ReferenceLookupFailed", err.Error())
+		return ctrl.Result{RequeueAfter: r.requeue()}, nil
+	}
+	if len(references) > 0 {
+		_ = r.setFailureStatus(ctx, fabric, "FabricInUse", formatReferences("cannot remove NetworkFabric finalizer while VMNetwork references exist", references))
+		return ctrl.Result{RequeueAfter: r.requeue()}, nil
 	}
 
 	base := fabric.DeepCopy()
@@ -293,9 +313,9 @@ func (r *Reconciler) cleanupNode(ctx context.Context, fabric *unstructured.Unstr
 	cleanupSpec := spec
 	cleanupSpec.Networks = nil
 	orchestrator := networkfabric.Orchestrator{Adapter: adapter}
-	receipt, err := orchestrator.ReconcileNodeTransitionValidated(ctx, cleanupSpec, previous, nodeName, func(state networkfabric.NodeState) error {
-		return networkfabric.ValidateNetworksAbsent(state, previous)
-	})
+	receipt, err := orchestrator.ReconcileNodeTransitionObserved(ctx, cleanupSpec, previous, nodeName, func(state networkfabric.NodeState) error {
+		return networkfabric.ValidateTransitionTopology(state, previous, nil)
+	}, r.transactionObserver(ctx, fabric, statuses, nodeName, nil))
 	if err != nil {
 		return r.nodeFailed(ctx, fabric, statuses, nodeName, reason+"CleanupFailed", receipt, err)
 	}
@@ -365,6 +385,10 @@ type NodeStatus struct {
 	AppliedNetworks     []networkfabric.Network
 	LastVerifiedAt      string
 	RollbackState       string
+	TransactionPhase    string
+	TransactionRevision string
+	TransactionDeadline string
+	TransactionNetworks []networkfabric.Network
 }
 
 func readNodeStatuses(obj *unstructured.Unstructured) map[string]NodeStatus {
@@ -383,16 +407,24 @@ func readNodeStatuses(obj *unstructured.Unstructured) map[string]NodeStatus {
 		message, _, _ := unstructured.NestedString(m, "message")
 		verified, _, _ := unstructured.NestedString(m, "lastVerifiedAt")
 		rollback, _, _ := unstructured.NestedString(m, "rollbackState")
-		applied := parseStatusNetworks(m)
+		txPhase, _, _ := unstructured.NestedString(m, "transactionPhase")
+		txRevision, _, _ := unstructured.NestedString(m, "transactionRevision")
+		txDeadline, _, _ := unstructured.NestedString(m, "transactionDeadline")
+		applied := parseNamedStatusNetworks(m, "appliedNetworks")
+		txNetworks := parseNamedStatusNetworks(m, "transactionNetworks")
 		if name != "" {
-			out[name] = NodeStatus{Name: name, Phase: phase, ObservedGeneration: gen, LastAppliedRevision: revision, ManagementReachable: reachable, Message: message, AppliedNetworks: applied, LastVerifiedAt: verified, RollbackState: rollback}
+			out[name] = NodeStatus{Name: name, Phase: phase, ObservedGeneration: gen, LastAppliedRevision: revision, ManagementReachable: reachable, Message: message, AppliedNetworks: applied, LastVerifiedAt: verified, RollbackState: rollback, TransactionPhase: txPhase, TransactionRevision: txRevision, TransactionDeadline: txDeadline, TransactionNetworks: txNetworks}
 		}
 	}
 	return out
 }
 
 func parseStatusNetworks(node map[string]interface{}) []networkfabric.Network {
-	items, _, _ := unstructured.NestedSlice(node, "appliedNetworks")
+	return parseNamedStatusNetworks(node, "appliedNetworks")
+}
+
+func parseNamedStatusNetworks(node map[string]interface{}, field string) []networkfabric.Network {
+	items, _, _ := unstructured.NestedSlice(node, field)
 	out := make([]networkfabric.Network, 0, len(items))
 	for _, item := range items {
 		m, ok := item.(map[string]interface{})
@@ -466,6 +498,10 @@ func (r *Reconciler) writeStatus(ctx context.Context, fabric *unstructured.Unstr
 			"appliedNetworks":     statusNetworks(st.AppliedNetworks),
 			"lastVerifiedAt":      st.LastVerifiedAt,
 			"rollbackState":       st.RollbackState,
+			"transactionPhase":    st.TransactionPhase,
+			"transactionRevision": st.TransactionRevision,
+			"transactionDeadline": st.TransactionDeadline,
+			"transactionNetworks": statusNetworks(st.TransactionNetworks),
 		}
 		nodes = append(nodes, item)
 	}
