@@ -19,6 +19,7 @@ type Config struct {
 type ConfigSpec struct {
 	// The source used to create the disk or optical-media object.
 	// +kubebuilder:default:={}
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="source is immutable"
 	Source Source `json:"source"`
 	// Defines if this tenant object is optical media. Platform source.iso entries are automatically optical even when this value is false.
 	// +kubebuilder:default:=false
