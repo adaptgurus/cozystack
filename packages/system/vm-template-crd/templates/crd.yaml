@@ -89,6 +89,8 @@ spec:
                 excludeOpticalMedia:
                   type: boolean
                   default: true
+                  enum: [true]
+                  description: Reusable templates always remove CD/DVD installer and driver media before becoming Ready.
                 allowSecretReferences:
                   type: boolean
                   default: true
@@ -113,7 +115,7 @@ spec:
                   maxLength: 63
                 templateRef:
                   type: string
-                  maxLength: 63
+                  maxLength: 253
                 sourceVMRef:
                   type: string
                   maxLength: 253
