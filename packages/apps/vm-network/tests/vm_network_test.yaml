@@ -1,0 +1,83 @@
+suite: vm-network external bridge
+
+templates:
+  - templates/network-attachment-definition.yaml
+
+release:
+  name: prod-vlan120
+  namespace: tenant-test
+
+set:
+  bridge: br-vlan120
+  vlan: 120
+  mtu: 1500
+  description: Production VLAN 120
+
+tests:
+  - it: renders a tenant-scoped bridge NAD with VLAN and MTU
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: NetworkAttachmentDefinition
+      - equal:
+          path: metadata.name
+          value: prod-vlan120
+      - equal:
+          path: metadata.namespace
+          value: tenant-test
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/bridge"]
+          value: br-vlan120
+      - equal:
+          path: metadata.annotations["vm-network.cozystack.io/vlan"]
+          value: "120"
+      - matchRegex:
+          path: spec.config
+          pattern: '"type":"bridge"'
+      - matchRegex:
+          path: spec.config
+          pattern: '"bridge":"br-vlan120"'
+      - matchRegex:
+          path: spec.config
+          pattern: '"vlan":120'
+      - matchRegex:
+          path: spec.config
+          pattern: '"mtu":1500'
+      - matchRegex:
+          path: spec.config
+          pattern: '"ipam":\{\}'
+
+  - it: records network metadata for inventory and diagnostics
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: data.networkName
+          value: tenant-test/prod-vlan120
+      - equal:
+          path: data.addressing
+          value: guest-or-external-dhcp
+
+  - it: rejects missing physical bridge
+    set:
+      bridge: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: bridge is required
+
+  - it: rejects invalid VLAN
+    set:
+      bridge: br-test
+      vlan: 4095
+    asserts:
+      - failedTemplate:
+          errorMessage: vlan must be between 0 and 4094
+
+  - it: rejects invalid MTU
+    set:
+      bridge: br-test
+      mtu: 10000
+    asserts:
+      - failedTemplate:
+          errorMessage: mtu must be 0 or between 576 and 9216
