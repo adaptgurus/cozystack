@@ -1,0 +1,169 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vmtemplateoperations.virtualization.cozystack.io
+spec:
+  group: virtualization.cozystack.io
+  scope: Namespaced
+  names:
+    kind: VMTemplateOperation
+    listKind: VMTemplateOperationList
+    plural: vmtemplateoperations
+    singular: vmtemplateoperation
+    shortNames:
+      - vmto
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Scope
+          type: string
+          jsonPath: .spec.scope
+        - name: Source VM
+          type: string
+          jsonPath: .spec.sourceVM
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              additionalProperties: false
+              required:
+                - sourceVM
+                - templateName
+              x-kubernetes-validations:
+                - rule: "self.scope == 'Global' ? has(self.sourceNamespace) && self.sourceNamespace != '' : !has(self.sourceNamespace) || self.sourceNamespace == ''"
+                  message: "sourceNamespace is required only for Global template promotion; Tenant templates always use their own namespace"
+              properties:
+                sourceVM:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                  description: User-visible Cozystack VMInstance name, not a raw arbitrary KubeVirt VM name.
+                sourceNamespace:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                  description: Authoritative source workload namespace for platform-admin Global promotion only.
+                templateName:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                mode:
+                  type: string
+                  enum: [Copy, Convert]
+                  default: Copy
+                  description: Convert retires the source VMInstance only after the captured template is verified Ready.
+                scope:
+                  type: string
+                  enum: [Tenant, Global]
+                  default: Tenant
+                excludeOpticalMedia:
+                  type: boolean
+                  default: true
+                allowSecretReferences:
+                  type: boolean
+                  default: true
+                  description: Tenant-local templates may retain same-namespace secret references; Global promotion must set this false.
+                requireHalted:
+                  type: boolean
+                  default: true
+                  enum: [true]
+                  description: Production template capture is offline-only until application-consistent online capture is separately certified.
+            status:
+              type: object
+              additionalProperties: false
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                phase:
+                  type: string
+                  enum: [Pending, Preflight, Capturing, Converting, Ready, Failed, Deleting]
+                requestRef:
+                  type: string
+                  maxLength: 63
+                templateRef:
+                  type: string
+                  maxLength: 63
+                sourceVMRef:
+                  type: string
+                  maxLength: 253
+                converted:
+                  type: boolean
+                persistentVolumes:
+                  type: array
+                  maxItems: 64
+                  items:
+                    type: string
+                    maxLength: 63
+                excludedOpticalVolumes:
+                  type: array
+                  maxItems: 16
+                  items:
+                    type: string
+                    maxLength: 63
+                message:
+                  type: string
+                  maxLength: 2048
+                lastVerifiedAt:
+                  type: string
+                  format: date-time
+                conditions:
+                  type: array
+                  maxItems: 8
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - type
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - reason
+                      - message
+                      - lastTransitionTime
+                    properties:
+                      type:
+                        type: string
+                        maxLength: 63
+                      status:
+                        type: string
+                        enum: ["True", "False", Unknown]
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                        minLength: 1
+                        maxLength: 128
+                      message:
+                        type: string
+                        maxLength: 1024
