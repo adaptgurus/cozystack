@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("create dynamic Kubernetes client: %w", err))
 	}
-	backend := &vmtemplate.KubeVirtTemplateBackend{Client: dyn}
+	nativeBackend := &vmtemplate.KubeVirtTemplateBackend{Client: dyn}
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -49,6 +49,7 @@ func main() {
 		panic(err)
 	}
 
+	backend := &vmtemplatecontroller.SanitizingBackend{Backend: nativeBackend, Client: mgr.GetClient()}
 	reconciler := &vmtemplatecontroller.Reconciler{Client: mgr.GetClient(), Backend: backend, RequeueAfter: requeue}
 	op := &unstructured.Unstructured{}
 	op.SetGroupVersionKind(vmtemplatecontroller.OperationGVK)
