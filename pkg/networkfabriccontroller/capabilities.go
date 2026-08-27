@@ -14,16 +14,13 @@ import (
 	"github.com/cozystack/cozystack/pkg/networkfabric"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const capabilityLabelPrefix = "networkfabric.cozystack.io/"
 
-// CapabilityLabelKey is the scheduling contract between a NetworkFabric and
-// tenant VMNetwork objects. It fingerprints all dataplane fields relevant to
-// node compatibility, so a bridge/VLAN/MTU change produces a new capability
-// rather than leaving a stale scheduling signal valid.
 func CapabilityLabelKey(fabricName string, network networkfabric.Network) string {
 	canonical := fmt.Sprintf("%s|%s|%s|%d|%d", fabricName, network.Name, network.Bridge, network.VLAN, network.MTU)
 	sum := sha256.Sum256([]byte(canonical))
@@ -35,10 +32,6 @@ func capabilityOwner(fabricName string) string {
 	return "fabric-" + hex.EncodeToString(sum[:4])
 }
 
-// CapabilityReconciler publishes only verified fabric capabilities onto nodes.
-// VM scheduling consumes these labels through VMNetwork NAD metadata. A node
-// loses its labels as soon as the NetworkFabric status stops reporting that node
-// Ready at the current generation.
 type CapabilityReconciler struct {
 	client.Client
 	RequeueAfter time.Duration
@@ -53,6 +46,9 @@ func (r *CapabilityReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err
 	}
+	if !fabric.GetDeletionTimestamp().IsZero() {
+		return ctrl.Result{}, r.clearFabricLabels(ctx, fabric.GetName())
+	}
 
 	spec, err := ParseSpec(fabric)
 	if err != nil {
@@ -60,14 +56,16 @@ func (r *CapabilityReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	statusByNode := readCapabilityStatuses(fabric)
+	selector := labels.SelectorFromSet(spec.NodeSelector)
 	var nodes corev1.NodeList
-	if err := r.List(ctx, &nodes, client.MatchingLabels(spec.NodeSelector)); err != nil {
+	if err := r.List(ctx, &nodes); err != nil {
 		return ctrl.Result{}, err
 	}
 	sort.Slice(nodes.Items, func(i, j int) bool { return nodes.Items[i].Name < nodes.Items[j].Name })
 	for i := range nodes.Items {
 		status := statusByNode[nodes.Items[i].Name]
-		ready := status.Phase == "Ready" && status.ObservedGeneration == fabric.GetGeneration()
+		selected := selector.Matches(labels.Set(nodes.Items[i].Labels))
+		ready := selected && status.Phase == "Ready" && status.ObservedGeneration == fabric.GetGeneration()
 		if err := r.syncNode(ctx, &nodes.Items[i], fabric.GetName(), spec.Networks, ready); err != nil {
 			return ctrl.Result{}, err
 		}
