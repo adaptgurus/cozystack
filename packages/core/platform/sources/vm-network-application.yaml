@@ -14,6 +14,7 @@ spec:
       dependsOn:
         - cozystack.networking
         - cozystack.kubevirt
+        - cozystack.cert-manager
         # cozystack-engine ships the ApplicationDefinition CRD rendered by the *-rd component below.
         - cozystack.cozystack-engine
       components:
@@ -24,3 +25,8 @@ spec:
           install:
             namespace: cozy-system
             releaseName: vm-network-rd
+        - name: vm-network-admission
+          path: system/vm-network-admission
+          install:
+            namespace: cozy-system
+            releaseName: vm-network-admission
