@@ -154,4 +154,4 @@ helm unittest packages/system/kubevirt
 printf '\n[12/12] Rechecking whitespace after all generators/tests...\n'
 git diff --check "${baseline}...HEAD"
 
-printf '\nHCI v1.6.2 repository gate PASSED.\n
+printf '\nHCI v1.6.2 repository gate PASSED.\n'
