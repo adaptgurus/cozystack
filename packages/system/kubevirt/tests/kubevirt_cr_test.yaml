@@ -5,7 +5,7 @@ release:
   name: kubevirt
   namespace: cozy-kubevirt
 tests:
-  - it: keeps the production default feature-gate set and omits optional platform configuration when values are empty
+  - it: keeps the production default feature-gate set including native VM templates and omits optional platform configuration when values are empty
     asserts:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
@@ -17,6 +17,11 @@ tests:
           - CPUManager
           - GPU
           - VMExport
+          - Snapshot
+          - Template
+      - equal:
+          path: spec.configuration.virtTemplateDeployment.enabled
+          value: true
       - notExists:
           path: spec.configuration.developerConfiguration.cpuAllocationRatio
       - notExists:
@@ -58,6 +63,8 @@ tests:
           - CPUManager
           - GPU
           - VMExport
+          - Snapshot
+          - Template
           - HostDevices
           - WorkloadEncryptionSEV
 
