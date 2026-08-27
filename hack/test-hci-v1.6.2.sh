@@ -82,10 +82,11 @@ expect_vmnetwork_schema_failure 'minLength: got 0, want 1' --set-string bridge='
 expect_vmnetwork_schema_failure 'maximum: got 4,095, want 4,094' --set bridge=br-test --set vlan=4095 --set mtu=1500
 expect_vmnetwork_schema_failure 'maximum: got 10,000, want 9,216' --set bridge=br-test --set vlan=120 --set mtu=10000
 
-printf '\n[7/12] Validating native VMNetwork package/application wiring...\n'
+printf '\n[7/12] Validating native VMNetwork and VM media application wiring...\n'
 source_file='packages/core/platform/sources/vm-network-application.yaml'
 iaas_file='packages/core/platform/templates/bundles/iaas-vm-network.yaml'
 rd_file='packages/system/vm-network-rd/cozyrds/vm-network.yaml'
+vm_rd_file='packages/system/vm-instance-rd/cozyrds/vm-instance.yaml'
 
 grep -q '^apiVersion: cozystack.io/v1alpha1$' "$source_file"
 grep -q '^  name: cozystack.vm-network-application$' "$source_file"
@@ -100,6 +101,9 @@ if grep -q '\["spec","ipam"\]' "$rd_file"; then
   echo 'FAIL: VMNetwork dashboard exposes ipam although external VLAN IPAM is intentionally guest/external-DHCP managed.' >&2
   exit 1
 fi
+grep -q '"cdroms"' packages/apps/vm-instance/values.schema.json
+grep -q '"cdroms"' "$vm_rd_file"
+grep -Fq '["spec", "cdroms"]' "$vm_rd_file"
 
 printf '\n[8/12] Linting HCI system charts...\n'
 helm lint packages/system/vm-network-admission --set image=example.invalid/vm-network-admission:test
@@ -134,6 +138,11 @@ grep -q 'name: network-fabric-controller-metrics' "$controller_rendered"
 grep -q 'topologySpreadConstraints:' "$controller_rendered"
 grep -q 'migrations:' "$kubevirt_rendered"
 grep -q 'network: "networkfabric-fabric-prod-migration"' "$kubevirt_rendered"
+grep -q 'DeclarativeHotplugVolumes' "$kubevirt_rendered"
+if grep -Eq '^[[:space:]]*- HotplugVolumes[[:space:]]*$' "$kubevirt_rendered"; then
+  echo 'FAIL: deprecated KubeVirt HotplugVolumes feature gate is still enabled.' >&2
+  exit 1
+fi
 
 printf '\n[10/12] Validating fail-closed admission and NetworkFabric platform wiring...\n'
 helm template vm-network-admission packages/system/vm-network-admission \
