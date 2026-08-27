@@ -15,8 +15,8 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                ctrl.MetricsServerOptions{BindAddress: metricsAddr},
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: healthAddr,
 		LeaderElection:         true,
 		LeaderElectionID:       "network-fabric-controller.infrastructure.cozystack.io",
@@ -49,7 +49,9 @@ func main() {
 		RequeueAfter: requeue,
 		AdapterFactory: func(node *corev1.Node) (networkfabric.TalosAdapter, error) {
 			endpoint, err := networkfabriccontroller.TalosEndpoint(node)
-			if err != nil { return nil, err }
+			if err != nil {
+				return nil, err
+			}
 			return &networkfabric.TalosctlAdapter{Binary: talosctl, Talosconfig: talosconfig, Endpoint: endpoint, TryTimeout: tryTimeout}, nil
 		},
 	}
@@ -59,12 +61,14 @@ func main() {
 	if err := ctrl.NewControllerManagedBy(mgr).For(fabric).Complete(reconciler); err != nil {
 		panic(err)
 	}
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil { panic(err) }
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil { panic(err) }
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		panic(err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		panic(err)
+	}
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "controller manager stopped")
 		os.Exit(1)
 	}
 }
-
-var _ client.Client
