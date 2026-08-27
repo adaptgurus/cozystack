@@ -1,11 +1,17 @@
-# Name is the Helm release name. Install this chart into the target tenant namespace.
-# The physical Linux bridge must already exist on every VM-capable node that may run a VM using this network.
+# External VM network published into the tenant namespace.
+#
+# IMPORTANT: bridge must already exist on every VM-capable Talos node that may
+# schedule a VM using this network. For a tagged physical VLAN, create the VLAN
+# at the Talos node layer and attach that VLAN interface to this Linux bridge.
+# The tenant NAD intentionally does NOT apply an additional VLAN tag.
 bridge: ""
 
-# Optional VLAN ID. Use 0 or omit to send untagged traffic through the bridge.
+# VLAN is inventory/validation metadata describing the physical fabric backing
+# this bridge. It is not inserted into the bridge-CNI config because tagging is
+# performed by the Talos VLAN interface underneath the Linux bridge.
 vlan: 0
 
-# Optional MTU. Use 0 to leave MTU selection to the CNI/bridge environment.
+# Optional expected MTU. Use 0 to inherit the node bridge/CNI environment.
 mtu: 0
 
 # Optional human-readable description stored as metadata.
@@ -16,6 +22,5 @@ promiscMode: false
 macspoofchk: false
 hairpinMode: false
 
-# External L2 networks intentionally do not allocate guest addresses.
-# Configure guest IP, gateway and DNS inside the VM or through an external DHCP service.
-ipam: {}
+# External L2 networks always use an empty CNI IPAM configuration. Guest IP,
+# gateway and DNS are configured in the VM or supplied by external DHCP.
