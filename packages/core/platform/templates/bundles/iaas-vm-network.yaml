@@ -1,0 +1,3 @@
+{{- if and .Values.bundles.iaas.enabled (or (eq .Values.bundles.system.variant "isp-full") (eq .Values.bundles.system.variant "isp-full-generic")) }}
+{{include "cozystack.platform.package" (list "cozystack.vm-network-application" "kubevirt" $) }}
+{{- end }}
