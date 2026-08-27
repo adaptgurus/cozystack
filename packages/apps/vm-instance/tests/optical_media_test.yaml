@@ -50,7 +50,7 @@ kubernetesProvider:
         annotations:
           vm-disk.cozystack.io/optical: "false"
 tests:
-  - it: renders multiple optical disks as SATA CD-ROMs while preserving normal disks
+  - it: renders multiple optical disks as read-only SATA CD-ROMs while preserving normal disks
     asserts:
       - isKind:
           of: VirtualMachine
@@ -61,6 +61,9 @@ tests:
           path: spec.template.spec.domain.devices.disks[0].cdrom.bus
           value: sata
       - equal:
+          path: spec.template.spec.domain.devices.disks[0].cdrom.readonly
+          value: true
+      - equal:
           path: spec.template.spec.domain.devices.disks[0].bootOrder
           value: 1
       - equal:
@@ -69,6 +72,9 @@ tests:
       - equal:
           path: spec.template.spec.domain.devices.disks[1].cdrom.bus
           value: sata
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].cdrom.readonly
+          value: true
       - equal:
           path: spec.template.spec.domain.devices.disks[1].bootOrder
           value: 2
@@ -84,3 +90,21 @@ tests:
       - equal:
           path: spec.template.spec.volumes[1].dataVolume.name
           value: vm-disk-virtio-drivers
+
+  - it: rejects an incompatible bus for optical media
+    set:
+      disks:
+        - name: windows-install
+          bus: virtio
+    asserts:
+      - failedTemplate:
+          errorMessage: Optical disk windows-install requires the sata bus
+
+  - it: rejects duplicate disk or media attachments
+    set:
+      disks:
+        - name: windows-install
+        - name: windows-install
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Duplicate disk attachment: windows-install'
