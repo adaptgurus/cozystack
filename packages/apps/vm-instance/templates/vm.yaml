@@ -7,6 +7,13 @@
 {{- if and (not .Values.instanceType) (not (and .Values.resources .Values.resources.cpu .Values.resources.sockets .Values.resources.memory)) }}
 {{-   fail "Either instanceType or resources (cpu, sockets, memory) must be specified" }}
 {{- end }}
+{{- $seenDisks := dict }}
+{{- range $disk := .Values.disks }}
+{{-   if hasKey $seenDisks $disk.name }}
+{{-     fail (printf "Duplicate disk attachment: %s" $disk.name) }}
+{{-   end }}
+{{-   $_ := set $seenDisks $disk.name true }}
+{{- end }}
 {{- $networks := .Values.networks | default .Values.subnets }}
 
 apiVersion: kubevirt.io/v1
@@ -74,6 +81,7 @@ spec:
             {{- if $isOptical }}
             cdrom:
               bus: sata
+              readonly: true
             {{- else if $disk.bus }}
             disk:
               bus: {{ $disk.bus }}
