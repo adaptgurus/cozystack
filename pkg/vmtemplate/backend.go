@@ -44,15 +44,17 @@ type TemplateRef struct {
 }
 
 type CreateRequest struct {
-	Namespace    string
-	RequestName  string
-	TemplateName string
-	SourceVMName string
+	// Namespace is where the native template request/template is created.
+	Namespace string
+	// SourceNamespace defaults to Namespace. It is different only for a
+	// platform-admin Global promotion operation.
+	SourceNamespace string
+	RequestName     string
+	TemplateName    string
+	SourceVMName    string
 }
 
 // TemplateState has an empty RequestName when no capture request exists yet.
-// This lets a controller restart distinguish "not started" from "in progress"
-// without relying on process-local state.
 type TemplateState struct {
 	RequestName  string
 	TemplateName string
@@ -67,10 +69,6 @@ type Backend interface {
 	DeleteTemplate(context.Context, TemplateRef, string) error
 }
 
-// KubeVirtTemplateBackend uses unstructured/dynamic clients so the stable
-// Cozystack product API is not compiled against KubeVirt's alpha template Go
-// API. The exact v1.8.4 resource shape is still verified by tests and the HCI
-// feature-gate render gate.
 type KubeVirtTemplateBackend struct {
 	Client dynamic.Interface
 }
@@ -126,6 +124,10 @@ func (b *KubeVirtTemplateBackend) CreateTemplate(ctx context.Context, req Create
 	if req.Namespace == "" || req.RequestName == "" || req.TemplateName == "" || req.SourceVMName == "" {
 		return TemplateState{}, fmt.Errorf("namespace, requestName, templateName and sourceVMName are required")
 	}
+	sourceNamespace := req.SourceNamespace
+	if sourceNamespace == "" {
+		sourceNamespace = req.Namespace
+	}
 	caps, err := b.DiscoverCapabilities(ctx)
 	if err != nil {
 		return TemplateState{}, err
@@ -146,7 +148,7 @@ func (b *KubeVirtTemplateBackend) CreateTemplate(ctx context.Context, req Create
 		},
 		"spec": map[string]interface{}{
 			"virtualMachineRef": map[string]interface{}{
-				"namespace": req.Namespace,
+				"namespace": sourceNamespace,
 				"name":      req.SourceVMName,
 			},
 			"templateName": req.TemplateName,
@@ -206,11 +208,6 @@ func (b *KubeVirtTemplateBackend) VerifyTemplate(ctx context.Context, ref Templa
 	return state, nil
 }
 
-// DeleteTemplate removes both native objects owned by one Cozystack template
-// operation. Deletion is idempotent and intentionally does not touch snapshots
-// or source VMDisk/PVC data by name; KubeVirt's template controller owns its
-// generated storage lifecycle and reference protection is enforced above this
-// adapter.
 func (b *KubeVirtTemplateBackend) DeleteTemplate(ctx context.Context, ref TemplateRef, requestName string) error {
 	if b == nil || b.Client == nil {
 		return fmt.Errorf("Kubernetes dynamic client is required")
@@ -231,10 +228,14 @@ func verifyExistingRequest(obj *unstructured.Unstructured, req CreateRequest) er
 	if obj == nil {
 		return fmt.Errorf("existing template request is nil")
 	}
+	expectedSourceNamespace := req.SourceNamespace
+	if expectedSourceNamespace == "" {
+		expectedSourceNamespace = req.Namespace
+	}
 	ns, _, _ := unstructured.NestedString(obj.Object, "spec", "virtualMachineRef", "namespace")
 	name, _, _ := unstructured.NestedString(obj.Object, "spec", "virtualMachineRef", "name")
 	templateName, _, _ := unstructured.NestedString(obj.Object, "spec", "templateName")
-	if ns != req.Namespace || name != req.SourceVMName || templateName != req.TemplateName {
+	if ns != expectedSourceNamespace || name != req.SourceVMName || templateName != req.TemplateName {
 		return fmt.Errorf("existing VirtualMachineTemplateRequest %s/%s has different immutable source/template intent", req.Namespace, req.RequestName)
 	}
 	return nil
