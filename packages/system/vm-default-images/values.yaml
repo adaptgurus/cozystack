@@ -2,7 +2,7 @@
 ## @section Global Golden Image Collection
 ##
 
-## @param {string} storageClass - Default StorageClass for all images. If empty, uses the cluster default StorageClass.
+## @param {string} storageClass - Default StorageClass for all images and ISO media. If empty, uses the cluster default StorageClass.
 ## NOTE: The default set of images requires approximately 320Gi of storage (16 images × 20Gi each).
 ## Adjust the image list or per-image storage sizes to match your cluster capacity.
 storageClass: "replicated"
@@ -167,3 +167,59 @@ images:
       version: "3.21"
     architecture: amd64
     description: "Alpine Linux 3.21 cloud image (cloud-init)"
+
+##
+## @section Global ISO Library
+##
+## Platform administrators may publish installation, driver, rescue, appliance,
+## or custom ISO media here. No proprietary Windows installation URL is shipped
+## by default. HTTP imports and CDI upload targets are both supported.
+##
+## @typedef {struct} ISOSourceHTTP - HTTP import source for a platform ISO.
+## @field {string} url - HTTP(S) URL of the ISO.
+## @typedef {struct} ISOSourceUpload - CDI upload source for a platform ISO.
+## @typedef {struct} ISOSource - Exactly one source for a platform ISO.
+## @field {*ISOSourceHTTP} [http] - Import ISO over HTTP(S).
+## @field {*ISOSourceUpload} [upload] - Create a CDI upload target.
+## @typedef {struct} GlobalISO - A platform ISO Library entry.
+## @field {string} name - Stable catalog name.
+## @field {ISOSource} source - Exactly one of http or upload.
+## @field {quantity} [storage] - Storage capacity allocated to the ISO; defaults to 8Gi.
+## @field {string} [storageClass] - StorageClass override.
+## @field {string} [category] - installer, drivers, rescue, appliance, or custom.
+## @field {ImageOS} [os] - Optional operating-system metadata.
+## @field {string} [architecture] - CPU architecture metadata.
+## @field {string} [description] - Human-readable catalog description.
+##
+## @param {[]GlobalISO} isos - Platform ISO Library entries provisioned in cozy-public.
+isos: []
+## Examples (intentionally disabled by default):
+## isos:
+##   - name: linux-installer
+##     source:
+##       http:
+##         url: https://mirror.example.invalid/linux-installer.iso
+##     category: installer
+##     os:
+##       family: Linux
+##     architecture: amd64
+##   - name: windows-server-2025
+##     source:
+##       upload: {}
+##     category: installer
+##     os:
+##       family: Windows
+##       name: Windows Server
+##       version: "2025"
+##     architecture: amd64
+##   - name: virtio-win
+##     source:
+##       upload: {}
+##     category: drivers
+##     os:
+##       family: Windows
+##     architecture: amd64
+##   - name: rescue-media
+##     source:
+##       upload: {}
+##     category: rescue
