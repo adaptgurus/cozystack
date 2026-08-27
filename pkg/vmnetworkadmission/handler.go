@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -27,21 +28,31 @@ const (
 	applicationNameLabel  = "apps.cozystack.io/application.name"
 )
 
-var helmReleaseGVR = schema.GroupVersionResource{
-	Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
-}
+var (
+	helmReleaseGVR = schema.GroupVersionResource{
+		Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
+	}
+	networkFabricGVR = schema.GroupVersionResource{
+		Group: "infrastructure.cozystack.io", Version: "v1alpha1", Resource: "networkfabrics",
+	}
+)
 
-// DependencyReader resolves tenant-local VMInstance applications that reference
-// a VMNetwork. Implementations MUST scope the lookup to the supplied namespace;
-// cross-tenant reads would turn a safety check into an information leak.
 type DependencyReader interface {
 	ReferencingVMInstances(ctx context.Context, namespace, networkName string) ([]string, error)
 }
 
-// DynamicDependencyReader reads the HelmRelease backing objects used by the
-// Cozystack Application API. VMInstance network attachments live in
-// spec.values.networks; spec.values.subnets is retained for the v1.6 legacy
-// compatibility path.
+type FabricBinding struct {
+	FabricRef     string
+	FabricNetwork string
+	Bridge        string
+	VLAN          int64
+	MTU           int64
+}
+
+type FabricReader interface {
+	ValidateBinding(ctx context.Context, binding FabricBinding) (valid bool, message string, err error)
+}
+
 type DynamicDependencyReader struct {
 	dynamic dynamic.Interface
 }
@@ -104,15 +115,110 @@ func referencesNetwork(values map[string]interface{}, networkName string) bool {
 	return false
 }
 
-// Handler validates disruptive VMNetwork changes and deletion. It deliberately
-// does not validate host bridge existence: that belongs to the NetworkFabric / 
-// Talos platform reconciler, not a tenant-scoped admission request.
-type Handler struct {
-	dependencies DependencyReader
+type DynamicFabricReader struct {
+	dynamic dynamic.Interface
 }
 
-func NewHandler(dependencies DependencyReader) *Handler {
-	return &Handler{dependencies: dependencies}
+func NewDynamicFabricReader(dynamicClient dynamic.Interface) *DynamicFabricReader {
+	return &DynamicFabricReader{dynamic: dynamicClient}
+}
+
+func (r *DynamicFabricReader) ValidateBinding(ctx context.Context, binding FabricBinding) (bool, string, error) {
+	fabric, err := r.dynamic.Resource(networkFabricGVR).Get(ctx, binding.FabricRef, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, fmt.Sprintf("NetworkFabric %q does not exist", binding.FabricRef), nil
+		}
+		return false, "", fmt.Errorf("get NetworkFabric %q: %w", binding.FabricRef, err)
+	}
+
+	phase, _, _ := unstructured.NestedString(fabric.Object, "status", "phase")
+	observedRaw, found, err := unstructured.NestedFieldNoCopy(fabric.Object, "status", "observedGeneration")
+	if err != nil {
+		return false, "", fmt.Errorf("read NetworkFabric %q observedGeneration: %w", binding.FabricRef, err)
+	}
+	if !found {
+		return false, fmt.Sprintf("NetworkFabric %q has not reported observedGeneration", binding.FabricRef), nil
+	}
+	observed, err := numericInt64(observedRaw)
+	if err != nil {
+		return false, "", fmt.Errorf("read NetworkFabric %q observedGeneration: %w", binding.FabricRef, err)
+	}
+	if phase != "Ready" || observed != fabric.GetGeneration() {
+		return false, fmt.Sprintf("NetworkFabric %q is not Ready at generation %d", binding.FabricRef, fabric.GetGeneration()), nil
+	}
+
+	networks, found, err := unstructured.NestedSlice(fabric.Object, "spec", "networks")
+	if err != nil {
+		return false, "", fmt.Errorf("read NetworkFabric %q networks: %w", binding.FabricRef, err)
+	}
+	if !found {
+		return false, fmt.Sprintf("NetworkFabric %q defines no networks", binding.FabricRef), nil
+	}
+	for _, raw := range networks {
+		network, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := network["name"].(string)
+		if name != binding.FabricNetwork {
+			continue
+		}
+		bridge, _ := network["bridge"].(string)
+		vlan, err := numericInt64(network["vlan"])
+		if err != nil {
+			return false, "", fmt.Errorf("read NetworkFabric %q network %q VLAN: %w", binding.FabricRef, binding.FabricNetwork, err)
+		}
+		mtu, err := numericInt64Default(network["mtu"], 0)
+		if err != nil {
+			return false, "", fmt.Errorf("read NetworkFabric %q network %q MTU: %w", binding.FabricRef, binding.FabricNetwork, err)
+		}
+		if bridge != binding.Bridge || vlan != binding.VLAN || mtu != binding.MTU {
+			return false, fmt.Sprintf("VMNetwork dataplane does not match NetworkFabric %q network %q: expected bridge=%s vlan=%d mtu=%d", binding.FabricRef, binding.FabricNetwork, bridge, vlan, mtu), nil
+		}
+		return true, "", nil
+	}
+	return false, fmt.Sprintf("NetworkFabric %q does not define network %q", binding.FabricRef, binding.FabricNetwork), nil
+}
+
+func numericInt64Default(value interface{}, fallback int64) (int64, error) {
+	if value == nil {
+		return fallback, nil
+	}
+	return numericInt64(value)
+}
+
+func numericInt64(value interface{}) (int64, error) {
+	switch v := value.(type) {
+	case int64:
+		return v, nil
+	case int32:
+		return int64(v), nil
+	case int:
+		return int64(v), nil
+	case float64:
+		if v != float64(int64(v)) {
+			return 0, fmt.Errorf("non-integral value %v", v)
+		}
+		return int64(v), nil
+	case json.Number:
+		return v.Int64()
+	default:
+		return 0, fmt.Errorf("unsupported numeric value %T", value)
+	}
+}
+
+type Handler struct {
+	dependencies DependencyReader
+	fabrics      FabricReader
+}
+
+func NewHandler(dependencies DependencyReader, fabrics ...FabricReader) *Handler {
+	h := &Handler{dependencies: dependencies}
+	if len(fabrics) > 0 {
+		h.fabrics = fabrics[0]
+	}
+	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -145,15 +251,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Validate(ctx context.Context, req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse {
-	// Defensive allow for resources outside this webhook's declared scope.
 	if req.Resource.Group != appsGroup || req.Resource.Resource != vmNetworkResource {
 		return allow()
 	}
 
 	switch req.Operation {
-	case admissionv1.Delete:
-		return h.validateUnused(ctx, req.Namespace, req.Name, "delete")
+	case admissionv1.Create:
+		return h.validateFabric(ctx, req.Object.Raw)
 	case admissionv1.Update:
+		if resp := h.validateFabric(ctx, req.Object.Raw); !resp.Allowed {
+			return resp
+		}
 		changed, err := disruptiveNetworkChange(req.OldObject.Raw, req.Object.Raw)
 		if err != nil {
 			return deny(http.StatusBadRequest, metav1.StatusReasonInvalid, fmt.Sprintf("cannot validate VMNetwork update: %v", err))
@@ -161,10 +269,45 @@ func (h *Handler) Validate(ctx context.Context, req *admissionv1.AdmissionReques
 		if !changed {
 			return allow()
 		}
-		return h.validateUnused(ctx, req.Namespace, req.Name, "change bridge/VLAN/MTU or interface safety properties of")
+		return h.validateUnused(ctx, req.Namespace, req.Name, "change bridge/VLAN/MTU or fabric/interface safety properties of")
+	case admissionv1.Delete:
+		return h.validateUnused(ctx, req.Namespace, req.Name, "delete")
 	default:
 		return allow()
 	}
+}
+
+func (h *Handler) validateFabric(ctx context.Context, raw []byte) *admissionv1.AdmissionResponse {
+	var object struct {
+		Spec struct {
+			Bridge        string `json:"bridge"`
+			VLAN          int64  `json:"vlan"`
+			MTU           int64  `json:"mtu"`
+			FabricRef     string `json:"fabricRef"`
+			FabricNetwork string `json:"fabricNetwork"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return deny(http.StatusBadRequest, metav1.StatusReasonInvalid, fmt.Sprintf("cannot decode VMNetwork: %v", err))
+	}
+	binding := FabricBinding{FabricRef: object.Spec.FabricRef, FabricNetwork: object.Spec.FabricNetwork, Bridge: object.Spec.Bridge, VLAN: object.Spec.VLAN, MTU: object.Spec.MTU}
+	if binding.FabricRef == "" && binding.FabricNetwork == "" {
+		return allow()
+	}
+	if binding.FabricRef == "" || binding.FabricNetwork == "" {
+		return deny(http.StatusBadRequest, metav1.StatusReasonInvalid, "fabricRef and fabricNetwork must be set together")
+	}
+	if h.fabrics == nil {
+		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, "NetworkFabric reader is not configured")
+	}
+	valid, message, err := h.fabrics.ValidateBinding(ctx, binding)
+	if err != nil {
+		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, fmt.Sprintf("cannot validate NetworkFabric binding: %v", err))
+	}
+	if !valid {
+		return deny(http.StatusUnprocessableEntity, metav1.StatusReasonInvalid, message)
+	}
+	return allow()
 }
 
 func (h *Handler) validateUnused(ctx context.Context, namespace, name, action string) *admissionv1.AdmissionResponse {
@@ -173,17 +316,12 @@ func (h *Handler) validateUnused(ctx context.Context, namespace, name, action st
 	}
 	vms, err := h.dependencies.ReferencingVMInstances(ctx, namespace, name)
 	if err != nil {
-		// Fail closed. Losing the dependency lookup must never turn into permission
-		// to destroy a network that may still back running VMs.
-		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError,
-			fmt.Sprintf("cannot verify whether VMNetwork %q is in use: %v", name, err))
+		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, fmt.Sprintf("cannot verify whether VMNetwork %q is in use: %v", name, err))
 	}
 	if len(vms) == 0 {
 		return allow()
 	}
-	return deny(http.StatusConflict, metav1.StatusReasonConflict,
-		fmt.Sprintf("cannot %s VMNetwork %q in namespace %q: attached to VMInstance(s): %s; detach the network from every VM first",
-			action, name, namespace, strings.Join(vms, ", ")))
+	return deny(http.StatusConflict, metav1.StatusReasonConflict, fmt.Sprintf("cannot %s VMNetwork %q in namespace %q: attached to VMInstance(s): %s; detach the network from every VM first", action, name, namespace, strings.Join(vms, ", ")))
 }
 
 func disruptiveNetworkChange(oldRaw, newRaw []byte) (bool, error) {
@@ -196,10 +334,7 @@ func disruptiveNetworkChange(oldRaw, newRaw []byte) (bool, error) {
 	if err := json.Unmarshal(newRaw, &newObj); err != nil {
 		return false, fmt.Errorf("decode new object: %w", err)
 	}
-	// Description is intentionally not included: cosmetic edits remain safe
-	// while the network is attached. Every dataplane-affecting property is
-	// protected until all VM attachments are removed.
-	for _, key := range []string{"bridge", "vlan", "mtu", "promiscMode", "macspoofchk", "hairpinMode", "fabricRef"} {
+	for _, key := range []string{"bridge", "vlan", "mtu", "promiscMode", "macspoofchk", "hairpinMode", "fabricRef", "fabricNetwork"} {
 		if !reflect.DeepEqual(oldObj.Spec[key], newObj.Spec[key]) {
 			return true, nil
 		}
@@ -212,13 +347,5 @@ func allow() *admissionv1.AdmissionResponse {
 }
 
 func deny(code int, reason metav1.StatusReason, message string) *admissionv1.AdmissionResponse {
-	return &admissionv1.AdmissionResponse{
-		Allowed: false,
-		Result: &metav1.Status{
-			Status:  metav1.StatusFailure,
-			Code:    int32(code),
-			Reason:  reason,
-			Message: message,
-		},
-	}
+	return &admissionv1.AdmissionResponse{Allowed: false, Result: &metav1.Status{Status: metav1.StatusFailure, Code: int32(code), Reason: reason, Message: message}}
 }
