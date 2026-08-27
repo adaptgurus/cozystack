@@ -1,0 +1,14 @@
+# User-visible Cozystack VMInstance name in this tenant namespace.
+sourceVM: ""
+
+# Copy keeps the source VMInstance; Convert retires it only after the template
+# is verified Ready and the source VMInstance UID/generation are unchanged.
+mode: Copy
+
+# Installer/VirtIO/rescue optical media should not become part of a reusable VM
+# template. The controller records and removes optical volumes from the captured
+# template when this is true.
+excludeOpticalMedia: true
+
+# Optional catalog description.
+description: ""

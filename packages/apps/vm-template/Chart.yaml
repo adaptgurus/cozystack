@@ -1,0 +1,7 @@
+apiVersion: v2
+name: vm-template
+description: Tenant-scoped virtual machine template capture
+icon: /logos/vmi.svg
+type: application
+version: 0.0.0
+appVersion: 0.1.0

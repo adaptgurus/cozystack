@@ -1,0 +1,34 @@
+apiVersion: cozystack.io/v1alpha1
+kind: ApplicationDefinition
+metadata:
+  name: vm-template
+spec:
+  application:
+    kind: VMTemplate
+    singular: vmtemplate
+    plural: vmtemplates
+    openAPISchema: |-
+      {"title":"Chart Values","type":"object","required":["sourceVM"],"properties":{"sourceVM":{"description":"Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.","type":"string","minLength":1,"maxLength":63,"x-cozystack-options":{"source":"vminstance"}},"mode":{"description":"Copy keeps the source VMInstance. Convert retires it only after the template is verified Ready and the source UID/generation still match preflight.","type":"string","default":"Copy","enum":["Copy","Convert"]},"excludeOpticalMedia":{"description":"Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template.","type":"boolean","default":true},"description":{"description":"Optional human-readable template description.","type":"string","default":"","maxLength":512}}}
+  release:
+    prefix: vm-template-
+    labels:
+      sharding.fluxcd.io/key: tenants
+    chartRef:
+      kind: ExternalArtifact
+      name: cozystack-vm-template-application-kubevirt-vm-template
+      namespace: cozy-system
+  dashboard:
+    category: IaaS
+    singular: VM Template
+    plural: VM Templates
+    description: Reusable tenant virtual-machine templates with safe Copy and Convert workflows
+    weight: 51
+    tags:
+      - compute
+      - virtual-machine
+      - template
+    icon: PHN2ZyB3aWR0aD0iMTQ0IiBoZWlnaHQ9IjE0NCIgdmlld0JveD0iMCAwIDE0NCAxNDQiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjE0NCIgaGVpZ2h0PSIxNDQiIHJ4PSIyNCIgZmlsbD0iIzJFMzA2NyIvPjxwYXRoIGQ9Ik0zNCA0MGg3NmE4IDggMCAwIDEgOCA4djQ4YTggOCAwIDAgMS04IDhIMzRhOCA4IDAgMCAxLTgtOFY0OGE4IDggMCAwIDEgOC04WiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSI2Ii8+PHBhdGggZD0iTTQ0IDU2aDU2TTY0IDcyaDE2TTYwIDg4aDI0IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==
+    keysOrder: [["apiVersion"],["appVersion"],["kind"],["metadata"],["metadata","name"],["spec","sourceVM"],["spec","mode"],["spec","excludeOpticalMedia"],["spec","description"]]
+  secrets:
+    exclude: []
+    include: []

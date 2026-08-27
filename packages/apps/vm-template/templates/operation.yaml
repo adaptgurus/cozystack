@@ -1,0 +1,27 @@
+{{- if not .Values.sourceVM }}
+{{- fail "sourceVM is required" }}
+{{- end }}
+{{- if and (ne .Values.mode "Copy") (ne .Values.mode "Convert") }}
+{{- fail "mode must be Copy or Convert" }}
+{{- end }}
+apiVersion: virtualization.cozystack.io/v1alpha1
+kind: VMTemplateOperation
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    apps.cozystack.io/application.kind: VMTemplate
+    apps.cozystack.io/application.name: {{ .Release.Name | quote }}
+    virtualization.cozystack.io/template-scope: tenant
+  annotations:
+    {{- with .Values.description }}
+    virtualization.cozystack.io/description: {{ . | quote }}
+    {{- end }}
+spec:
+  sourceVM: {{ .Values.sourceVM | quote }}
+  templateName: {{ .Release.Name | quote }}
+  mode: {{ .Values.mode | quote }}
+  scope: Tenant
+  excludeOpticalMedia: {{ .Values.excludeOpticalMedia }}
+  allowSecretReferences: true
+  requireHalted: true

@@ -1,0 +1,53 @@
+suite: VM template operation
+templates:
+  - templates/operation.yaml
+tests:
+  - it: renders a safe tenant template copy
+    release:
+      name: golden-linux
+      namespace: tenant-a
+    set:
+      sourceVM: app-01
+      mode: Copy
+      excludeOpticalMedia: true
+    asserts:
+      - isKind:
+          of: VMTemplateOperation
+      - equal:
+          path: metadata.name
+          value: golden-linux
+      - equal:
+          path: metadata.namespace
+          value: tenant-a
+      - equal:
+          path: spec.sourceVM
+          value: app-01
+      - equal:
+          path: spec.templateName
+          value: golden-linux
+      - equal:
+          path: spec.scope
+          value: Tenant
+      - equal:
+          path: spec.requireHalted
+          value: true
+      - equal:
+          path: spec.excludeOpticalMedia
+          value: true
+  - it: renders Convert without weakening safety controls
+    release:
+      name: converted-windows
+      namespace: tenant-a
+    set:
+      sourceVM: win-01
+      mode: Convert
+    asserts:
+      - equal:
+          path: spec.mode
+          value: Convert
+      - equal:
+          path: spec.allowSecretReferences
+          value: true
+      - equal:
+          path: spec.requireHalted
+          value: true
