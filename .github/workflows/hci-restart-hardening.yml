@@ -1,0 +1,181 @@
+name: HCI Restart Safety Wiring
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+
+concurrency:
+  group: hci-restart-hardening-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Wire durable NetworkFabric transaction state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count == 0 and new in text:
+                  return text, False
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one old block, found {count}")
+              return text.replace(old, new, 1), True
+
+          path = Path('pkg/networkfabriccontroller/reconciler.go')
+          text = path.read_text()
+          changed = False
+
+          replacements = [
+          ('''type Reconciler struct {
+          \tclient.Client
+          \tAdapterFactory AdapterFactory
+          \tRequeueAfter   time.Duration
+          }''', '''type Reconciler struct {
+          \tclient.Client
+          \tAdapterFactory AdapterFactory
+          \tRequeueAfter   time.Duration
+          \tTryTimeout     time.Duration
+          }''', 'Reconciler TryTimeout'),
+          ('''\tstatuses := readNodeStatuses(fabric)
+          \treferences, err := r.referencingVMNetworks(ctx, fabric.GetName())''', '''\tstatuses := readNodeStatuses(fabric)
+          \tif result, handled, recoveryErr := r.recoverPendingTransaction(ctx, fabric, spec, statuses); handled || recoveryErr != nil {
+          \t\treturn result, recoveryErr
+          \t}
+          \treferences, err := r.referencingVMNetworks(ctx, fabric.GetName())''', 'normal transaction recovery'),
+          ('''\t\torchestrator := networkfabric.Orchestrator{Adapter: adapter}
+          \t\treceipt, err := orchestrator.ReconcileNodeTransitionValidated(ctx, spec, previous, target.Name, func(state networkfabric.NodeState) error {
+          \t\t\treturn ValidateNodeCapabilities(spec, state)
+          \t\t})''', '''\t\torchestrator := networkfabric.Orchestrator{Adapter: adapter}
+          \t\treceipt, err := orchestrator.ReconcileNodeTransitionObserved(ctx, spec, previous, target.Name, func(state networkfabric.NodeState) error {
+          \t\t\treturn networkfabric.ValidateTransitionTopology(state, previous, spec.Networks)
+          \t\t}, r.transactionObserver(ctx, fabric, statuses, target.Name, spec.Networks))''', 'normal observed transaction'),
+          ('''\tstatuses := readNodeStatuses(fabric)
+          \tfor _, name := range sortedStatusNames(statuses) {''', '''\tstatuses := readNodeStatuses(fabric)
+          \tif result, handled, recoveryErr := r.recoverPendingTransaction(ctx, fabric, spec, statuses); handled || recoveryErr != nil {
+          \t\treturn result, recoveryErr
+          \t}
+          \tfor _, name := range sortedStatusNames(statuses) {''', 'delete transaction recovery'),
+          ('''\tbase := fabric.DeepCopy()
+          \tcontrollerutil.RemoveFinalizer(fabric, NetworkFabricFinalizer)''', '''\t// Re-check authoritative VMNetwork references immediately before removing
+          \t// the finalizer. A VMNetwork may have been created after the first
+          \t// lookup while node cleanup was progressing.
+          \treferences, err = r.referencingVMNetworks(ctx, fabric.GetName())
+          \tif err != nil {
+          \t\t_ = r.setFailureStatus(ctx, fabric, "ReferenceLookupFailed", err.Error())
+          \t\treturn ctrl.Result{RequeueAfter: r.requeue()}, nil
+          \t}
+          \tif len(references) > 0 {
+          \t\t_ = r.setFailureStatus(ctx, fabric, "FabricInUse", formatReferences("cannot remove NetworkFabric finalizer while VMNetwork references exist", references))
+          \t\treturn ctrl.Result{RequeueAfter: r.requeue()}, nil
+          \t}
+
+          \tbase := fabric.DeepCopy()
+          \tcontrollerutil.RemoveFinalizer(fabric, NetworkFabricFinalizer)''', 'finalizer TOCTOU reference recheck'),
+          ('''\torchestrator := networkfabric.Orchestrator{Adapter: adapter}
+          \treceipt, err := orchestrator.ReconcileNodeTransitionValidated(ctx, cleanupSpec, previous, nodeName, func(state networkfabric.NodeState) error {
+          \t\treturn networkfabric.ValidateNetworksAbsent(state, previous)
+          \t})''', '''\torchestrator := networkfabric.Orchestrator{Adapter: adapter}
+          \treceipt, err := orchestrator.ReconcileNodeTransitionObserved(ctx, cleanupSpec, previous, nodeName, func(state networkfabric.NodeState) error {
+          \t\treturn networkfabric.ValidateTransitionTopology(state, previous, nil)
+          \t}, r.transactionObserver(ctx, fabric, statuses, nodeName, nil))''', 'cleanup observed transaction'),
+          ('''type NodeStatus struct {
+          \tName                string
+          \tPhase               string
+          \tObservedGeneration  int64
+          \tLastAppliedRevision string
+          \tManagementReachable bool
+          \tMessage             string
+          \tAppliedNetworks     []networkfabric.Network
+          \tLastVerifiedAt      string
+          \tRollbackState       string
+          }''', '''type NodeStatus struct {
+          \tName                 string
+          \tPhase                string
+          \tObservedGeneration   int64
+          \tLastAppliedRevision  string
+          \tManagementReachable  bool
+          \tMessage              string
+          \tAppliedNetworks      []networkfabric.Network
+          \tLastVerifiedAt       string
+          \tRollbackState        string
+          \tTransactionPhase     string
+          \tTransactionRevision  string
+          \tTransactionDeadline  string
+          \tTransactionNetworks  []networkfabric.Network
+          }''', 'NodeStatus durable fields'),
+          ('''\t\trollback, _, _ := unstructured.NestedString(m, "rollbackState")
+          \t\tapplied := parseStatusNetworks(m)
+          \t\tif name != "" {
+          \t\t\tout[name] = NodeStatus{Name: name, Phase: phase, ObservedGeneration: gen, LastAppliedRevision: revision, ManagementReachable: reachable, Message: message, AppliedNetworks: applied, LastVerifiedAt: verified, RollbackState: rollback}
+          \t\t}''', '''\t\trollback, _, _ := unstructured.NestedString(m, "rollbackState")
+          \t\ttxPhase, _, _ := unstructured.NestedString(m, "transactionPhase")
+          \t\ttxRevision, _, _ := unstructured.NestedString(m, "transactionRevision")
+          \t\ttxDeadline, _, _ := unstructured.NestedString(m, "transactionDeadline")
+          \t\tapplied := parseNamedStatusNetworks(m, "appliedNetworks")
+          \t\ttxNetworks := parseNamedStatusNetworks(m, "transactionNetworks")
+          \t\tif name != "" {
+          \t\t\tout[name] = NodeStatus{Name: name, Phase: phase, ObservedGeneration: gen, LastAppliedRevision: revision, ManagementReachable: reachable, Message: message, AppliedNetworks: applied, LastVerifiedAt: verified, RollbackState: rollback, TransactionPhase: txPhase, TransactionRevision: txRevision, TransactionDeadline: txDeadline, TransactionNetworks: txNetworks}
+          \t\t}''', 'read transaction fields'),
+          ('''func parseStatusNetworks(node map[string]interface{}) []networkfabric.Network {
+          \titems, _, _ := unstructured.NestedSlice(node, "appliedNetworks")''', '''func parseStatusNetworks(node map[string]interface{}) []networkfabric.Network {
+          \treturn parseNamedStatusNetworks(node, "appliedNetworks")
+          }
+
+          func parseNamedStatusNetworks(node map[string]interface{}, field string) []networkfabric.Network {
+          \titems, _, _ := unstructured.NestedSlice(node, field)''', 'named status network parser'),
+          ('''\t\t\t"lastVerifiedAt":      st.LastVerifiedAt,
+          \t\t\t"rollbackState":       st.RollbackState,
+          \t\t}''', '''\t\t\t"lastVerifiedAt":       st.LastVerifiedAt,
+          \t\t\t"rollbackState":        st.RollbackState,
+          \t\t\t"transactionPhase":     st.TransactionPhase,
+          \t\t\t"transactionRevision":  st.TransactionRevision,
+          \t\t\t"transactionDeadline":  st.TransactionDeadline,
+          \t\t\t"transactionNetworks":  statusNetworks(st.TransactionNetworks),
+          \t\t}''', 'write transaction fields'),
+          ]
+
+          for old, new, label in replacements:
+              text, did = replace_once(text, old, new, label)
+              changed = changed or did
+
+          if changed:
+              path.write_text(text)
+
+          main = Path('cmd/network-fabric-controller/main.go')
+          mtext = main.read_text()
+          old = '''\tbaseReconciler := &networkfabriccontroller.Reconciler{
+          \t\tClient:       mgr.GetClient(),
+          \t\tRequeueAfter: requeue,'''
+          new = '''\tbaseReconciler := &networkfabriccontroller.Reconciler{
+          \t\tClient:       mgr.GetClient(),
+          \t\tRequeueAfter: requeue,
+          \t\tTryTimeout:   tryTimeout,'''
+          mtext, did = replace_once(mtext, old, new, 'main TryTimeout wiring')
+          if did:
+              main.write_text(mtext)
+          PY
+
+          gofmt -w pkg/networkfabriccontroller/reconciler.go cmd/network-fabric-controller/main.go
+          git add pkg/networkfabriccontroller/reconciler.go cmd/network-fabric-controller/main.go
+          if git diff --cached --quiet; then
+            echo 'Restart-safety wiring already applied.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(hci): wire durable Talos transaction recovery'
+          git push origin HEAD:feat/hci-virtualization-v1.6.2-test
