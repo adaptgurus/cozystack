@@ -106,7 +106,8 @@ helm lint packages/system/vm-network-admission --set image=example.invalid/vm-ne
 helm lint packages/system/network-fabric-crd
 helm lint packages/system/network-fabric-controller \
   --set networkFabricController.image=example.invalid/network-fabric-controller:test
-helm lint packages/system/kubevirt
+helm lint packages/system/kubevirt \
+  --set-string _cluster.root-host=example.test
 
 printf '\n[9/12] Rendering NetworkFabric CRD/controller and KubeVirt migration packages...\n'
 helm template network-fabric-crd packages/system/network-fabric-crd > "$crd_rendered"
@@ -115,6 +116,7 @@ helm template network-fabric-controller packages/system/network-fabric-controlle
   --set networkFabricController.image=example.invalid/network-fabric-controller:test > "$controller_rendered"
 helm template kubevirt packages/system/kubevirt \
   --namespace cozy-kubevirt \
+  --set-string _cluster.root-host=example.test \
   --set migrationNetwork=networkfabric-fabric-prod-migration > "$kubevirt_rendered"
 
 grep -q 'name: networkfabrics.infrastructure.cozystack.io' "$crd_rendered"
@@ -152,4 +154,4 @@ helm unittest packages/system/kubevirt
 printf '\n[12/12] Rechecking whitespace after all generators/tests...\n'
 git diff --check "${baseline}...HEAD"
 
-printf '\nHCI v1.6.2 repository gate PASSED.\n'
+printf '\nHCI v1.6.2 repository gate PASSED.\n
