@@ -50,9 +50,12 @@ go test ./pkg/registry/core/option
 printf '\n[4/12] Running HCI controller/admission/transaction Go tests...\n'
 go test ./pkg/vmnetworkadmission ./pkg/networkfabric ./pkg/networkfabriccontroller ./cmd/vm-network-admission ./cmd/network-fabric-controller
 
-printf '\n[5/12] Linting changed HCI application/media charts...\n'
-helm lint packages/apps/vm-instance
-helm lint packages/apps/vm-disk
+printf '\n[5/12] Linting standalone HCI charts...\n'
+# vm-instance and vm-disk are Cozystack application charts whose Chart.yaml uses
+# repository-relative icons and symlinked cozy-lib content and whose templates
+# intentionally consult cluster state. Their repo-native Makefile test target is
+# helm-unittest, exercised in step 11; standalone `helm lint` is not a valid
+# build-mode check for those charts.
 helm lint packages/apps/vm-network \
   --set bridge=br-vlan120 \
   --set vlan=120 \
@@ -205,14 +208,23 @@ grep -q 'resources: \["networkfabrics"\]' packages/system/vm-network-admission/t
 grep -q 'resources: \["networkfabrics"\]' packages/system/network-fabric-controller/templates/rbac.yaml
 grep -q 'resources: \["helmreleases"\]' packages/system/network-fabric-controller/templates/rbac.yaml
 
-printf '\n[11/12] Running Helm unit tests for all changed HCI VM/media/network/KubeVirt charts...\n'
+printf '\n[11/12] Running repo-native Helm unit/render tests for all changed HCI VM/media/network/KubeVirt charts...\n'
 helm unittest packages/apps/vm-instance
 helm unittest packages/apps/vm-disk
 helm unittest packages/apps/vm-network
 helm unittest packages/system/vm-default-images
 helm unittest packages/system/kubevirt
 
-printf '\n[12/12] Rechecking whitespace after all generators/tests...\n'
+printf '\n[12/12] Rechecking whitespace and clean generated/dependency state...\n'
 git diff --check "${baseline}...HEAD"
+if ! git diff --exit-code; then
+  echo 'FAIL: tests or generators modified tracked files; commit/regenerate the synchronized output.' >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  git status --short >&2
+  echo 'FAIL: repository gate left untracked or otherwise dirty files.' >&2
+  exit 1
+fi
 
 printf '\nHCI v1.6.2 repository gate PASSED.\n'
