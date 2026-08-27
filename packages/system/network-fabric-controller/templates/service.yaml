@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: network-fabric-controller-metrics
+  labels:
+    app.kubernetes.io/name: network-fabric-controller
+spec:
+  selector:
+    app.kubernetes.io/name: network-fabric-controller
+  ports:
+  - name: metrics
+    port: {{ trimPrefix ":" .Values.networkFabricController.metricsBindAddress }}
+    targetPort: metrics
+    protocol: TCP

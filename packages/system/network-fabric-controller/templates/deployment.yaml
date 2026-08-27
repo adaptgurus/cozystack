@@ -16,6 +16,7 @@ spec:
     spec:
       serviceAccountName: network-fabric-controller
       priorityClassName: system-cluster-critical
+      terminationGracePeriodSeconds: 30
       tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
@@ -32,6 +33,13 @@ spec:
                 matchLabels:
                   app.kubernetes.io/name: network-fabric-controller
               topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: network-fabric-controller
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -49,9 +57,9 @@ spec:
         - --talosctl=/usr/local/bin/talosctl
         ports:
         - name: metrics
-          containerPort: 8080
+          containerPort: {{ trimPrefix ":" .Values.networkFabricController.metricsBindAddress }}
         - name: health
-          containerPort: 8081
+          containerPort: {{ trimPrefix ":" .Values.networkFabricController.healthProbeBindAddress }}
         readinessProbe:
           httpGet:
             path: /readyz

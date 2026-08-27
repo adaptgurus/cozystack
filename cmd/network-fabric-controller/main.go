@@ -4,6 +4,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -78,8 +80,31 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		panic(err)
 	}
+	if err := mgr.AddReadyzCheck("talosconfig", talosConfigReadyz(talosconfig)); err != nil {
+		panic(err)
+	}
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "controller manager stopped")
 		os.Exit(1)
+	}
+}
+
+func talosConfigReadyz(path string) healthz.Checker {
+	return func(_ *http.Request) error {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("Talos client configuration is unavailable: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Talos client configuration %q is not a regular file", path)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("Talos client configuration %q is empty", path)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("Talos client configuration %q is not readable: %w", path, err)
+		}
+		return f.Close()
 	}
 }

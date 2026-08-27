@@ -120,6 +120,11 @@ grep -q 'unavailableNodes:' "$crd_rendered"
 grep -q 'kind: Deployment' "$controller_rendered"
 grep -q 'name: network-fabric-controller' "$controller_rendered"
 grep -q 'example.invalid/network-fabric-controller:test' "$controller_rendered"
+grep -q 'kind: PodDisruptionBudget' "$controller_rendered"
+grep -q 'minAvailable: 1' "$controller_rendered"
+grep -q 'kind: Service' "$controller_rendered"
+grep -q 'name: network-fabric-controller-metrics' "$controller_rendered"
+grep -q 'topologySpreadConstraints:' "$controller_rendered"
 
 printf '\n[10/12] Validating fail-closed admission and NetworkFabric platform wiring...\n'
 helm template vm-network-admission packages/system/vm-network-admission \
