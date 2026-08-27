@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -217,7 +219,9 @@ func digest(content []byte) string {
 
 // RenderTalosPatch emits modern multi-document Talos networking resources.
 // Tagged networks use VLANConfig -> BridgeConfig; native networks directly
-// bridge the physical uplink. MTU=0 intentionally omits the mtu field.
+// bridge the physical uplink. Deletion operations use Talos document-level
+// $patch: delete and are emitted bridge-first so a child VLAN is not removed
+// while the bridge still references it. MTU=0 intentionally omits mtu.
 func RenderTalosPatch(operations []Operation) ([]byte, error) {
 	var docs []string
 	for _, op := range operations {
@@ -239,6 +243,16 @@ func RenderTalosPatch(operations []Operation) ([]byte, error) {
 				fmt.Fprintf(&b, "mtu: %d\n", op.MTU)
 			}
 			docs = append(docs, b.String())
+		case DeleteBridge:
+			if op.Name == "" {
+				return nil, fmt.Errorf("bridge delete operation requires a name")
+			}
+			docs = append(docs, fmt.Sprintf("apiVersion: v1alpha1\nkind: BridgeConfig\nname: %s\n$patch: delete\n", op.Name))
+		case DeleteVLAN:
+			if op.Name == "" {
+				return nil, fmt.Errorf("VLAN delete operation requires a name")
+			}
+			docs = append(docs, fmt.Sprintf("apiVersion: v1alpha1\nkind: VLANConfig\nname: %s\n$patch: delete\n", op.Name))
 		default:
 			return nil, fmt.Errorf("unsupported Talos network operation %q", op.Kind)
 		}
@@ -246,22 +260,33 @@ func RenderTalosPatch(operations []Operation) ([]byte, error) {
 	return []byte(strings.Join(docs, "---\n")), nil
 }
 
+type rawTalosLink struct {
+	state       InterfaceState
+	linkIndex   uint32
+	masterIndex uint32
+}
+
 func parseTalosLinks(raw []byte) (map[string]InterfaceState, error) {
-	interfaces := map[string]InterfaceState{}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	for dec.More() {
-		var obj map[string]interface{}
-		if err := dec.Decode(&obj); err != nil {
-			return nil, err
-		}
+	objects, err := decodeTalosLinkObjects(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	rawLinks := map[string]rawTalosLink{}
+	indexToName := map[uint32]string{}
+	for _, obj := range objects {
 		metadata, _ := obj["metadata"].(map[string]interface{})
 		spec, _ := obj["spec"].(map[string]interface{})
 		name, _ := metadata["id"].(string)
 		if name == "" {
 			continue
 		}
+
 		state := InterfaceState{Name: name}
-		for _, key := range []string{"operState", "operstate"} {
+		state.Kind, _ = spec["kind"].(string)
+		state.Index = uint32(number(spec["index"]))
+		state.MTU = number(spec["mtu"])
+		for _, key := range []string{"operationalState", "operState", "operstate"} {
 			if v, ok := spec[key].(string); ok && strings.EqualFold(v, "up") {
 				state.Up = true
 			}
@@ -269,32 +294,101 @@ func parseTalosLinks(raw []byte) (map[string]InterfaceState, error) {
 		if v, ok := spec["linkState"].(bool); ok && v {
 			state.Up = true
 		}
-		switch v := spec["mtu"].(type) {
-		case float64:
-			state.MTU = int(v)
-		case json.Number:
-			n, _ := strconv.Atoi(v.String())
-			state.MTU = n
+		if vlan, ok := spec["vlan"].(map[string]interface{}); ok {
+			state.VLAN = number(vlan["vlanID"])
+		}
+
+		link := rawTalosLink{
+			state:       state,
+			linkIndex:   uint32(number(spec["linkIndex"])),
+			masterIndex: uint32(number(spec["masterIndex"])),
+		}
+		rawLinks[name] = link
+		if state.Index != 0 {
+			indexToName[state.Index] = name
+		}
+	}
+	if len(rawLinks) == 0 {
+		return nil, fmt.Errorf("talosctl returned no link resources")
+	}
+
+	interfaces := make(map[string]InterfaceState, len(rawLinks))
+	for name, rawLink := range rawLinks {
+		state := rawLink.state
+		if rawLink.linkIndex != 0 {
+			state.Parent = indexToName[rawLink.linkIndex]
 		}
 		interfaces[name] = state
 	}
-	if len(interfaces) == 0 {
-		// Some talosctl versions return a single JSON array instead of a stream.
-		var arr []map[string]interface{}
-		if err := json.Unmarshal(raw, &arr); err == nil {
-			for _, obj := range arr {
-				one, _ := json.Marshal(obj)
-				parsed, err := parseTalosLinks(one)
-				if err == nil {
-					for k, v := range parsed {
-						interfaces[k] = v
-					}
-				}
-			}
+	for name, rawLink := range rawLinks {
+		if rawLink.masterIndex == 0 {
+			continue
 		}
+		masterName := indexToName[rawLink.masterIndex]
+		if masterName == "" {
+			continue
+		}
+		master := interfaces[masterName]
+		master.Members = append(master.Members, name)
+		interfaces[masterName] = master
 	}
-	if len(interfaces) == 0 {
-		return nil, fmt.Errorf("talosctl returned no link resources")
+	for name, state := range interfaces {
+		sort.Strings(state.Members)
+		interfaces[name] = state
 	}
+
 	return interfaces, nil
+}
+
+func decodeTalosLinkObjects(raw []byte) ([]map[string]interface{}, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("talosctl returned empty link output")
+	}
+
+	var array []map[string]interface{}
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &array); err != nil {
+			return nil, err
+		}
+		return array, nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var objects []map[string]interface{}
+	for {
+		var obj map[string]interface{}
+		if err := dec.Decode(&obj); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		objects = append(objects, obj)
+	}
+	return objects, nil
+}
+
+func number(v interface{}) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case float32:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case uint64:
+		return int(n)
+	case json.Number:
+		value, _ := strconv.Atoi(n.String())
+		return value
+	case string:
+		value, _ := strconv.Atoi(n)
+		return value
+	default:
+		return 0
+	}
 }
