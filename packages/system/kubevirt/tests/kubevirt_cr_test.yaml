@@ -31,6 +31,23 @@ tests:
       - notExists:
           path: spec.configuration.migrations
 
+  - it: can disable the alpha native VM template capability without changing the stable base gates
+    set:
+      vmTemplates.enabled: false
+    asserts:
+      - equal:
+          path: spec.configuration.developerConfiguration.featureGates
+          value:
+          - DeclarativeHotplugVolumes
+          - ExpandDisks
+          - LiveMigration
+          - AutoResourceLimitsGate
+          - CPUManager
+          - GPU
+          - VMExport
+      - notExists:
+          path: spec.configuration.virtTemplateDeployment
+
   - it: emits cpuAllocationRatio under developerConfiguration when set
     set:
       cpuAllocationRatio: 10
