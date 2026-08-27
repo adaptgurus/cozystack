@@ -14,10 +14,48 @@ import (
 // intentionally not deleted here; they remain under the native template's
 // ownership and are garbage-collected with that template.
 type SanitizeResult struct {
-	Changed             bool
-	RemovedVolumes      []string
-	RemovedDiskDevices  []string
+	Changed              bool
+	RemovedVolumes       []string
+	RemovedDiskDevices   []string
 	RemovedDataTemplates []string
+}
+
+// TemplateOpticalVolumes returns the exact embedded VM volume/device names that
+// KubeVirt marks as CD/DVD devices. Reusable Cozystack templates always remove
+// these installer/driver media attachments before becoming product-Ready.
+func TemplateOpticalVolumes(tpl *unstructured.Unstructured) ([]string, error) {
+	if tpl == nil {
+		return nil, fmt.Errorf("VirtualMachineTemplate is required")
+	}
+	disks, found, err := unstructured.NestedSlice(tpl.Object, "spec", "virtualMachine", "spec", "template", "spec", "domain", "devices", "disks")
+	if err != nil {
+		return nil, fmt.Errorf("read template VM disk devices: %w", err)
+	}
+	if !found {
+		return nil, nil
+	}
+	out := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, raw := range disks {
+		disk, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("VirtualMachineTemplate %s/%s contains malformed VM disk device", tpl.GetNamespace(), tpl.GetName())
+		}
+		if _, optical := disk["cdrom"]; !optical {
+			continue
+		}
+		name, _ := disk["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("VirtualMachineTemplate %s/%s contains CD/DVD device without a name", tpl.GetNamespace(), tpl.GetName())
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return nil, fmt.Errorf("VirtualMachineTemplate %s/%s contains duplicate CD/DVD device %q", tpl.GetNamespace(), tpl.GetName(), name)
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // StripOpticalVolumes removes optical volumes from the VirtualMachine embedded
@@ -64,9 +102,6 @@ func StripOpticalVolumes(tpl *unstructured.Unstructured, excluded []string) (San
 		return result, fmt.Errorf("VirtualMachineTemplate %s/%s embedded VM has no volumes", tpl.GetNamespace(), tpl.GetName())
 	}
 
-	// KubeVirt rewrites captured persistent volumes to DataVolumes and creates a
-	// matching DataVolumeTemplate. Capture those generated names while removing
-	// the volume, so the DVT can be removed as well.
 	generatedDVTs := map[string]struct{}{}
 	keptVolumes := make([]interface{}, 0, len(volumes))
 	for _, raw := range volumes {
@@ -143,7 +178,6 @@ func StripOpticalVolumes(tpl *unstructured.Unstructured, excluded []string) (San
 		return result, fmt.Errorf("write sanitized template virtualMachine: %w", err)
 	}
 
-	// Fail closed if any excluded runtime attachment remains after the rewrite.
 	remainingVolumes, _, _ := unstructured.NestedSlice(vm, "spec", "template", "spec", "volumes")
 	for _, raw := range remainingVolumes {
 		if volume, ok := raw.(map[string]interface{}); ok {
@@ -151,7 +185,6 @@ func StripOpticalVolumes(tpl *unstructured.Unstructured, excluded []string) (San
 				if _, forbidden := excludedSet[name]; forbidden {
 					return SanitizeResult{}, fmt.Errorf("optical volume %q remained after template sanitation", name)
 				}
-			}
 		}
 	}
 
