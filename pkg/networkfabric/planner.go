@@ -70,6 +70,7 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 				plan.Operations = append(plan.Operations, Operation{Kind: DeleteVLAN, Name: network.VLANInterface, NetworkRef: network.Name})
 				seenDeleteVLAN[network.VLANInterface] = struct{}{}
 			}
+		}
 	}
 
 	networks := append([]Network(nil), spec.Networks...)
