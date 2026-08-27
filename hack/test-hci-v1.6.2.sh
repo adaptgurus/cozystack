@@ -18,7 +18,23 @@ rendered="$(mktemp)"
 crd_rendered="$(mktemp)"
 controller_rendered="$(mktemp)"
 admission_rendered="$(mktemp)"
-trap 'rm -f "$rendered" "$crd_rendered" "$controller_rendered" "$admission_rendered"' EXIT
+schema_error="$(mktemp)"
+trap 'rm -f "$rendered" "$crd_rendered" "$controller_rendered" "$admission_rendered" "$schema_error"' EXIT
+
+expect_vmnetwork_schema_failure() {
+  local expected="$1"
+  shift
+  : > "$schema_error"
+  if helm template invalid-network packages/apps/vm-network --namespace tenant-test "$@" > /dev/null 2> "$schema_error"; then
+    echo "FAIL: VMNetwork schema unexpectedly accepted invalid values: $*" >&2
+    exit 1
+  fi
+  if ! grep -Fq "$expected" "$schema_error"; then
+    echo "FAIL: VMNetwork schema rejected values for an unexpected reason: $*" >&2
+    cat "$schema_error" >&2
+    exit 1
+  fi
+}
 
 printf '\n[1/12] Checking patch whitespace against %s...\n' "$baseline"
 git diff --check "${baseline}...HEAD"
@@ -58,6 +74,12 @@ if grep -Fq '\"vlan\":120' "$rendered"; then
 fi
 grep -q 'vm-network.cozystack.io/vlan: "120"' "$rendered"
 grep -q 'vm-network.cozystack.io/vlan-owner: "talos-node-network"' "$rendered"
+
+# JSON-schema validation runs before templates in Helm. Exercise those invalid
+# values here instead of pretending failedTemplate assertions can observe them.
+expect_vmnetwork_schema_failure 'minLength: got 0, want 1' --set-string bridge='' --set vlan=120 --set mtu=1500
+expect_vmnetwork_schema_failure 'maximum: got 4,095, want 4,094' --set bridge=br-test --set vlan=4095 --set mtu=1500
+expect_vmnetwork_schema_failure 'maximum: got 10,000, want 9,216' --set bridge=br-test --set vlan=120 --set mtu=10000
 
 printf '\n[7/12] Validating native VMNetwork package/application wiring...\n'
 source_file='packages/core/platform/sources/vm-network-application.yaml'
