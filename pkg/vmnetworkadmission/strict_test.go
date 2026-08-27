@@ -42,6 +42,7 @@ func TestStrictHandlerAllowsWellFormedVMNetworkAdmission(t *testing.T) {
 	})
 	h := NewStrictHandler(next, DefaultMaxAdmissionBodyBytes)
 	body := strictAdmissionBody(t, admissionv1.Create, appsGroup, vmNetworkResource, "tenant-a", "net-a", "uid-1", []byte(`{"spec":{}}`), nil)
+	body = bytes.ReplaceAll(body, []byte(`\"`), []byte(`"`))
 	req := httptest.NewRequest(http.MethodPost, "/validate-vmnetwork", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp := httptest.NewRecorder()
@@ -53,6 +54,7 @@ func TestStrictHandlerAllowsWellFormedVMNetworkAdmission(t *testing.T) {
 
 func TestStrictHandlerFailsClosedOnMalformedRequests(t *testing.T) {
 	validObject := []byte(`{"spec":{}}`)
+	validObject = bytes.ReplaceAll(validObject, []byte(`\"`), []byte(`"`))
 	tests := []struct {
 		name        string
 		method      string
