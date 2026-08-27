@@ -74,17 +74,22 @@ type Operation struct {
 }
 
 type Plan struct {
-	Node       string
-	Operations []Operation
+	Node               string
+	Operations         []Operation
+	RollbackOperations []Operation
 }
 
 type ApplyReceipt struct {
-	// Revision identifies the machine configuration captured immediately before
-	// the try-mode update. RollbackConfig and Patch remain controller memory only
-	// and are never persisted into Kubernetes status or logs.
-	Revision       string
-	RollbackConfig []byte
-	Patch          []byte
+	// Revision is a non-secret fingerprint of the forward and inverse
+	// controller-owned Talos patches. It is useful for status correlation; it
+	// is not a Talos machine-configuration version.
+	Revision string
+	// Patch and RollbackPatch remain controller memory only. RollbackPatch is
+	// intentionally an inverse patch for NetworkFabric-owned VLANConfig and
+	// BridgeConfig documents; full Talos machine configuration is never stored
+	// in Kubernetes status/logs or reapplied during rollback.
+	Patch         []byte
+	RollbackPatch []byte
 }
 
 // TalosAdapter is deliberately narrow. The Kubernetes reconciler owns desired
@@ -92,7 +97,7 @@ type ApplyReceipt struct {
 // application, connectivity verification, confirmation and rollback mechanics.
 type TalosAdapter interface {
 	Inspect(ctx context.Context, node string) (NodeState, error)
-	Apply(ctx context.Context, node string, operations []Operation) (ApplyReceipt, error)
+	Apply(ctx context.Context, node string, operations, rollbackOperations []Operation) (ApplyReceipt, error)
 	VerifyManagement(ctx context.Context, node string, protectedInterfaces []string) error
 	Confirm(ctx context.Context, node string, receipt ApplyReceipt) error
 	Rollback(ctx context.Context, node string, receipt ApplyReceipt) error

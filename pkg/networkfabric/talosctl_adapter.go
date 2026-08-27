@@ -16,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"sigs.k8s.io/yaml"
 )
 
 // CommandRunner makes the talosctl adapter unit-testable without requiring a
@@ -86,23 +84,28 @@ func (a *TalosctlAdapter) Inspect(ctx context.Context, node string) (NodeState, 
 	return NodeState{Name: node, ManagementReachable: true, Interfaces: interfaces}, nil
 }
 
-func (a *TalosctlAdapter) Apply(ctx context.Context, node string, operations []Operation) (ApplyReceipt, error) {
+func (a *TalosctlAdapter) Apply(ctx context.Context, node string, operations, rollbackOperations []Operation) (ApplyReceipt, error) {
 	a.defaults()
-	snapshot, err := a.machineConfigSnapshot(ctx)
-	if err != nil {
-		return ApplyReceipt{}, fmt.Errorf("snapshot Talos machine config for node %q: %w", node, err)
-	}
 	patch, err := RenderTalosPatch(operations)
 	if err != nil {
 		return ApplyReceipt{}, err
 	}
+	rollbackPatch, err := RenderTalosPatch(rollbackOperations)
+	if err != nil {
+		return ApplyReceipt{}, fmt.Errorf("render Talos inverse network patch for node %q: %w", node, err)
+	}
+	revisionMaterial := append(append(append([]byte(nil), patch...), []byte("\n--inverse--\n")...), rollbackPatch...)
+	receipt := ApplyReceipt{Revision: digest(revisionMaterial), Patch: patch, RollbackPatch: rollbackPatch}
 	if len(bytes.TrimSpace(patch)) == 0 {
-		return ApplyReceipt{Revision: digest(snapshot), RollbackConfig: snapshot, Patch: patch}, nil
+		return receipt, nil
+	}
+	if len(bytes.TrimSpace(rollbackPatch)) == 0 {
+		return ApplyReceipt{}, fmt.Errorf("refusing Talos try-mode update on node %q without a controller-owned inverse rollback patch", node)
 	}
 	if err := a.patchMachineConfig(ctx, patch, "try", a.TryTimeout); err != nil {
 		return ApplyReceipt{}, fmt.Errorf("apply Talos network patch in try mode to node %q: %w", node, err)
 	}
-	return ApplyReceipt{Revision: digest(snapshot), RollbackConfig: snapshot, Patch: patch}, nil
+	return receipt, nil
 }
 
 func (a *TalosctlAdapter) Confirm(ctx context.Context, node string, receipt ApplyReceipt) error {
@@ -138,40 +141,16 @@ func (a *TalosctlAdapter) VerifyManagement(ctx context.Context, node string, pro
 
 func (a *TalosctlAdapter) Rollback(ctx context.Context, node string, receipt ApplyReceipt) error {
 	a.defaults()
-	if len(bytes.TrimSpace(receipt.RollbackConfig)) == 0 {
-		return fmt.Errorf("rollback configuration for revision %q is empty", receipt.Revision)
+	if len(bytes.TrimSpace(receipt.Patch)) == 0 {
+		return nil
 	}
-	path, cleanup, err := writeTemp("network-fabric-rollback-*.yaml", receipt.RollbackConfig)
-	if err != nil {
-		return err
+	if len(bytes.TrimSpace(receipt.RollbackPatch)) == 0 {
+		return fmt.Errorf("inverse rollback patch for revision %q is empty; Talos try timeout remains the safety net", receipt.Revision)
 	}
-	defer cleanup()
-	args := append(a.baseArgs(), "apply-config", "--mode=no-reboot", "--file", path)
-	if _, err := a.Runner.Run(ctx, a.Binary, args...); err != nil {
-		return fmt.Errorf("restore Talos machine config on node %q: %w", node, err)
+	if err := a.patchMachineConfig(ctx, receipt.RollbackPatch, "no-reboot", 0); err != nil {
+		return fmt.Errorf("apply inverse Talos network patch on node %q: %w", node, err)
 	}
 	return nil
-}
-
-func (a *TalosctlAdapter) machineConfigSnapshot(ctx context.Context) ([]byte, error) {
-	args := append(a.baseArgs(), "get", "machineconfig", "v1alpha1", "-o", "json")
-	out, err := a.Runner.Run(ctx, a.Binary, args...)
-	if err != nil {
-		return nil, err
-	}
-	var resource map[string]interface{}
-	if err := json.Unmarshal(bytes.TrimSpace(out), &resource); err != nil {
-		return nil, fmt.Errorf("decode machineconfig JSON: %w", err)
-	}
-	spec, ok := resource["spec"]
-	if !ok {
-		return nil, fmt.Errorf("machineconfig resource has no spec")
-	}
-	raw, err := json.Marshal(spec)
-	if err != nil {
-		return nil, err
-	}
-	return yaml.JSONToYAML(raw)
 }
 
 func (a *TalosctlAdapter) patchMachineConfig(ctx context.Context, patch []byte, mode string, timeout time.Duration) error {
@@ -227,6 +206,9 @@ func RenderTalosPatch(operations []Operation) ([]byte, error) {
 	for _, op := range operations {
 		switch op.Kind {
 		case EnsureVLAN:
+			if op.Name == "" || op.Parent == "" {
+				return nil, fmt.Errorf("VLAN operation requires name and parent")
+			}
 			if op.VLAN < 1 || op.VLAN > 4094 {
 				return nil, fmt.Errorf("VLAN operation %q has invalid VLAN %d", op.Name, op.VLAN)
 			}
@@ -237,6 +219,9 @@ func RenderTalosPatch(operations []Operation) ([]byte, error) {
 			}
 			docs = append(docs, b.String())
 		case EnsureBridge:
+			if op.Name == "" || op.Parent == "" {
+				return nil, fmt.Errorf("bridge operation requires name and parent")
+			}
 			var b strings.Builder
 			fmt.Fprintf(&b, "apiVersion: v1alpha1\nkind: BridgeConfig\nname: %s\nlinks:\n  - %s\nup: true\n", op.Name, op.Parent)
 			if op.MTU > 0 {

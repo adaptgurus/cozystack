@@ -11,7 +11,8 @@ import (
 // NetworkFabric network exactly. A same-named bridge is insufficient: tagged
 // networks must have the requested VLAN ID on the requested uplink, and the
 // bridge must contain that VLAN link. Native networks must bridge the requested
-// uplink directly.
+// uplink directly. When MTU is explicit, every managed link must match it and
+// the physical/logical uplink must be large enough to carry it.
 func ValidateNetworkTopology(state NodeState, network Network) error {
 	uplink, ok := state.Interfaces[network.Uplink]
 	if !ok {
@@ -19,6 +20,14 @@ func ValidateNetworkTopology(state NodeState, network Network) error {
 	}
 	if !uplink.Up {
 		return fmt.Errorf("node %s uplink %s is down for network %s", state.Name, network.Uplink, network.Name)
+	}
+	if network.MTU > 0 {
+		if uplink.MTU <= 0 {
+			return fmt.Errorf("node %s uplink %s MTU is unavailable; cannot verify required MTU %d", state.Name, network.Uplink, network.MTU)
+		}
+		if uplink.MTU < network.MTU {
+			return fmt.Errorf("node %s uplink %s MTU %d is smaller than required network MTU %d", state.Name, network.Uplink, uplink.MTU, network.MTU)
+		}
 	}
 
 	member := network.Uplink
@@ -39,7 +48,7 @@ func ValidateNetworkTopology(state NodeState, network Network) error {
 		if !vlan.Up {
 			return fmt.Errorf("node %s VLAN interface %s is down", state.Name, network.VLANInterface)
 		}
-		if network.MTU > 0 && vlan.MTU > 0 && vlan.MTU != network.MTU {
+		if network.MTU > 0 && vlan.MTU != network.MTU {
 			return fmt.Errorf("node %s VLAN interface %s MTU %d does not match required MTU %d", state.Name, network.VLANInterface, vlan.MTU, network.MTU)
 		}
 		member = network.VLANInterface
@@ -55,7 +64,7 @@ func ValidateNetworkTopology(state NodeState, network Network) error {
 	if !bridge.Up {
 		return fmt.Errorf("node %s bridge %s is down", state.Name, network.Bridge)
 	}
-	if network.MTU > 0 && bridge.MTU > 0 && bridge.MTU != network.MTU {
+	if network.MTU > 0 && bridge.MTU != network.MTU {
 		return fmt.Errorf("node %s bridge %s MTU %d does not match required MTU %d", state.Name, network.Bridge, bridge.MTU, network.MTU)
 	}
 	if !containsString(bridge.Members, member) {

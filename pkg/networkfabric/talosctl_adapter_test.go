@@ -53,6 +53,24 @@ func TestValidateNetworkTopologyRejectsWrongVLANAndBridgeMembership(t *testing.T
 	}
 }
 
+func TestValidateNetworkTopologyFailsClosedOnUnknownOrTooSmallMTU(t *testing.T) {
+	network := Network{Name: "prod", Uplink: "eth1", VLAN: 120, VLANInterface: "eth1.120", Bridge: "br-vlan120", MTU: 9000}
+	state := NodeState{Name: "node-1", ManagementReachable: true, Interfaces: map[string]InterfaceState{
+		"eth1":       {Name: "eth1", Up: true, MTU: 1500},
+		"eth1.120":   {Name: "eth1.120", Kind: "vlan", Parent: "eth1", VLAN: 120, Up: true, MTU: 9000},
+		"br-vlan120": {Name: "br-vlan120", Kind: "bridge", Members: []string{"eth1.120"}, Up: true, MTU: 9000},
+	}}
+	if err := ValidateNetworkTopology(state, network); err == nil || !strings.Contains(err.Error(), "smaller than required network MTU") {
+		t.Fatalf("expected uplink MTU rejection, got %v", err)
+	}
+	uplink := state.Interfaces["eth1"]
+	uplink.MTU = 0
+	state.Interfaces["eth1"] = uplink
+	if err := ValidateNetworkTopology(state, network); err == nil || !strings.Contains(err.Error(), "MTU is unavailable") {
+		t.Fatalf("expected unknown uplink MTU rejection, got %v", err)
+	}
+}
+
 func TestPlanForTransitionDeletesOnlyStaleOwnedDocuments(t *testing.T) {
 	previous := []Network{
 		{Name: "old", Uplink: "eth1", VLAN: 120, VLANInterface: "eth1.120", Bridge: "br-old", MTU: 1500},
@@ -67,9 +85,13 @@ func TestPlanForTransitionDeletesOnlyStaleOwnedDocuments(t *testing.T) {
 		},
 	}
 	state := NodeState{Name: "node-1", ManagementReachable: true, Interfaces: map[string]InterfaceState{
-		"eth0": {Name: "eth0", Up: true},
-		"eth1": {Name: "eth1", Up: true},
-		"eth2": {Name: "eth2", Up: true},
+		"eth0":     {Name: "eth0", Up: true},
+		"eth1":     {Name: "eth1", Up: true},
+		"eth2":     {Name: "eth2", Up: true},
+		"eth1.120": {Name: "eth1.120", Kind: "vlan", Up: true},
+		"br-old":   {Name: "br-old", Kind: "bridge", Up: true},
+		"eth2.130": {Name: "eth2.130", Kind: "vlan", Up: true},
+		"br-keep":  {Name: "br-keep", Kind: "bridge", Up: true},
 	}}
 	plan, err := PlanForTransition(spec, previous, state)
 	if err != nil {
@@ -97,6 +119,13 @@ func TestPlanForTransitionDeletesOnlyStaleOwnedDocuments(t *testing.T) {
 	if strings.Count(text, "$patch: delete") != 2 || strings.Index(text, "kind: BridgeConfig") > strings.Index(text, "kind: VLANConfig") {
 		t.Fatalf("unexpected cleanup patch:\n%s", text)
 	}
+	rollback, err := RenderTalosPatch(plan.RollbackOperations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rollback), "kind: VLANConfig\nname: eth1.120") || !strings.Contains(string(rollback), "kind: BridgeConfig\nname: br-old") {
+		t.Fatalf("cleanup inverse does not restore stale-owned documents:\n%s", rollback)
+	}
 }
 
 type scriptedRunner struct {
@@ -120,12 +149,8 @@ func (r *scriptedRunner) Run(_ context.Context, name string, args ...string) ([]
 	return response, err
 }
 
-func TestTalosctlApplyUsesTryModeAndRollbackUsesNoRebootSnapshot(t *testing.T) {
-	runner := &scriptedRunner{responses: [][]byte{
-		[]byte(`{"spec":{"version":"v1alpha1","machine":{"type":"worker"}}}`),
-		nil,
-		nil,
-	}}
+func TestTalosctlApplyUsesTryModeAndRollbackUsesOwnedInversePatch(t *testing.T) {
+	runner := &scriptedRunner{}
 	adapter := &TalosctlAdapter{
 		Binary:      "talosctl",
 		Talosconfig: "/talosconfig",
@@ -133,17 +158,19 @@ func TestTalosctlApplyUsesTryModeAndRollbackUsesNoRebootSnapshot(t *testing.T) {
 		TryTimeout:  90 * time.Second,
 		Runner:      runner,
 	}
-	receipt, err := adapter.Apply(context.Background(), "node-1", []Operation{{Kind: EnsureBridge, Name: "br-test", Parent: "eth1"}})
+	forward := []Operation{{Kind: EnsureBridge, Name: "br-test", Parent: "eth1"}}
+	inverse := []Operation{{Kind: DeleteBridge, Name: "br-test"}}
+	receipt, err := adapter.Apply(context.Background(), "node-1", forward, inverse)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if receipt.Revision == "" || len(receipt.RollbackConfig) == 0 {
+	if receipt.Revision == "" || len(receipt.RollbackPatch) == 0 || strings.Contains(string(receipt.RollbackPatch), "machine:") {
 		t.Fatalf("receipt = %+v", receipt)
 	}
-	if len(runner.calls) != 2 {
+	if len(runner.calls) != 1 {
 		t.Fatalf("apply calls = %#v", runner.calls)
 	}
-	applyArgs := strings.Join(runner.calls[1], " ")
+	applyArgs := strings.Join(runner.calls[0], " ")
 	for _, want := range []string{"patch machineconfig", "--mode=try", "--timeout=1m30s"} {
 		if !strings.Contains(applyArgs, want) {
 			t.Fatalf("try-mode call %q missing %q", applyArgs, want)
@@ -153,14 +180,25 @@ func TestTalosctlApplyUsesTryModeAndRollbackUsesNoRebootSnapshot(t *testing.T) {
 	if err := adapter.Rollback(context.Background(), "node-1", receipt); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
-	if len(runner.calls) != 3 {
+	if len(runner.calls) != 2 {
 		t.Fatalf("rollback calls = %#v", runner.calls)
 	}
-	rollbackArgs := strings.Join(runner.calls[2], " ")
-	for _, want := range []string{"apply-config", "--mode=no-reboot", "--file"} {
+	rollbackArgs := strings.Join(runner.calls[1], " ")
+	for _, want := range []string{"patch machineconfig", "--mode=no-reboot", "--patch"} {
 		if !strings.Contains(rollbackArgs, want) {
 			t.Fatalf("rollback call %q missing %q", rollbackArgs, want)
 		}
+	}
+	if strings.Contains(rollbackArgs, "apply-config") {
+		t.Fatalf("rollback must never reapply a full machine configuration: %q", rollbackArgs)
+	}
+}
+
+func TestTalosctlApplyRefusesTryModeWithoutInversePatch(t *testing.T) {
+	adapter := &TalosctlAdapter{Endpoint: "10.0.0.10", Runner: &scriptedRunner{}}
+	_, err := adapter.Apply(context.Background(), "node-1", []Operation{{Kind: EnsureBridge, Name: "br-test", Parent: "eth1"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "without a controller-owned inverse rollback patch") {
+		t.Fatalf("expected fail-closed missing inverse patch error, got %v", err)
 	}
 }
 

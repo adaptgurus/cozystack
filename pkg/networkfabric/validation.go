@@ -68,8 +68,13 @@ func Validate(spec Spec) error {
 		if network.MTU != 0 && (network.MTU < 576 || network.MTU > 9216) {
 			errs = append(errs, prefix+".mtu must be 0 or between 576 and 9216")
 		}
-		if network.VLAN == 0 && network.VLANInterface != "" {
-			errs = append(errs, prefix+".vlanInterface must be empty for an untagged/native network")
+		if network.VLAN == 0 {
+			if network.VLANInterface != "" {
+				errs = append(errs, prefix+".vlanInterface must be empty for an untagged/native network")
+			}
+			if _, management := protected[network.Uplink]; management {
+				errs = append(errs, fmt.Sprintf("%s.uplink %q is a protected management interface and cannot be enslaved into a native bridge", prefix, network.Uplink))
+			}
 		}
 		if network.VLAN > 0 {
 			if network.VLANInterface == "" {
@@ -77,6 +82,9 @@ func Validate(spec Spec) error {
 			} else {
 				if network.VLANInterface == network.Uplink || network.VLANInterface == network.Bridge {
 					errs = append(errs, prefix+".vlanInterface must differ from uplink and bridge")
+				}
+				if _, management := protected[network.VLANInterface]; management {
+					errs = append(errs, fmt.Sprintf("%s.vlanInterface %q cannot replace a protected management interface", prefix, network.VLANInterface))
 				}
 				if _, exists := vlanIfaces[network.VLANInterface]; exists {
 					errs = append(errs, fmt.Sprintf("duplicate vlanInterface %q", network.VLANInterface))

@@ -18,7 +18,9 @@ func PlanForNode(spec Spec, state NodeState) (Plan, error) {
 // PlanForTransition reconciles a previously controller-owned topology to the
 // current desired topology. Stale documents are deleted only when their exact
 // kind/name was recorded as controller-owned and is no longer present in the
-// desired spec. This prevents cleanup from deleting unmanaged Talos links.
+// desired spec. Existing same-named links that were not previously owned are
+// rejected rather than adopted, because adopting them would make later cleanup
+// capable of deleting an operator-managed Talos resource.
 func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, error) {
 	if err := Validate(spec); err != nil {
 		return Plan{}, err
@@ -39,6 +41,23 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 		}
 	}
 
+	previousBridges := networkByBridge(previous)
+	previousVLANs := networkByVLANInterface(previous)
+	for _, network := range spec.Networks {
+		if _, exists := state.Interfaces[network.Bridge]; exists {
+			if _, owned := previousBridges[network.Bridge]; !owned {
+				return Plan{}, fmt.Errorf("node %q already has bridge %q required by network %q, but it is not recorded as NetworkFabric-owned; refusing to adopt unmanaged Talos configuration", state.Name, network.Bridge, network.Name)
+			}
+		}
+		if network.VLAN > 0 {
+			if _, exists := state.Interfaces[network.VLANInterface]; exists {
+				if _, owned := previousVLANs[network.VLANInterface]; !owned {
+					return Plan{}, fmt.Errorf("node %q already has VLAN interface %q required by network %q, but it is not recorded as NetworkFabric-owned; refusing to adopt unmanaged Talos configuration", state.Name, network.VLANInterface, network.Name)
+				}
+			}
+		}
+	}
+
 	plan := Plan{Node: state.Name}
 	desiredBridges := map[string]struct{}{}
 	desiredVLANs := map[string]struct{}{}
@@ -49,8 +68,7 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 		}
 	}
 
-	previousSorted := append([]Network(nil), previous...)
-	sort.Slice(previousSorted, func(i, j int) bool { return previousSorted[i].Name < previousSorted[j].Name })
+	previousSorted := sortedNetworks(previous)
 	seenDeleteBridge := map[string]struct{}{}
 	seenDeleteVLAN := map[string]struct{}{}
 	for _, network := range previousSorted {
@@ -73,8 +91,7 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 		}
 	}
 
-	networks := append([]Network(nil), spec.Networks...)
-	sort.Slice(networks, func(i, j int) bool { return networks[i].Name < networks[j].Name })
+	networks := sortedNetworks(spec.Networks)
 	for _, network := range networks {
 		if _, ok := state.Interfaces[network.Uplink]; !ok {
 			return Plan{}, fmt.Errorf("node %q is missing uplink %q required by network %q", state.Name, network.Uplink, network.Name)
@@ -99,13 +116,99 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 			NetworkRef: network.Name,
 		})
 	}
+	plan.RollbackOperations = buildRollbackOperations(previous, spec.Networks)
 	return plan, nil
+}
+
+// buildRollbackOperations creates an exact inverse for only the Talos
+// VLANConfig/BridgeConfig documents owned by NetworkFabric. It intentionally
+// never snapshots or reapplies the complete machine configuration.
+func buildRollbackOperations(previous, desired []Network) []Operation {
+	previousBridges := networkByBridge(previous)
+	previousVLANs := networkByVLANInterface(previous)
+
+	var operations []Operation
+
+	// Reassert every previously owned VLAN definition first. Even when the desired
+	// definition is unchanged, this gives an explicit owned inverse for a repair
+	// transaction and avoids ever falling back to a whole-machine snapshot.
+	for _, network := range sortedNetworks(previous) {
+		if network.VLAN <= 0 || network.VLANInterface == "" {
+			continue
+		}
+		operations = append(operations, ensureVLANOperation(network))
+	}
+
+	// Reassert every previously owned bridge definition next. This also detaches
+	// any newly introduced VLAN from a same-named bridge before the VLAN is
+	// deleted below.
+	for _, network := range sortedNetworks(previous) {
+		operations = append(operations, ensureBridgeOperation(network))
+	}
+
+	// Remove newly introduced bridges before their child VLANs.
+	for _, network := range sortedNetworks(desired) {
+		if _, existed := previousBridges[network.Bridge]; !existed {
+			operations = append(operations, Operation{Kind: DeleteBridge, Name: network.Bridge, NetworkRef: network.Name})
+		}
+	}
+	for _, network := range sortedNetworks(desired) {
+		if network.VLAN <= 0 || network.VLANInterface == "" {
+			continue
+		}
+		if _, existed := previousVLANs[network.VLANInterface]; !existed {
+			operations = append(operations, Operation{Kind: DeleteVLAN, Name: network.VLANInterface, NetworkRef: network.Name})
+		}
+	}
+	return operations
+}
+
+func ensureVLANOperation(network Network) Operation {
+	return Operation{Kind: EnsureVLAN, Name: network.VLANInterface, Parent: network.Uplink, VLAN: network.VLAN, MTU: network.MTU, NetworkRef: network.Name}
+}
+
+func ensureBridgeOperation(network Network) Operation {
+	return Operation{Kind: EnsureBridge, Name: network.Bridge, Parent: bridgeParent(network), MTU: network.MTU, NetworkRef: network.Name}
+}
+
+func bridgeParent(network Network) string {
+	if network.VLAN > 0 {
+		return network.VLANInterface
+	}
+	return network.Uplink
+}
+
+func networkByBridge(networks []Network) map[string]Network {
+	out := make(map[string]Network, len(networks))
+	for _, network := range networks {
+		if network.Bridge != "" {
+			out[network.Bridge] = network
+		}
+	}
+	return out
+}
+
+func networkByVLANInterface(networks []Network) map[string]Network {
+	out := make(map[string]Network, len(networks))
+	for _, network := range networks {
+		if network.VLAN > 0 && network.VLANInterface != "" {
+			out[network.VLANInterface] = network
+		}
+	}
+	return out
+}
+
+func sortedNetworks(networks []Network) []Network {
+	out := append([]Network(nil), networks...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Orchestrator owns the safety transaction around one Talos node. The adapter
 // first applies the change in Talos try mode. Only after management and optional
-// physical-topology verification succeed is the change confirmed; otherwise
-// rollback is attempted immediately and Talos' try timeout remains a second net.
+// physical-topology verification succeed is the change confirmed; otherwise an
+// inverse patch affecting only controller-owned network documents is attempted
+// immediately and Talos' try timeout remains a second safety net.
 type Orchestrator struct {
 	Adapter TalosAdapter
 }
@@ -134,12 +237,12 @@ func (o Orchestrator) ReconcileNodeTransitionValidated(ctx context.Context, spec
 	if err != nil {
 		return ApplyReceipt{}, err
 	}
-	receipt, err := o.Adapter.Apply(ctx, node, plan.Operations)
+	receipt, err := o.Adapter.Apply(ctx, node, plan.Operations, plan.RollbackOperations)
 	if err != nil {
 		return ApplyReceipt{}, fmt.Errorf("apply Talos network plan to node %q: %w", node, err)
 	}
 	if receipt.Revision == "" {
-		return ApplyReceipt{}, fmt.Errorf("Talos adapter returned an empty rollback revision for node %q", node)
+		return ApplyReceipt{}, fmt.Errorf("Talos adapter returned an empty transaction revision for node %q", node)
 	}
 	if err := o.Adapter.VerifyManagement(ctx, node, spec.ProtectedManagementInterfaces); err != nil {
 		return receipt, rollbackFailure(ctx, o.Adapter, node, receipt, "management verification failed", err)
