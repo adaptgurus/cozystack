@@ -12,14 +12,11 @@
   "cniVersion" "0.3.1"
   "type" "bridge"
   "bridge" .Values.bridge
-  "ipam" (.Values.ipam | default dict)
+  "ipam" (dict)
   "promiscMode" (.Values.promiscMode | default false)
   "macspoofchk" (.Values.macspoofchk | default false)
   "hairpinMode" (.Values.hairpinMode | default false)
 -}}
-{{- if gt (int .Values.vlan) 0 }}
-{{- $_ := set $config "vlan" (int .Values.vlan) }}
-{{- end }}
 {{- if gt (int .Values.mtu) 0 }}
 {{- $_ := set $config "mtu" (int .Values.mtu) }}
 {{- end }}
@@ -32,12 +29,13 @@ metadata:
   labels:
     apps.cozystack.io/application.kind: VMNetwork
     apps.cozystack.io/application.name: {{ .Release.Name | quote }}
-    cozystack.io/tenantName: {{ .Release.Namespace | quote }}
+    vm-network.cozystack.io/tenant-namespace: {{ .Release.Namespace | quote }}
     vm-network.cozystack.io/type: external-bridge
   annotations:
     vm-network.cozystack.io/bridge: {{ .Values.bridge | quote }}
     vm-network.cozystack.io/vlan: {{ int .Values.vlan | quote }}
     vm-network.cozystack.io/mtu: {{ int .Values.mtu | quote }}
+    vm-network.cozystack.io/vlan-owner: "talos-node-network"
     {{- with .Values.description }}
     vm-network.cozystack.io/description: {{ . | quote }}
     {{- end }}
@@ -57,4 +55,5 @@ data:
   bridge: {{ .Values.bridge | quote }}
   vlan: {{ int .Values.vlan | quote }}
   mtu: {{ int .Values.mtu | quote }}
+  vlanOwner: "talos-node-network"
   addressing: "guest-or-external-dhcp"
