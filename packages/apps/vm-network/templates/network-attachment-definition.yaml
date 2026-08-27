@@ -1,0 +1,60 @@
+{{- if not .Values.bridge }}
+{{- fail "bridge is required" }}
+{{- end }}
+{{- if or (lt (int .Values.vlan) 0) (gt (int .Values.vlan) 4094) }}
+{{- fail "vlan must be between 0 and 4094" }}
+{{- end }}
+{{- if and (ne (int .Values.mtu) 0) (or (lt (int .Values.mtu) 576) (gt (int .Values.mtu) 9216)) }}
+{{- fail "mtu must be 0 or between 576 and 9216" }}
+{{- end }}
+
+{{- $config := dict
+  "cniVersion" "0.3.1"
+  "type" "bridge"
+  "bridge" .Values.bridge
+  "ipam" (.Values.ipam | default dict)
+  "promiscMode" (.Values.promiscMode | default false)
+  "macspoofchk" (.Values.macspoofchk | default false)
+  "hairpinMode" (.Values.hairpinMode | default false)
+-}}
+{{- if gt (int .Values.vlan) 0 }}
+{{- $_ := set $config "vlan" (int .Values.vlan) }}
+{{- end }}
+{{- if gt (int .Values.mtu) 0 }}
+{{- $_ := set $config "mtu" (int .Values.mtu) }}
+{{- end }}
+
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    apps.cozystack.io/application.kind: VMNetwork
+    apps.cozystack.io/application.name: {{ .Release.Name | quote }}
+    cozystack.io/tenantName: {{ .Release.Namespace | quote }}
+    vm-network.cozystack.io/type: external-bridge
+  annotations:
+    vm-network.cozystack.io/bridge: {{ .Values.bridge | quote }}
+    vm-network.cozystack.io/vlan: {{ int .Values.vlan | quote }}
+    vm-network.cozystack.io/mtu: {{ int .Values.mtu | quote }}
+    {{- with .Values.description }}
+    vm-network.cozystack.io/description: {{ . | quote }}
+    {{- end }}
+spec:
+  config: {{ $config | toJson | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-vm-network
+  namespace: {{ .Release.Namespace }}
+  labels:
+    apps.cozystack.io/application.kind: VMNetwork
+    apps.cozystack.io/application.name: {{ .Release.Name | quote }}
+data:
+  networkName: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+  bridge: {{ .Values.bridge | quote }}
+  vlan: {{ int .Values.vlan | quote }}
+  mtu: {{ int .Values.mtu | quote }}
+  addressing: "guest-or-external-dhcp"
