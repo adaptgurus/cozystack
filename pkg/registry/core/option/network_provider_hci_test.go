@@ -6,17 +6,27 @@ import (
 	"context"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
 func TestHCINetworkOptionProviderIsTenantScoped(t *testing.T) {
 	gvk := gvrNADs.GroupVersion().WithKind("NetworkAttachmentDefinition")
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(),
-		newObj(gvk, "tenant-a", "vm-network-production", nil),
-		newObj(gvk, "tenant-a", "legacy-external", nil),
-		newObj(gvk, "tenant-b", "vm-network-restricted", nil),
-	)
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds())
+	for _, object := range []struct {
+		namespace string
+		name      string
+	}{
+		{namespace: "tenant-a", name: "vm-network-production"},
+		{namespace: "tenant-a", name: "legacy-external"},
+		{namespace: "tenant-b", name: "vm-network-restricted"},
+	} {
+		obj := newObj(gvk, object.namespace, object.name, nil)
+		if _, err := dyn.Resource(gvrNADs).Namespace(object.namespace).Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed NAD %s/%s: %v", object.namespace, object.name, err)
+		}
+	}
 
 	provider := DefaultProviders(dyn)["network"]
 	items, err := provider(context.Background(), "tenant-a")
@@ -46,9 +56,11 @@ func TestHCINetworkOptionProviderIsTenantScoped(t *testing.T) {
 
 func TestHCINetworkOptionProviderReturnsExactNADIdentity(t *testing.T) {
 	gvk := gvrNADs.GroupVersion().WithKind("NetworkAttachmentDefinition")
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(),
-		newObj(gvk, "tenant-a", "vm-network-production", nil),
-	)
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds())
+	obj := newObj(gvk, "tenant-a", "vm-network-production", nil)
+	if _, err := dyn.Resource(gvrNADs).Namespace("tenant-a").Create(context.Background(), obj, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed NAD tenant-a/vm-network-production: %v", err)
+	}
 
 	items, err := DefaultProviders(dyn)["network"](context.Background(), "tenant-a")
 	if err != nil {
