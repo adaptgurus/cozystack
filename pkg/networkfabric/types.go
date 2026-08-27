@@ -68,17 +68,21 @@ type Plan struct {
 }
 
 type ApplyReceipt struct {
-	// Revision is an adapter-owned rollback token, for example the Talos
-	// machine-config revision observed immediately before Apply.
-	Revision string
+	// Revision identifies the machine configuration captured immediately before
+	// the try-mode update. RollbackConfig and Patch remain controller memory only
+	// and are never persisted into Kubernetes status or logs.
+	Revision       string
+	RollbackConfig []byte
+	Patch          []byte
 }
 
 // TalosAdapter is deliberately narrow. The Kubernetes reconciler owns desired
 // state and rollout order; the adapter owns Talos inspection, transactional
-// application, connectivity verification and rollback mechanics.
+// application, connectivity verification, confirmation and rollback mechanics.
 type TalosAdapter interface {
 	Inspect(ctx context.Context, node string) (NodeState, error)
 	Apply(ctx context.Context, node string, operations []Operation) (ApplyReceipt, error)
 	VerifyManagement(ctx context.Context, node string, protectedInterfaces []string) error
+	Confirm(ctx context.Context, node string, receipt ApplyReceipt) error
 	Rollback(ctx context.Context, node string, receipt ApplyReceipt) error
 }
