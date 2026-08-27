@@ -14,6 +14,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -129,9 +130,13 @@ func tenantNamespaceAllowed(ctx context.Context, dynamicClient dynamic.Interface
 	return false, nil
 }
 
-func writeTenantAuthorizationResponse(w http.ResponseWriter, uid interface{ String() string }, response *admissionv1.AdmissionResponse) {
-	// This overload-like signature is intentionally avoided in callers by using
-	// the concrete UID's String method while keeping the response helper tiny.
-	response.UID = admissionv1.AdmissionResponse{}.UID
-	_ = uid
+func writeTenantAuthorizationResponse(w http.ResponseWriter, uid types.UID, response *admissionv1.AdmissionResponse) {
+	response.UID = uid
+	review := admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{APIVersion: admissionv1.SchemeGroupVersion.String(), Kind: "AdmissionReview"},
+		Response: response,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(&review)
 }
