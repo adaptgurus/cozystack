@@ -4,64 +4,34 @@ package option
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
 	corev1alpha1 "github.com/cozystack/cozystack/pkg/apis/core/v1alpha1"
 )
 
-const isoDataVolumePrefix = "vm-default-isos-"
+const isoPVCPrefix = "vm-default-isos-"
 
-var gvrDataVolumes = schema.GroupVersionResource{Group: "cdi.kubevirt.io", Version: "v1beta1", Resource: "datavolumes"}
-
-// isoProvider exposes only the platform ISO Library. It intentionally lists
-// DataVolumes rather than arbitrary PVCs so catalog metadata and readiness can
-// be surfaced without mixing ISO media with golden VM disk images.
+// isoProvider exposes only the platform ISO Library PVCs. This deliberately
+// follows the same public-catalog ownership pattern as imageProvider and avoids
+// granting the option API any additional CDI privileges.
 func isoProvider(dyn dynamic.Interface) providerFunc {
 	return func(ctx context.Context, _ string) ([]corev1alpha1.OptionItem, error) {
-		list, err := dyn.Resource(gvrDataVolumes).Namespace(publicImagesNamespace).List(ctx, listOpts())
+		list, err := dyn.Resource(gvrPVCs).Namespace(publicImagesNamespace).List(ctx, listOpts())
 		if err != nil {
 			return nil, err
 		}
 		items := make([]corev1alpha1.OptionItem, 0, len(list.Items))
 		for i := range list.Items {
-			dv := &list.Items[i]
-			if !strings.HasPrefix(dv.GetName(), isoDataVolumePrefix) {
+			name := list.Items[i].GetName()
+			if !strings.HasPrefix(name, isoPVCPrefix) {
 				continue
 			}
-			annotations := dv.GetAnnotations()
-			if annotations["vm-disk.cozystack.io/optical"] != "true" {
-				continue
-			}
-			value := strings.TrimPrefix(dv.GetName(), isoDataVolumePrefix)
-			label := annotations["vm-default-isos.cozystack.io/name"]
-			if label == "" {
-				label = value
-			}
-			category := annotations["vm-default-isos.cozystack.io/category"]
-			osName := annotations["vm-default-isos.cozystack.io/os-name"]
-			osVersion := annotations["vm-default-isos.cozystack.io/os-version"]
-			description := annotations["vm-default-isos.cozystack.io/description"]
-			var details []string
-			if category != "" {
-				details = append(details, category)
-			}
-			if osName != "" {
-				if osVersion != "" {
-					details = append(details, fmt.Sprintf("%s %s", osName, osVersion))
-				} else {
-					details = append(details, osName)
-				}
-			}
-			if description != "" {
-				details = append(details, description)
-			}
-			items = append(items, corev1alpha1.OptionItem{Value: value, Label: label, Description: strings.Join(details, " · ")})
+			value := strings.TrimPrefix(name, isoPVCPrefix)
+			items = append(items, corev1alpha1.OptionItem{Value: value, Label: value})
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].Value < items[j].Value })
 		return items, nil
