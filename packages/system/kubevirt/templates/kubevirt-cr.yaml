@@ -9,6 +9,7 @@ spec:
   configuration:
     commonInstancetypesDeployment:
       enabled: false
+    {{- if .Values.vmTemplates.enabled }}
     # KubeVirt v1.8.x ships the native VirtualMachineTemplate API behind the
     # Snapshot + Template feature gates. Keep the virt-template deployment
     # explicitly enabled so the HCI product can expose a Proxmox-style
@@ -17,6 +18,7 @@ spec:
     # state preflight before creating VirtualMachineTemplateRequests.
     virtTemplateDeployment:
       enabled: true
+    {{- end }}
     developerConfiguration:
       {{- if .Values.cpuAllocationRatio }}
       cpuAllocationRatio: {{ .Values.cpuAllocationRatio }}
@@ -29,8 +31,10 @@ spec:
       - CPUManager
       - GPU
       - VMExport
+      {{- if .Values.vmTemplates.enabled }}
       - Snapshot
       - Template
+      {{- end }}
       {{- range .Values.extraFeatureGates }}
       - {{ . }}
       {{- end }}
