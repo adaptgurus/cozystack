@@ -1,0 +1,42 @@
+name: HCI v1.6.2 Gate
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+  workflow_dispatch:
+
+concurrency:
+  group: hci-v1.6.2-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hci-gate:
+    name: Go and Helm HCI validation
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code and tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.18.6
+
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
+
+      - name: Run HCI v1.6.2 gate
+        run: ./hack/test-hci-v1.6.2.sh
