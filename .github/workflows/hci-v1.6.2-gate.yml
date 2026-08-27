@@ -38,8 +38,8 @@ jobs:
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
-      - name: Test VM template safety backend
-        run: go test ./pkg/vmtemplate
+      - name: Test VM template safety backend and transaction controller
+        run: go test ./pkg/vmtemplate ./pkg/vmtemplatecontroller
 
       - name: Run HCI v1.6.2 gate
         run: ./hack/test-hci-v1.6.2.sh
