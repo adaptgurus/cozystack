@@ -6,42 +6,17 @@ import (
 	"context"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-func mediaTestObject(gvk schema.GroupVersionKind, namespace, name string, spec map[string]interface{}, annotations map[string]string) *unstructured.Unstructured {
-	o := newObj(gvk, namespace, name, spec)
-	o.SetAnnotations(annotations)
-	return o
-}
-
 func TestISOProviderSeparatesPlatformISOsFromGoldenImages(t *testing.T) {
-	kinds := listKinds()
-	kinds[gvrDataVolumes] = "DataVolumeList"
-	gvk := gvrDataVolumes.GroupVersion().WithKind("DataVolume")
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), kinds,
-		mediaTestObject(gvk, publicImagesNamespace, "vm-default-isos-windows-server-2025", nil, map[string]string{
-			"vm-disk.cozystack.io/optical":               "true",
-			"vm-default-isos.cozystack.io/name":          "Windows Server 2025",
-			"vm-default-isos.cozystack.io/category":      "installer",
-			"vm-default-isos.cozystack.io/os-name":       "Windows Server",
-			"vm-default-isos.cozystack.io/os-version":    "2025",
-			"vm-default-isos.cozystack.io/description":   "Windows installation media",
-		}),
-		mediaTestObject(gvk, publicImagesNamespace, "vm-default-isos-virtio-win", nil, map[string]string{
-			"vm-disk.cozystack.io/optical":          "true",
-			"vm-default-isos.cozystack.io/name":     "VirtIO Drivers",
-			"vm-default-isos.cozystack.io/category": "drivers",
-		}),
-		mediaTestObject(gvk, publicImagesNamespace, "vm-default-images-ubuntu-24.04", nil, map[string]string{
-			"vm-disk.cozystack.io/optical": "false",
-		}),
-		mediaTestObject(gvk, "other", "vm-default-isos-hidden", nil, map[string]string{
-			"vm-disk.cozystack.io/optical": "true",
-		}),
+	gvk := gvrPVCs.GroupVersion().WithKind("PersistentVolumeClaim")
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(),
+		newObj(gvk, publicImagesNamespace, "vm-default-isos-windows-server-2025", nil),
+		newObj(gvk, publicImagesNamespace, "vm-default-isos-virtio-win", nil),
+		newObj(gvk, publicImagesNamespace, "vm-default-images-ubuntu-24.04", nil),
+		newObj(gvk, "other", "vm-default-isos-hidden", nil),
 	)
 
 	items, err := isoProvider(dyn)(context.Background(), "tenant-a")
@@ -51,11 +26,26 @@ func TestISOProviderSeparatesPlatformISOsFromGoldenImages(t *testing.T) {
 	if got := values(items); len(got) != 2 || got[0] != "virtio-win" || got[1] != "windows-server-2025" {
 		t.Fatalf("iso values = %v", got)
 	}
-	if items[1].Label != "Windows Server 2025" {
-		t.Fatalf("Windows ISO label = %q", items[1].Label)
+	if items[0].Label != "virtio-win" || items[1].Label != "windows-server-2025" {
+		t.Fatalf("ISO labels must match stable catalog values, got %#v", items)
 	}
-	if items[1].Description == "" {
-		t.Fatal("Windows ISO description should include catalog metadata")
+}
+
+func TestISOProviderIsPlatformScoped(t *testing.T) {
+	gvk := gvrPVCs.GroupVersion().WithKind("PersistentVolumeClaim")
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(),
+		newObj(gvk, publicImagesNamespace, "vm-default-isos-rescue", nil),
+		newObj(gvk, "tenant-a", "vm-default-isos-private", nil),
+	)
+
+	for _, namespace := range []string{"", "tenant-a", "tenant-b"} {
+		items, err := isoProvider(dyn)(context.Background(), namespace)
+		if err != nil {
+			t.Fatalf("iso provider namespace %q: %v", namespace, err)
+		}
+		if got := values(items); len(got) != 1 || got[0] != "rescue" {
+			t.Fatalf("iso values for namespace %q = %v, want platform catalog only", namespace, got)
+		}
 	}
 }
 
@@ -89,5 +79,13 @@ func TestOpticalDiskProviderIsTenantScopedAndFiltersBlockDisks(t *testing.T) {
 	}
 	if items[1].Label != "Windows Installer" {
 		t.Fatalf("display label = %q", items[1].Label)
+	}
+
+	empty, err := opticalDiskProvider(dyn)(context.Background(), "")
+	if err != nil {
+		t.Fatalf("opticaldisk provider empty namespace: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("opticaldisk provider without tenant namespace returned %v", values(empty))
 	}
 }
