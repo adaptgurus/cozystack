@@ -65,6 +65,26 @@ func ValidateNetworkTopology(state NodeState, network Network) error {
 	return nil
 }
 
+// ValidateNetworksAbsent runs while still inside Talos try mode during
+// selector-removal and finalizer cleanup. It fails if any controller-owned
+// bridge or tagged VLAN link remains, causing the transaction to roll back
+// instead of confirming an incomplete deletion.
+func ValidateNetworksAbsent(state NodeState, previous []Network) error {
+	for _, network := range previous {
+		if network.Bridge != "" {
+			if _, exists := state.Interfaces[network.Bridge]; exists {
+				return fmt.Errorf("node %s still exposes stale bridge %s for network %s", state.Name, network.Bridge, network.Name)
+			}
+		}
+		if network.VLAN > 0 && network.VLANInterface != "" {
+			if _, exists := state.Interfaces[network.VLANInterface]; exists {
+				return fmt.Errorf("node %s still exposes stale VLAN interface %s for network %s", state.Name, network.VLANInterface, network.Name)
+			}
+		}
+	}
+	return nil
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
