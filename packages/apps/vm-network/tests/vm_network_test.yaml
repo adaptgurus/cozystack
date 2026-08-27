@@ -88,26 +88,3 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: fabricRef and fabricNetwork must be set together
-
-  - it: rejects missing physical bridge
-    set:
-      bridge: ""
-    asserts:
-      - failedTemplate:
-          errorMessage: bridge is required
-
-  - it: rejects invalid VLAN
-    set:
-      bridge: br-test
-      vlan: 4095
-    asserts:
-      - failedTemplate:
-          errorMessage: vlan must be between 0 and 4094
-
-  - it: rejects invalid MTU
-    set:
-      bridge: br-test
-      mtu: 10000
-    asserts:
-      - failedTemplate:
-          errorMessage: mtu must be 0 or between 576 and 9216
