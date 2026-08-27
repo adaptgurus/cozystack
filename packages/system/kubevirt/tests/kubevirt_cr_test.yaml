@@ -5,7 +5,7 @@ release:
   name: kubevirt
   namespace: cozy-kubevirt
 tests:
-  - it: keeps the upstream default feature-gate set and omits permittedHostDevices when values are empty
+  - it: keeps the upstream default feature-gate set and omits optional platform configuration when values are empty
     asserts:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
@@ -23,6 +23,8 @@ tests:
           path: spec.configuration.permittedHostDevices
       - notExists:
           path: spec.configuration.mediatedDevicesConfiguration
+      - notExists:
+          path: spec.configuration.migrations
 
   - it: emits cpuAllocationRatio under developerConfiguration when set
     set:
@@ -31,6 +33,14 @@ tests:
       - equal:
           path: spec.configuration.developerConfiguration.cpuAllocationRatio
           value: 10
+
+  - it: configures the supported KubeVirt dedicated migration network field when a NAD is selected
+    set:
+      migrationNetwork: networkfabric-fabric-prod-migration
+    asserts:
+      - equal:
+          path: spec.configuration.migrations.network
+          value: networkfabric-fabric-prod-migration
 
   - it: appends extraFeatureGates after the static defaults
     set:

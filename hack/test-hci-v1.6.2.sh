@@ -18,8 +18,9 @@ rendered="$(mktemp)"
 crd_rendered="$(mktemp)"
 controller_rendered="$(mktemp)"
 admission_rendered="$(mktemp)"
+kubevirt_rendered="$(mktemp)"
 schema_error="$(mktemp)"
-trap 'rm -f "$rendered" "$crd_rendered" "$controller_rendered" "$admission_rendered" "$schema_error"' EXIT
+trap 'rm -f "$rendered" "$crd_rendered" "$controller_rendered" "$admission_rendered" "$kubevirt_rendered" "$schema_error"' EXIT
 
 expect_vmnetwork_schema_failure() {
   local expected="$1"
@@ -105,12 +106,16 @@ helm lint packages/system/vm-network-admission --set image=example.invalid/vm-ne
 helm lint packages/system/network-fabric-crd
 helm lint packages/system/network-fabric-controller \
   --set networkFabricController.image=example.invalid/network-fabric-controller:test
+helm lint packages/system/kubevirt
 
-printf '\n[9/12] Rendering NetworkFabric CRD/controller packages...\n'
+printf '\n[9/12] Rendering NetworkFabric CRD/controller and KubeVirt migration packages...\n'
 helm template network-fabric-crd packages/system/network-fabric-crd > "$crd_rendered"
 helm template network-fabric-controller packages/system/network-fabric-controller \
   --namespace cozy-network-fabric-controller \
   --set networkFabricController.image=example.invalid/network-fabric-controller:test > "$controller_rendered"
+helm template kubevirt packages/system/kubevirt \
+  --namespace cozy-kubevirt \
+  --set migrationNetwork=networkfabric-fabric-prod-migration > "$kubevirt_rendered"
 
 grep -q 'name: networkfabrics.infrastructure.cozystack.io' "$crd_rendered"
 grep -q 'activeNode:' "$crd_rendered"
@@ -125,6 +130,8 @@ grep -q 'minAvailable: 1' "$controller_rendered"
 grep -q 'kind: Service' "$controller_rendered"
 grep -q 'name: network-fabric-controller-metrics' "$controller_rendered"
 grep -q 'topologySpreadConstraints:' "$controller_rendered"
+grep -q 'migrations:' "$kubevirt_rendered"
+grep -q 'network: "networkfabric-fabric-prod-migration"' "$kubevirt_rendered"
 
 printf '\n[10/12] Validating fail-closed admission and NetworkFabric platform wiring...\n'
 helm template vm-network-admission packages/system/vm-network-admission \
@@ -137,9 +144,10 @@ grep -q 'resources: \["networkfabrics"\]' "$admission_rendered"
 grep -q 'resources: \["networkfabrics"\]' packages/system/network-fabric-controller/templates/rbac.yaml
 grep -q 'resources: \["helmreleases"\]' packages/system/network-fabric-controller/templates/rbac.yaml
 
-printf '\n[11/12] Running Helm unit tests for HCI VM and network charts...\n'
+printf '\n[11/12] Running Helm unit tests for HCI VM, network and KubeVirt charts...\n'
 helm unittest packages/apps/vm-instance
 helm unittest packages/apps/vm-network
+helm unittest packages/system/kubevirt
 
 printf '\n[12/12] Rechecking whitespace after all generators/tests...\n'
 git diff --check "${baseline}...HEAD"

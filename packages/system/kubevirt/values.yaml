@@ -13,6 +13,14 @@
 # splits them.
 extraFeatureGates: []
 
+# NetworkAttachmentDefinition name in the cozy-kubevirt namespace to use for
+# KubeVirt live-migration transport. Empty keeps KubeVirt on its normal pod
+# network. The referenced NAD must provide routable cluster-wide IPs on every
+# migration-capable node; NetworkFabric readiness alone does not satisfy that
+# requirement. The HCI NetworkFabric controller will only publish/select a
+# managed migration NAD after physical topology and IPAM readiness are proven.
+migrationNetwork: ""
+
 # Permitted host devices the KubeVirt admission webhook accepts under
 # spec.template.spec.domain.devices.hostDevices / gpus on a VirtualMachine.
 # Empty by default — leaves the CR's permittedHostDevices unset.
