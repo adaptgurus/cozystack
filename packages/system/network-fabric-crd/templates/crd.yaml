@@ -159,6 +159,32 @@ spec:
                         type: boolean
                       message:
                         type: string
+                      lastVerifiedAt:
+                        type: string
+                      rollbackState:
+                        type: string
+                      appliedNetworks:
+                        type: array
+                        x-kubernetes-list-type: map
+                        x-kubernetes-list-map-keys: [name]
+                        items:
+                          type: object
+                          required: [name, uplink, vlan, bridge]
+                          properties:
+                            name:
+                              type: string
+                            uplink:
+                              type: string
+                            vlan:
+                              type: integer
+                            vlanInterface:
+                              type: string
+                            bridge:
+                              type: string
+                            mtu:
+                              type: integer
+                            migration:
+                              type: boolean
                 migration:
                   type: object
                   properties:
