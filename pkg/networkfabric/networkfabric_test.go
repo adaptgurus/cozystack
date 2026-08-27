@@ -56,12 +56,6 @@ func TestPlanForNodeBuildsVLANBeforeBridge(t *testing.T) {
 	if len(plan.Operations) != 4 {
 		t.Fatalf("operations = %d, want 4", len(plan.Operations))
 	}
-	if plan.Operations[0].Kind != EnsureVLAN || plan.Operations[1].Kind != EnsureBridge {
-		t.Fatalf("first network operation order = %s then %s, want VLAN then bridge", plan.Operations[0].Kind, plan.Operations[1].Kind)
-	}
-	if plan.Operations[1].Parent != "eth2.130" && plan.Operations[1].NetworkRef == "migration" {
-		t.Fatalf("migration bridge parent = %q, want VLAN interface", plan.Operations[1].Parent)
-	}
 	for i := 0; i < len(plan.Operations); i += 2 {
 		if plan.Operations[i].Kind != EnsureVLAN || plan.Operations[i+1].Kind != EnsureBridge {
 			t.Fatalf("operation pair %d is not VLAN->bridge: %+v %+v", i/2, plan.Operations[i], plan.Operations[i+1])
@@ -84,9 +78,11 @@ type fakeTalosAdapter struct {
 	state       NodeState
 	applyErr    error
 	verifyErr   error
+	confirmErr  error
 	rollbackErr error
 	applied     bool
 	verified    bool
+	confirmed   bool
 	rolledBack  bool
 }
 
@@ -96,15 +92,29 @@ func (f *fakeTalosAdapter) Apply(context.Context, string, []Operation) (ApplyRec
 	if f.applyErr != nil {
 		return ApplyReceipt{}, f.applyErr
 	}
-	return ApplyReceipt{Revision: "rev-before-change"}, nil
+	return ApplyReceipt{Revision: "rev-before-change", RollbackConfig: []byte("machine: {}"), Patch: []byte("kind: BridgeConfig")}, nil
 }
 func (f *fakeTalosAdapter) VerifyManagement(context.Context, string, []string) error {
 	f.verified = true
 	return f.verifyErr
 }
+func (f *fakeTalosAdapter) Confirm(context.Context, string, ApplyReceipt) error {
+	f.confirmed = true
+	return f.confirmErr
+}
 func (f *fakeTalosAdapter) Rollback(context.Context, string, ApplyReceipt) error {
 	f.rolledBack = true
 	return f.rollbackErr
+}
+
+func TestOrchestratorConfirmsOnlyAfterManagementVerification(t *testing.T) {
+	adapter := &fakeTalosAdapter{state: validState()}
+	if err := (Orchestrator{Adapter: adapter}).ReconcileNode(context.Background(), validSpec(), "node-1"); err != nil {
+		t.Fatalf("ReconcileNode: %v", err)
+	}
+	if !adapter.applied || !adapter.verified || !adapter.confirmed || adapter.rolledBack {
+		t.Fatalf("transaction calls: applied=%v verified=%v confirmed=%v rolledBack=%v", adapter.applied, adapter.verified, adapter.confirmed, adapter.rolledBack)
+	}
 }
 
 func TestOrchestratorRollsBackOnManagementVerificationFailure(t *testing.T) {
@@ -113,7 +123,24 @@ func TestOrchestratorRollsBackOnManagementVerificationFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("expected rollback error result, got %v", err)
 	}
-	if !adapter.applied || !adapter.verified || !adapter.rolledBack {
-		t.Fatalf("transaction calls: applied=%v verified=%v rolledBack=%v", adapter.applied, adapter.verified, adapter.rolledBack)
+	if !adapter.applied || !adapter.verified || adapter.confirmed || !adapter.rolledBack {
+		t.Fatalf("transaction calls: applied=%v verified=%v confirmed=%v rolledBack=%v", adapter.applied, adapter.verified, adapter.confirmed, adapter.rolledBack)
+	}
+}
+
+func TestRenderTalosPatchUsesModernVLANAndBridgeDocuments(t *testing.T) {
+	plan, err := PlanForNode(validSpec(), validState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := RenderTalosPatch(plan.Operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(patch)
+	for _, want := range []string{"kind: VLANConfig", "vlanID: 120", "parent: eth1", "kind: BridgeConfig", "name: br-vlan120", "  - eth1.120"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("patch missing %q:\n%s", want, text)
+		}
 	}
 }
