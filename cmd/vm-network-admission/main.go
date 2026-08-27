@@ -38,7 +38,8 @@ func main() {
 		vmnetworkadmission.NewDynamicDependencyReader(dyn),
 		vmnetworkadmission.NewDynamicFabricReader(dyn),
 	)
-	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(validator, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
+	authorized := vmnetworkadmission.NewTenantAuthorizationHandler(dyn, validator)
+	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(authorized, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
