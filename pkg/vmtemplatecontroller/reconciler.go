@@ -57,7 +57,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.Backend == nil {
 		return ctrl.Result{}, fmt.Errorf("VM template backend is required")
 	}
-
 	if !op.GetDeletionTimestamp().IsZero() {
 		return r.reconcileDelete(ctx, op)
 	}
@@ -83,8 +82,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	templateRef := vmtemplate.TemplateRef{Namespace: targetNamespace, Name: spec.TemplateName}
 	requestName := op.GetName()
 
-	// Always inspect the durable native transaction first. This is what makes a
-	// restart after template Ready or after source deletion recover safely.
+	// Inspect the durable native transaction first. This recovers safely after a
+	// restart following template Ready or source deletion.
 	state, err := r.Backend.VerifyTemplate(ctx, templateRef, requestName)
 	if err != nil {
 		_ = r.setPhase(ctx, op, "Failed", "TemplateVerifyFailed", err.Error(), false)
@@ -102,8 +101,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.finishReadyTemplate(ctx, op, spec, sourceNamespace, templateRef, requestName)
 	}
 
-	// No native request exists. Preflight the authoritative Cozystack VMInstance
-	// and live KubeVirt VM, then persist source identity before starting capture.
 	sourceApp, err := r.getSourceVMInstance(ctx, sourceNamespace, spec.SourceVM)
 	if err != nil {
 		_ = r.setPhase(ctx, op, "Failed", "SourceVMUnavailable", err.Error(), false)
@@ -194,9 +191,6 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, op *unstructured.Unstr
 	}
 	spec, err := parseSpec(op)
 	if err != nil {
-		// An invalid object should normally have been rejected by the CRD. On
-		// deletion, derive only safe names and never delete anything guessed from
-		// malformed fields.
 		return ctrl.Result{}, fmt.Errorf("cannot safely finalize invalid VMTemplateOperation %s/%s: %w", op.GetNamespace(), op.GetName(), err)
 	}
 	_, targetNamespace, err := resolveNamespaces(op.GetNamespace(), spec)
@@ -310,10 +304,11 @@ func (r *Reconciler) persistPreflightCheckpoint(ctx context.Context, op, source 
 	if status == nil {
 		status = map[string]interface{}{}
 	}
+	templateName, _, _ := unstructured.NestedString(op.Object, "spec", "templateName")
 	status["observedGeneration"] = op.GetGeneration()
 	status["phase"] = "Preflight"
 	status["requestRef"] = op.GetName()
-	status["templateRef"], _, _ = unstructured.NestedString(op.Object, "spec", "templateName")
+	status["templateRef"] = templateName
 	status["sourceVMRef"] = sourceNamespace + "/" + kubeVirtVMName
 	status["sourceUID"] = string(source.GetUID())
 	status["sourceGeneration"] = source.GetGeneration()
