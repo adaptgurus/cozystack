@@ -1,0 +1,86 @@
+suite: vm-instance optical media
+
+release:
+  name: test-vm
+  namespace: tenant-test
+templates:
+  - templates/vm.yaml
+set:
+  fullnameOverride: test-vm
+  instanceType: ""
+  instanceProfile: ""
+  cloudInitSeed: media-test
+  resources:
+    cpu: 2
+    sockets: 1
+    memory: 2Gi
+  disks:
+    - name: windows-install
+    - name: virtio-drivers
+    - name: data
+      bus: virtio
+kubernetesProvider:
+  scheme:
+    "cdi.kubevirt.io/v1beta1/DataVolume":
+      gvr:
+        group: cdi.kubevirt.io
+        version: v1beta1
+        resource: datavolumes
+      namespaced: true
+  objects:
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-windows-install
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "true"
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-virtio-drivers
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "true"
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-data
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "false"
+tests:
+  - it: renders multiple optical disks as SATA CD-ROMs while preserving normal disks
+    asserts:
+      - isKind:
+          of: VirtualMachine
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].name
+          value: disk-windows-install
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].cdrom.bus
+          value: sata
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].bootOrder
+          value: 1
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].name
+          value: disk-virtio-drivers
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].cdrom.bus
+          value: sata
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].bootOrder
+          value: 2
+      - equal:
+          path: spec.template.spec.domain.devices.disks[2].disk.bus
+          value: virtio
+      - equal:
+          path: spec.template.spec.domain.devices.disks[2].bootOrder
+          value: 3
+      - equal:
+          path: spec.template.spec.volumes[0].dataVolume.name
+          value: vm-disk-windows-install
+      - equal:
+          path: spec.template.spec.volumes[1].dataVolume.name
+          value: vm-disk-virtio-drivers
