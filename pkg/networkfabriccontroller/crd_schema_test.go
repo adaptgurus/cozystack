@@ -75,6 +75,19 @@ func TestNetworkFabricStatusFieldsSurviveStructuralPruning(t *testing.T) {
 					"lastAppliedRevision": "rev-123",
 					"managementReachable": true,
 					"message":             "Talos network configuration verified",
+					"lastVerifiedAt":      "2026-08-27T12:00:01Z",
+					"rollbackState":       "NotRequired",
+					"appliedNetworks": []interface{}{
+						map[string]interface{}{
+							"name":          "production",
+							"uplink":        "bond0",
+							"vlan":          int64(120),
+							"vlanInterface": "vlan120",
+							"bridge":        "br-vm-120",
+							"mtu":           int64(1500),
+							"migration":     false,
+						},
+					},
 				},
 			},
 			"migration": map[string]interface{}{
@@ -116,9 +129,22 @@ func TestNetworkFabricStatusFieldsSurviveStructuralPruning(t *testing.T) {
 	if !ok {
 		t.Fatalf("status.nodes[0] malformed: %#v", nodes[0])
 	}
-	for _, field := range []string{"name", "phase", "observedGeneration", "lastAppliedRevision", "managementReachable", "message"} {
+	for _, field := range []string{"name", "phase", "observedGeneration", "lastAppliedRevision", "managementReachable", "message", "appliedNetworks", "lastVerifiedAt", "rollbackState"} {
 		if _, ok := node[field]; !ok {
 			t.Errorf("status.nodes[0].%s was pruned by the CRD schema", field)
+		}
+	}
+	appliedNetworks, ok := node["appliedNetworks"].([]interface{})
+	if !ok || len(appliedNetworks) != 1 {
+		t.Fatalf("status.nodes[0].appliedNetworks was pruned or malformed: %#v", node["appliedNetworks"])
+	}
+	appliedNetwork, ok := appliedNetworks[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("status.nodes[0].appliedNetworks[0] malformed: %#v", appliedNetworks[0])
+	}
+	for _, field := range []string{"name", "uplink", "vlan", "vlanInterface", "bridge", "mtu", "migration"} {
+		if _, ok := appliedNetwork[field]; !ok {
+			t.Errorf("status.nodes[0].appliedNetworks[0].%s was pruned by the CRD schema", field)
 		}
 	}
 
