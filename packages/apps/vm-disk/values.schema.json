@@ -6,6 +6,7 @@
       "description": "The source used to create the disk or optical-media object.",
       "type": "object",
       "default": {},
+      "x-kubernetes-validations": [{"rule": "self == oldSelf", "message": "source is immutable"}],
       "properties": {
         "disk": {
           "description": "Clone an existing vm-disk.",
