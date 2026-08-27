@@ -5,6 +5,7 @@ package vmnetworkadmission
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,6 +27,18 @@ func (f fakeDependencyReader) ReferencingVMInstances(context.Context, string, st
 	return f.vms, f.err
 }
 
+type fakeFabricReader struct {
+	valid   bool
+	message string
+	err     error
+	binding FabricBinding
+}
+
+func (f *fakeFabricReader) ValidateBinding(_ context.Context, binding FabricBinding) (bool, string, error) {
+	f.binding = binding
+	return f.valid, f.message, f.err
+}
+
 func request(op admissionv1.Operation, oldSpec, newSpec string) *admissionv1.AdmissionRequest {
 	return &admissionv1.AdmissionRequest{
 		UID:       types.UID("test"),
@@ -36,6 +49,10 @@ func request(op admissionv1.Operation, oldSpec, newSpec string) *admissionv1.Adm
 		OldObject: runtime.RawExtension{Raw: []byte(oldSpec)},
 		Object:    runtime.RawExtension{Raw: []byte(newSpec)},
 	}
+}
+
+func managedSpec(bridge string, vlan, mtu int) string {
+	return `{"spec":{"bridge":"` + bridge + `","vlan":` + strconv.Itoa(vlan) + `,"mtu":` + strconv.Itoa(mtu) + `,"fabricRef":"fabric-prod","fabricNetwork":"prod"}}`
 }
 
 func TestDeleteDeniedWhenNetworkIsAttached(t *testing.T) {
@@ -83,6 +100,70 @@ func TestDataplaneUpdateDeniedWhileAttached(t *testing.T) {
 		`{"spec":{"bridge":"br121","vlan":121,"mtu":1500}}`))
 	if resp.Allowed || resp.Result == nil || resp.Result.Code != 409 {
 		t.Fatalf("disruptive update must be denied, got allowed=%v result=%+v", resp.Allowed, resp.Result)
+	}
+}
+
+func TestManagedCreateRequiresCompleteFabricBinding(t *testing.T) {
+	resp := NewHandler(fakeDependencyReader{}).Validate(context.Background(), request(admissionv1.Create, `{}`,
+		`{"spec":{"bridge":"br120","vlan":120,"fabricRef":"fabric-prod"}}`))
+	if resp.Allowed || resp.Result == nil || resp.Result.Code != 400 {
+		t.Fatalf("incomplete fabric binding must be denied, got allowed=%v result=%+v", resp.Allowed, resp.Result)
+	}
+}
+
+func TestManagedCreateUsesFabricAuthority(t *testing.T) {
+	fabric := &fakeFabricReader{valid: true}
+	resp := NewHandler(fakeDependencyReader{}, fabric).Validate(context.Background(), request(admissionv1.Create, `{}`, managedSpec("br-vlan120", 120, 1500)))
+	if !resp.Allowed {
+		t.Fatalf("valid managed network denied: %+v", resp.Result)
+	}
+	if fabric.binding.FabricRef != "fabric-prod" || fabric.binding.FabricNetwork != "prod" || fabric.binding.Bridge != "br-vlan120" || fabric.binding.VLAN != 120 || fabric.binding.MTU != 1500 {
+		t.Fatalf("unexpected binding passed to fabric reader: %+v", fabric.binding)
+	}
+}
+
+func TestManagedCreateRejectsFabricMismatch(t *testing.T) {
+	fabric := &fakeFabricReader{valid: false, message: "dataplane mismatch"}
+	resp := NewHandler(fakeDependencyReader{}, fabric).Validate(context.Background(), request(admissionv1.Create, `{}`, managedSpec("br-wrong", 120, 1500)))
+	if resp.Allowed || resp.Result == nil || resp.Result.Code != 422 || !strings.Contains(resp.Result.Message, "dataplane mismatch") {
+		t.Fatalf("fabric mismatch must be denied with 422, got allowed=%v result=%+v", resp.Allowed, resp.Result)
+	}
+}
+
+func TestManagedCreateFailsClosedOnFabricLookupError(t *testing.T) {
+	fabric := &fakeFabricReader{err: errors.New("api unavailable")}
+	resp := NewHandler(fakeDependencyReader{}, fabric).Validate(context.Background(), request(admissionv1.Create, `{}`, managedSpec("br-vlan120", 120, 1500)))
+	if resp.Allowed || resp.Result == nil || resp.Result.Code != 500 {
+		t.Fatalf("fabric lookup failure must deny with 500, got allowed=%v result=%+v", resp.Allowed, resp.Result)
+	}
+}
+
+func TestDynamicFabricReaderRequiresReadyExactDataplane(t *testing.T) {
+	fabric := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "infrastructure.cozystack.io/v1alpha1",
+		"kind":       "NetworkFabric",
+		"metadata": map[string]interface{}{
+			"name":       "fabric-prod",
+			"generation": int64(7),
+		},
+		"spec": map[string]interface{}{
+			"networks": []interface{}{map[string]interface{}{
+				"name": "prod", "bridge": "br-vlan120", "vlan": int64(120), "mtu": int64(1500),
+			}},
+		},
+		"status": map[string]interface{}{"phase": "Ready", "observedGeneration": int64(7)},
+	}}
+	fabric.SetGroupVersionKind(networkFabricGVR.GroupVersion().WithKind("NetworkFabric"))
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), fabric)
+	reader := NewDynamicFabricReader(dyn)
+
+	valid, message, err := reader.ValidateBinding(context.Background(), FabricBinding{FabricRef: "fabric-prod", FabricNetwork: "prod", Bridge: "br-vlan120", VLAN: 120, MTU: 1500})
+	if err != nil || !valid {
+		t.Fatalf("expected exact ready binding to validate, valid=%v message=%q err=%v", valid, message, err)
+	}
+	valid, message, err = reader.ValidateBinding(context.Background(), FabricBinding{FabricRef: "fabric-prod", FabricNetwork: "prod", Bridge: "br-vlan120", VLAN: 121, MTU: 1500})
+	if err != nil || valid || !strings.Contains(message, "does not match") {
+		t.Fatalf("expected mismatched VLAN rejection, valid=%v message=%q err=%v", valid, message, err)
 	}
 }
 
