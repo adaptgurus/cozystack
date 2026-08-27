@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vm-template-crd
+description: Internal production VM template transaction API for Cozystack HCI
+type: application
+version: 0.0.0
+appVersion: 0.1.0
