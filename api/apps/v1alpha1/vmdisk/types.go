@@ -17,13 +17,35 @@ type Config struct {
 }
 
 type ConfigSpec struct {
-	// The source image location used to create a disk.
+	// The source used to create the disk or optical-media object.
 	// +kubebuilder:default:={}
 	Source Source `json:"source"`
-	// Defines if disk should be considered optical.
+	// Defines if this tenant object is optical media. Platform source.iso entries are automatically optical even when this value is false.
 	// +kubebuilder:default:=false
 	Optical bool `json:"optical"`
-	// The size of the disk allocated for the virtual machine.
+	// Optional human-readable media name shown in catalog metadata.
+	// +kubebuilder:default:=""
+	DisplayName string `json:"displayName"`
+	// Optional optical-media category.
+	// +kubebuilder:default:=""
+	// +kubebuilder:validation:Enum="";"installer";"drivers";"rescue";"appliance";"custom"
+	MediaCategory string `json:"mediaCategory"`
+	// Optional operating-system family metadata, for example Linux or Windows.
+	// +kubebuilder:default:=""
+	OsFamily string `json:"osFamily"`
+	// Optional operating-system/distribution name metadata.
+	// +kubebuilder:default:=""
+	OsName string `json:"osName"`
+	// Optional operating-system version metadata.
+	// +kubebuilder:default:=""
+	OsVersion string `json:"osVersion"`
+	// Optional CPU architecture metadata, for example amd64 or arm64.
+	// +kubebuilder:default:=""
+	Architecture string `json:"architecture"`
+	// Optional human-readable disk/media description.
+	// +kubebuilder:default:=""
+	Description string `json:"description"`
+	// The size of the disk/media object allocated for the virtual machine.
 	// +kubebuilder:default:="5Gi"
 	Storage resource.Quantity `json:"storage"`
 	// StorageClass used to store the data.
@@ -35,11 +57,13 @@ type ConfigSpec struct {
 type Source struct {
 	// Clone an existing vm-disk.
 	Disk *SourceDisk `json:"disk,omitempty"`
-	// Download image from an HTTP source.
+	// Download content from an HTTP source. Set optical=true when importing ISO media.
 	Http *SourceHTTP `json:"http,omitempty"`
-	// Use image by name from default collection.
+	// Use a golden disk image from the platform collection.
 	Image *SourceImage `json:"image,omitempty"`
-	// Upload local image.
+	// Clone an ISO from the platform ISO Library. This source is always treated as optical media.
+	Iso *SourceISO `json:"iso,omitempty"`
+	// Upload local disk or ISO content. Set optical=true when uploading ISO media.
 	Upload *SourceUpload `json:"upload,omitempty"`
 }
 
@@ -49,12 +73,17 @@ type SourceDisk struct {
 }
 
 type SourceHTTP struct {
-	// URL to download the image.
+	// URL to download the content from.
 	Url string `json:"url"`
 }
 
 type SourceImage struct {
 	// Name of the image to use.
+	Name string `json:"name"`
+}
+
+type SourceISO struct {
+	// Name of the platform ISO to use.
 	Name string `json:"name"`
 }
 

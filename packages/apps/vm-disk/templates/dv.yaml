@@ -1,4 +1,6 @@
 {{- $existingDV := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" .Release.Namespace .Release.Name }}
+{{- $platformISO := hasKey .Values.source "iso" }}
+{{- $isOptical := or .Values.optical $platformISO }}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
@@ -6,14 +8,38 @@ metadata:
     {{- if hasKey .Values.source "upload" }}
     cdi.kubevirt.io/storage.bind.immediate.requested: ""
     {{- end }}
-    vm-disk.cozystack.io/optical: "{{ .Values.optical }}"
+    vm-disk.cozystack.io/optical: {{ $isOptical | quote }}
+    {{- if $isOptical }}
+    vm-disk.cozystack.io/media-scope: {{ ternary "platform" "tenant" $platformISO | quote }}
+    {{- with .Values.displayName }}
+    vm-disk.cozystack.io/display-name: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.mediaCategory }}
+    vm-disk.cozystack.io/media-category: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.osFamily }}
+    vm-disk.cozystack.io/os-family: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.osName }}
+    vm-disk.cozystack.io/os-name: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.osVersion }}
+    vm-disk.cozystack.io/os-version: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.architecture }}
+    vm-disk.cozystack.io/architecture: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.description }}
+    vm-disk.cozystack.io/description: {{ . | quote }}
+    {{- end }}
+    {{- end }}
   labels:
     app.kubernetes.io/instance: {{ .Release.Name }}
   name: {{ .Release.Name }}
 spec:
   {{- if $existingDV }}
     {{- toYaml $existingDV.spec | nindent 2 }}
-  {{- else }} 
+  {{- else }}
   contentType: kubevirt
   {{- if .Values.source }}
   {{- if gt (len .Values.source) 1 }}
@@ -23,6 +49,10 @@ spec:
     {{- if hasKey .Values.source "image" }}
     pvc:
       name: vm-default-images-{{ required "A valid .Values.source.image.name entry required!" .Values.source.image.name }}
+      namespace: cozy-public
+    {{- else if hasKey .Values.source "iso" }}
+    pvc:
+      name: vm-default-isos-{{ required "A valid .Values.source.iso.name entry required!" .Values.source.iso.name }}
       namespace: cozy-public
     {{- else if hasKey .Values.source "http" }}
     http:

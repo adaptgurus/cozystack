@@ -1,0 +1,84 @@
+suite: global ISO library
+templates:
+  - templates/iso-dv.yaml
+release:
+  name: vm-default-images
+  namespace: cozy-public
+tests:
+  - it: renders platform HTTP ISO with optical and catalog metadata
+    set:
+      isos:
+        - name: windows-server-2025
+          source:
+            http:
+              url: https://example.invalid/windows-server-2025.iso
+          storage: 12Gi
+          category: installer
+          os:
+            family: Windows
+            name: Windows Server
+            version: "2025"
+          architecture: amd64
+          description: Windows Server installation media
+    asserts:
+      - isKind:
+          of: DataVolume
+      - equal:
+          path: metadata.name
+          value: vm-default-isos-windows-server-2025
+      - equal:
+          path: metadata.namespace
+          value: cozy-public
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/optical"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["vm-default-isos.cozystack.io/category"]
+          value: installer
+      - equal:
+          path: metadata.annotations["vm-default-isos.cozystack.io/os-family"]
+          value: Windows
+      - equal:
+          path: spec.source.http.url
+          value: https://example.invalid/windows-server-2025.iso
+      - equal:
+          path: spec.storage.resources.requests.storage
+          value: 12Gi
+
+  - it: renders platform upload ISO for VirtIO driver media
+    set:
+      isos:
+        - name: virtio-win
+          source:
+            upload: {}
+          category: drivers
+          os:
+            family: Windows
+          architecture: amd64
+    asserts:
+      - equal:
+          path: metadata.name
+          value: vm-default-isos-virtio-win
+      - equal:
+          path: metadata.annotations["cdi.kubevirt.io/storage.bind.immediate.requested"]
+          value: ""
+      - equal:
+          path: metadata.annotations["vm-default-isos.cozystack.io/category"]
+          value: drivers
+      - exists:
+          path: spec.source.upload
+      - equal:
+          path: spec.storage.resources.requests.storage
+          value: 8Gi
+
+  - it: rejects catalog entries with multiple source types
+    set:
+      isos:
+        - name: invalid
+          source:
+            upload: {}
+            http:
+              url: https://example.invalid/invalid.iso
+    asserts:
+      - failedTemplate:
+          errorMessage: ISO 'invalid' must define exactly one source type

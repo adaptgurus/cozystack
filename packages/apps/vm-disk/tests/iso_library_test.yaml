@@ -1,0 +1,108 @@
+suite: vm-disk ISO library sources
+templates:
+  - templates/dv.yaml
+release:
+  name: vm-disk-test-media
+  namespace: tenant-test
+tests:
+  - it: clones a platform ISO and marks the tenant copy optical automatically
+    set:
+      source:
+        iso:
+          name: windows-server-2025
+      optical: false
+      storage: 12Gi
+      storageClass: replicated
+      displayName: Windows Server 2025
+      mediaCategory: installer
+      osFamily: Windows
+      osName: Windows Server
+      osVersion: "2025"
+      architecture: amd64
+    asserts:
+      - isKind:
+          of: DataVolume
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/optical"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-scope"]
+          value: platform
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-category"]
+          value: installer
+      - equal:
+          path: spec.source.pvc.name
+          value: vm-default-isos-windows-server-2025
+      - equal:
+          path: spec.source.pvc.namespace
+          value: cozy-public
+
+  - it: models a tenant-private uploaded VirtIO ISO separately from the platform catalog
+    set:
+      source:
+        upload: {}
+      optical: true
+      storage: 2Gi
+      storageClass: replicated
+      displayName: VirtIO Windows Drivers
+      mediaCategory: drivers
+      osFamily: Windows
+      architecture: amd64
+      description: Tenant-private driver ISO
+    asserts:
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/optical"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-scope"]
+          value: tenant
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/display-name"]
+          value: VirtIO Windows Drivers
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-category"]
+          value: drivers
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/description"]
+          value: Tenant-private driver ISO
+      - exists:
+          path: spec.source.upload
+
+  - it: supports tenant-private HTTP imported rescue ISO
+    set:
+      source:
+        http:
+          url: https://example.invalid/rescue.iso
+      optical: true
+      mediaCategory: rescue
+      storage: 4Gi
+      storageClass: replicated
+    asserts:
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-scope"]
+          value: tenant
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/media-category"]
+          value: rescue
+      - equal:
+          path: spec.source.http.url
+          value: https://example.invalid/rescue.iso
+
+  - it: keeps ordinary golden-image clones as non-optical disks
+    set:
+      source:
+        image:
+          name: ubuntu-24.04
+      optical: false
+      storage: 20Gi
+      storageClass: replicated
+    asserts:
+      - equal:
+          path: metadata.annotations["vm-disk.cozystack.io/optical"]
+          value: "false"
+      - notExists:
+          path: metadata.annotations["vm-disk.cozystack.io/media-scope"]
+      - equal:
+          path: spec.source.pvc.name
+          value: vm-default-images-ubuntu-24.04

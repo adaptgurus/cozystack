@@ -14,7 +14,7 @@
 ## @typedef {struct} CDROM - Persistent CD/DVD device slot.
 ## @field {string} name - Stable CD/DVD device slot name.
 ## @field {string} [media] - Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.
-## @x-cozystack-options {source: vmdisk}
+## @x-cozystack-options {source: opticaldisk}
 
 ## @typedef {struct} Network - Network to attach the VM to.
 ## @field {string} [name] - Network attachment name.

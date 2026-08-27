@@ -2,31 +2,57 @@
 ## @section Common parameters
 ##
 
-## @typedef {struct} SourceImage - Use image by name.
+## @typedef {struct} SourceImage - Use a global golden disk image by name.
 ## @field {string} name - Name of the image to use.
 ## @x-cozystack-options {source: image}
 
-## @typedef {struct} SourceUpload - Upload local image.
+## @typedef {struct} SourceISO - Use a platform ISO Library entry by name.
+## @field {string} name - Name of the platform ISO to use.
+## @x-cozystack-options {source: iso}
 
-## @typedef {struct} SourceHTTP - Download image from an HTTP source.
-## @field {string} url - URL to download the image.
+## @typedef {struct} SourceUpload - Upload local disk or ISO content.
+
+## @typedef {struct} SourceHTTP - Download disk or ISO content from an HTTP source.
+## @field {string} url - URL to download the content from.
 
 ## @typedef {struct} SourceDisk - Clone an existing vm-disk.
 ## @field {string} name - Name of the vm-disk to clone.
 
-## @typedef {struct} Source - The source image location used to create a disk.
-## @field {*SourceImage} [image] - Use image by name from default collection.
-## @field {*SourceUpload} [upload] - Upload local image.
-## @field {*SourceHTTP} [http] - Download image from an HTTP source.
+## @typedef {struct} Source - The source used to create the disk or optical-media object.
+## @field {*SourceImage} [image] - Use a golden disk image from the platform collection.
+## @field {*SourceISO} [iso] - Clone an ISO from the platform ISO Library. This source is always treated as optical media.
+## @field {*SourceUpload} [upload] - Upload local content. Set optical=true when uploading ISO media.
+## @field {*SourceHTTP} [http] - Download content from an HTTP source. Set optical=true when importing ISO media.
 ## @field {*SourceDisk} [disk] - Clone an existing vm-disk.
 
-## @param {Source} source - The source image location used to create a disk.
+## @param {Source} source - The source used to create the disk or optical-media object.
 source: {}
 
-## @param {bool} optical - Defines if disk should be considered optical.
+## @param {bool} optical - Defines if this tenant object is optical media. Platform source.iso entries are automatically optical even when this value is false.
 optical: false
 
-## @param {quantity} storage - The size of the disk allocated for the virtual machine.
+## @param {string} displayName - Optional human-readable media name shown in catalog metadata.
+displayName: ""
+
+## @param {string} mediaCategory - Optional optical-media category: installer, drivers, rescue, appliance, or custom.
+mediaCategory: ""
+
+## @param {string} osFamily - Optional operating-system family metadata, for example Linux or Windows.
+osFamily: ""
+
+## @param {string} osName - Optional operating-system/distribution name metadata.
+osName: ""
+
+## @param {string} osVersion - Optional operating-system version metadata.
+osVersion: ""
+
+## @param {string} architecture - Optional CPU architecture metadata, for example amd64 or arm64.
+architecture: ""
+
+## @param {string} description - Optional human-readable disk/media description.
+description: ""
+
+## @param {quantity} storage - The size of the disk/media object allocated for the virtual machine.
 storage: 5Gi
 
 ## @param {string} storageClass - StorageClass used to store the data.

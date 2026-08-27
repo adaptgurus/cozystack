@@ -1,0 +1,67 @@
+{{- range .Values.isos }}
+{{- $name := required "A valid .name entry required for each ISO!" .name }}
+{{- if not .source }}
+{{-   fail (printf "ISO '%s' requires source.http or source.upload" $name) }}
+{{- end }}
+{{- if ne (len .source) 1 }}
+{{-   fail (printf "ISO '%s' must define exactly one source type" $name) }}
+{{- end }}
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  annotations:
+    vm-default-isos.cozystack.io/name: {{ $name | quote }}
+    vm-disk.cozystack.io/optical: "true"
+    {{- with .category }}
+    vm-default-isos.cozystack.io/category: {{ . | quote }}
+    {{- end }}
+    {{- with .os }}
+    {{- with .family }}
+    vm-default-isos.cozystack.io/os-family: {{ . | quote }}
+    {{- end }}
+    {{- with .name }}
+    vm-default-isos.cozystack.io/os-name: {{ . | quote }}
+    {{- end }}
+    {{- with .version }}
+    vm-default-isos.cozystack.io/os-version: {{ . | quote }}
+    {{- end }}
+    {{- end }}
+    {{- with .architecture }}
+    vm-default-isos.cozystack.io/architecture: {{ . | quote }}
+    {{- end }}
+    {{- with .description }}
+    vm-default-isos.cozystack.io/description: {{ . | quote }}
+    {{- end }}
+    {{- if hasKey .source "upload" }}
+    cdi.kubevirt.io/storage.bind.immediate.requested: ""
+    {{- else }}
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+    {{- end }}
+    cdi.kubevirt.io/storage.usePopulator: "true"
+  labels:
+    app.kubernetes.io/managed-by: cozystack
+    vm-default-isos.cozystack.io/catalog: "true"
+  name: vm-default-isos-{{ $name }}
+  namespace: cozy-public
+spec:
+  contentType: kubevirt
+  source:
+    {{- if hasKey .source "http" }}
+    http:
+      url: {{ required (printf "A valid source.http.url entry required for ISO '%s'!" $name) .source.http.url | quote }}
+    {{- else if hasKey .source "upload" }}
+    upload: {}
+    {{- else }}
+    {{-   fail (printf "ISO '%s' source must be http or upload" $name) }}
+    {{- end }}
+  storage:
+    resources:
+      requests:
+        storage: {{ default "8Gi" .storage }}
+    {{- if .storageClass }}
+    storageClassName: {{ .storageClass }}
+    {{- else if $.Values.storageClass }}
+    storageClassName: {{ $.Values.storageClass }}
+    {{- end }}
+{{- end }}
