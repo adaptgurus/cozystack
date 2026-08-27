@@ -1,0 +1,177 @@
+suite: vm-instance persistent CD-ROM slots
+
+release:
+  name: test-vm
+  namespace: tenant-test
+templates:
+  - templates/vm.yaml
+set:
+  fullnameOverride: test-vm
+  instanceType: ""
+  instanceProfile: ""
+  cloudInitSeed: media-hotplug-test
+  resources:
+    cpu: 2
+    sockets: 1
+    memory: 2Gi
+  cdroms:
+    - name: installer
+      media: windows-install
+    - name: drivers
+      media: virtio-drivers
+  disks:
+    - name: system
+      bus: virtio
+kubernetesProvider:
+  scheme:
+    "cdi.kubevirt.io/v1beta1/DataVolume":
+      gvr:
+        group: cdi.kubevirt.io
+        version: v1beta1
+        resource: datavolumes
+      namespaced: true
+  objects:
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-windows-install
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "true"
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-virtio-drivers
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "true"
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-system
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "false"
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: vm-disk-not-optical
+        namespace: tenant-test
+        annotations:
+          vm-disk.cozystack.io/optical: "false"
+tests:
+  - it: renders two stable CD-ROM slots before the system disk for Windows installation
+    asserts:
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].name
+          value: cdrom-installer
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].cdrom.bus
+          value: sata
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].cdrom.readonly
+          value: true
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].bootOrder
+          value: 1
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].name
+          value: cdrom-drivers
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].bootOrder
+          value: 2
+      - equal:
+          path: spec.template.spec.domain.devices.disks[2].name
+          value: disk-system
+      - equal:
+          path: spec.template.spec.domain.devices.disks[2].bootOrder
+          value: 3
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: cdrom-installer
+      - equal:
+          path: spec.template.spec.volumes[0].dataVolume.name
+          value: vm-disk-windows-install
+      - equal:
+          path: spec.template.spec.volumes[1].name
+          value: cdrom-drivers
+      - equal:
+          path: spec.template.spec.volumes[1].dataVolume.name
+          value: vm-disk-virtio-drivers
+      - equal:
+          path: spec.template.spec.volumes[2].dataVolume.name
+          value: vm-disk-system
+
+  - it: keeps an empty CD-ROM device when media is ejected and removes only its backing volume
+    set:
+      cdroms:
+        - name: installer
+          media: ""
+      disks:
+        - name: system
+          bus: virtio
+    asserts:
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].name
+          value: cdrom-installer
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].cdrom.bus
+          value: sata
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].bootOrder
+          value: 1
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].name
+          value: disk-system
+      - equal:
+          path: spec.template.spec.domain.devices.disks[1].bootOrder
+          value: 2
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: disk-system
+      - notExists:
+          path: spec.template.spec.volumes[1]
+
+  - it: rejects a VMDisk that is not explicitly marked as optical media
+    set:
+      cdroms:
+        - name: installer
+          media: not-optical
+      disks: []
+    asserts:
+      - failedTemplate:
+          errorMessage: VMDisk not-optical is not marked as optical media
+
+  - it: rejects duplicate CD-ROM slot names
+    set:
+      cdroms:
+        - name: installer
+          media: windows-install
+        - name: installer
+          media: virtio-drivers
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Duplicate CD-ROM slot: installer'
+
+  - it: rejects mounting the same optical media in multiple slots
+    set:
+      cdroms:
+        - name: installer
+          media: windows-install
+        - name: drivers
+          media: windows-install
+      disks: []
+    asserts:
+      - failedTemplate:
+          errorMessage: 'Duplicate CD-ROM media attachment: windows-install'
+
+  - it: rejects attaching a VMDisk as both a disk and CD-ROM media
+    set:
+      cdroms:
+        - name: installer
+          media: windows-install
+      disks:
+        - name: windows-install
+    asserts:
+      - failedTemplate:
+          errorMessage: VMDisk windows-install cannot be attached as both a disk and CD-ROM media

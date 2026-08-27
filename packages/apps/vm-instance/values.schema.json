@@ -60,7 +60,7 @@
       }
     },
     "disks": {
-      "description": "List of disks to attach.",
+      "description": "List of persistent block disks or legacy optical-media attachments.",
       "type": "array",
       "default": [],
       "items": {
@@ -75,6 +75,31 @@
           },
           "name": {
             "description": "Disk name.",
+            "type": "string",
+            "x-cozystack-options": {
+              "source": "vmdisk"
+            }
+          }
+        }
+      }
+    },
+    "cdroms": {
+      "description": "Persistent CD/DVD slots. Set media to an optical VMDisk to mount it; clear media to eject without removing the slot. CD/DVD slots are ordered before disks for boot priority when configured.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "description": "Stable CD/DVD device slot name.",
+            "type": "string",
+            "minLength": 1
+          },
+          "media": {
+            "description": "Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.",
             "type": "string",
             "x-cozystack-options": {
               "source": "vmdisk"

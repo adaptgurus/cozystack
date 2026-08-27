@@ -38,9 +38,12 @@ type ConfigSpec struct {
 	// Virtual Machine preferences profile.
 	// +kubebuilder:default:="ubuntu"
 	InstanceProfile string `json:"instanceProfile"`
-	// List of disks to attach.
+	// List of persistent block disks or legacy optical-media attachments.
 	// +kubebuilder:default:={}
 	Disks []Disk `json:"disks,omitempty"`
+	// Persistent CD/DVD slots. Set media to an optical VMDisk to mount it; clear media to eject without removing the slot. CD/DVD slots are ordered before disks for boot priority when configured.
+	// +kubebuilder:default:={}
+	Cdroms []CDROM `json:"cdroms,omitempty"`
 	// Networks to attach the VM to.
 	// +kubebuilder:default:={}
 	Networks []Network `json:"networks,omitempty"`
@@ -72,6 +75,13 @@ type Disk struct {
 	Bus string `json:"bus,omitempty"`
 	// Disk name.
 	Name string `json:"name"`
+}
+
+type CDROM struct {
+	// Stable CD/DVD device slot name.
+	Name string `json:"name"`
+	// Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.
+	Media string `json:"media,omitempty"`
 }
 
 type GPU struct {

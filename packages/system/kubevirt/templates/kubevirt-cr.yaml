@@ -14,7 +14,7 @@ spec:
       cpuAllocationRatio: {{ .Values.cpuAllocationRatio }}
       {{- end }}
       featureGates:
-      - HotplugVolumes
+      - DeclarativeHotplugVolumes
       - ExpandDisks
       - LiveMigration
       - AutoResourceLimitsGate

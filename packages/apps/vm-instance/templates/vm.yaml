@@ -14,7 +14,25 @@
 {{-   end }}
 {{-   $_ := set $seenDisks $disk.name true }}
 {{- end }}
+{{- $seenCDROMs := dict }}
+{{- $seenMedia := dict }}
+{{- range $cdrom := .Values.cdroms }}
+{{-   if hasKey $seenCDROMs $cdrom.name }}
+{{-     fail (printf "Duplicate CD-ROM slot: %s" $cdrom.name) }}
+{{-   end }}
+{{-   $_ := set $seenCDROMs $cdrom.name true }}
+{{-   if $cdrom.media }}
+{{-     if hasKey $seenDisks $cdrom.media }}
+{{-       fail (printf "VMDisk %s cannot be attached as both a disk and CD-ROM media" $cdrom.media) }}
+{{-     end }}
+{{-     if hasKey $seenMedia $cdrom.media }}
+{{-       fail (printf "Duplicate CD-ROM media attachment: %s" $cdrom.media) }}
+{{-     end }}
+{{-     $_ := set $seenMedia $cdrom.media true }}
+{{-   end }}
+{{- end }}
 {{- $networks := .Values.networks | default .Values.subnets }}
+{{- $cdromCount := len .Values.cdroms }}
 
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -70,6 +88,23 @@ spec:
           {{- end }}
           {{- end }}
           disks:
+          {{- range $i, $cdrom := .Values.cdroms }}
+          - name: cdrom-{{ $cdrom.name }}
+            {{- if $cdrom.media }}
+            {{- $dv := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" $.Release.Namespace (printf "vm-disk-%s" $cdrom.media) }}
+            {{- if not $dv }}
+            {{-   fail (printf "Specified CD-ROM media does not exist in cluster: %s" $cdrom.media) }}
+            {{- end }}
+            {{- $isOptical := and (hasKey $dv.metadata.annotations "vm-disk.cozystack.io/optical") (eq (index $dv.metadata.annotations "vm-disk.cozystack.io/optical") "true") }}
+            {{- if not $isOptical }}
+            {{-   fail (printf "VMDisk %s is not marked as optical media" $cdrom.media) }}
+            {{- end }}
+            {{- end }}
+            cdrom:
+              bus: sata
+              readonly: true
+            bootOrder: {{ add $i 1 }}
+          {{- end }}
           {{- range $i, $disk := .Values.disks }}
           - name: disk-{{ $disk.name }}
             {{- $dv := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" $.Release.Namespace (printf "vm-disk-%s" $disk.name) }}
@@ -88,7 +123,7 @@ spec:
             {{- else }}
             disk: {}
             {{- end }}
-            bootOrder: {{ add $i 1 }}
+            bootOrder: {{ add (add $i 1) $cdromCount }}
             {{- else }}
             {{-   fail (printf "Specified disk not exists in cluster: %s" .name) }}
             {{- end }}
@@ -120,6 +155,13 @@ spec:
       {{- include "virtual-machine.hciNodeAffinity" . | nindent 6 }}
 
       volumes:
+      {{- range $cdrom := .Values.cdroms }}
+      {{- if $cdrom.media }}
+      - name: cdrom-{{ $cdrom.name }}
+        dataVolume:
+          name: vm-disk-{{ $cdrom.media }}
+      {{- end }}
+      {{- end }}
       {{- range .Values.disks }}
       - name: disk-{{ .name }}
         dataVolume:

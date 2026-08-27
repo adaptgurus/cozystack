@@ -11,6 +11,11 @@
 ## @x-cozystack-options {source: vmdisk}
 ## @field {string} [bus] - Disk bus type (e.g. "sata").
 
+## @typedef {struct} CDROM - Persistent CD/DVD device slot.
+## @field {string} name - Stable CD/DVD device slot name.
+## @field {string} [media] - Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.
+## @x-cozystack-options {source: vmdisk}
+
 ## @typedef {struct} Network - Network to attach the VM to.
 ## @field {string} [name] - Network attachment name.
 ## @x-cozystack-options {source: network}
@@ -55,13 +60,23 @@ instanceType: "u1.medium"
 ## @x-cozystack-options {source: instanceprofile}
 instanceProfile: ubuntu
 
-## @param {[]Disk} disks - List of disks to attach.
+## @param {[]Disk} disks - List of persistent block disks or legacy optical-media attachments.
 disks: []
 ## Example:
 ## disks:
 ## - name: example-system
 ## - name: example-data
 ##   bus: sata
+
+## @param {[]CDROM} cdroms - Persistent CD/DVD slots. Set media to an optical VMDisk to mount it; clear media to eject without removing the slot. CD/DVD slots are ordered before disks for boot priority when configured.
+cdroms: []
+## Example Windows installation workflow:
+## cdroms:
+## - name: installer
+##   media: windows-server-2025-iso
+## - name: drivers
+##   media: virtio-win-iso
+## After installation, clear media on either slot to eject while the VM is running.
 
 ## @param {[]Network} networks - Networks to attach the VM to.
 networks: []

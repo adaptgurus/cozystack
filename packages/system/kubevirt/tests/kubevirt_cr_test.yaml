@@ -5,12 +5,12 @@ release:
   name: kubevirt
   namespace: cozy-kubevirt
 tests:
-  - it: keeps the upstream default feature-gate set and omits optional platform configuration when values are empty
+  - it: keeps the production default feature-gate set and omits optional platform configuration when values are empty
     asserts:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
           value:
-          - HotplugVolumes
+          - DeclarativeHotplugVolumes
           - ExpandDisks
           - LiveMigration
           - AutoResourceLimitsGate
@@ -51,7 +51,7 @@ tests:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
           value:
-          - HotplugVolumes
+          - DeclarativeHotplugVolumes
           - ExpandDisks
           - LiveMigration
           - AutoResourceLimitsGate
