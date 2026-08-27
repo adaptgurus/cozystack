@@ -68,12 +68,17 @@ spec:
             {{- $dv := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" $.Release.Namespace (printf "vm-disk-%s" $disk.name) }}
             {{- if $dv }}
             {{- $isOptical := and (hasKey $dv.metadata.annotations "vm-disk.cozystack.io/optical") (eq (index $dv.metadata.annotations "vm-disk.cozystack.io/optical") "true") }}
-            {{- $deviceKey := ternary "cdrom" "disk" $isOptical }}
-            {{- if $disk.bus }}
-            {{ $deviceKey }}:
+            {{- if and $isOptical $disk.bus (ne $disk.bus "sata") }}
+            {{-   fail (printf "Optical disk %s requires the sata bus" $disk.name) }}
+            {{- end }}
+            {{- if $isOptical }}
+            cdrom:
+              bus: sata
+            {{- else if $disk.bus }}
+            disk:
               bus: {{ $disk.bus }}
             {{- else }}
-            {{ $deviceKey }}: {}
+            disk: {}
             {{- end }}
             bootOrder: {{ add $i 1 }}
             {{- else }}
