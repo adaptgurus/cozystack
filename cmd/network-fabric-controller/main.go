@@ -46,7 +46,7 @@ func main() {
 		panic(err)
 	}
 
-	reconciler := &networkfabriccontroller.Reconciler{
+	baseReconciler := &networkfabriccontroller.Reconciler{
 		Client:       mgr.GetClient(),
 		RequeueAfter: requeue,
 		AdapterFactory: func(node *corev1.Node) (networkfabric.TalosAdapter, error) {
@@ -57,6 +57,7 @@ func main() {
 			return &networkfabric.TalosctlAdapter{Binary: talosctl, Talosconfig: talosconfig, Endpoint: endpoint, TryTimeout: tryTimeout}, nil
 		},
 	}
+	reconciler := networkfabriccontroller.NewInstrumentedReconciler(baseReconciler)
 
 	fabric := &unstructured.Unstructured{}
 	fabric.SetGroupVersionKind(networkfabriccontroller.NetworkFabricGVK)
