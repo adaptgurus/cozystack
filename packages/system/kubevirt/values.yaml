@@ -5,13 +5,24 @@
 # cpuAllocationRatio: 10
 
 # Feature gates appended after the static defaults
-# (HotplugVolumes/ExpandDisks/LiveMigration/AutoResourceLimitsGate/CPUManager/GPU/VMExport).
+# (HotplugVolumes/ExpandDisks/LiveMigration/AutoResourceLimitsGate/CPUManager/GPU/VMExport
+# plus Snapshot/Template when vmTemplates.enabled=true).
 # Empty by default. Filled by the platform with "HostDevices" when the
 # gpu-operator package is enabled with the passthrough variant — the
 # admission webhook rejects spec.template.spec.domain.devices.hostDevices
 # without that gate even with the GPU gate on, since current KubeVirt
 # splits them.
 extraFeatureGates: []
+
+# Native KubeVirt VM template foundation. Cozystack v1.6 ships KubeVirt v1.8.4,
+# where template.kubevirt.io/v1alpha1 is available behind the Snapshot and
+# Template feature gates. Keep this capability explicit because the upstream
+# Template API is Alpha in v1.8.x. The Cozystack HCI product layer MUST still
+# validate Tenant ownership, source VM state, snapshot capability, optical
+# media, secrets/generalization and clone ownership before exposing
+# Convert-to-Template / Clone-from-Template workflows.
+vmTemplates:
+  enabled: true
 
 # NetworkAttachmentDefinition name in the cozy-kubevirt namespace to use for
 # KubeVirt live-migration transport. Empty keeps KubeVirt on its normal pod
