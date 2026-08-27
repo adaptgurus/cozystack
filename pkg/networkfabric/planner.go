@@ -102,9 +102,9 @@ func PlanForTransition(spec Spec, previous []Network, state NodeState) (Plan, er
 }
 
 // Orchestrator owns the safety transaction around one Talos node. The adapter
-// first applies the change in Talos try mode. Only after management verification
-// succeeds is the change confirmed; otherwise rollback is attempted immediately
-// and Talos' own try-mode timeout remains a second safety net.
+// first applies the change in Talos try mode. Only after management and optional
+// physical-topology verification succeed is the change confirmed; otherwise
+// rollback is attempted immediately and Talos' try timeout remains a second net.
 type Orchestrator struct {
 	Adapter TalosAdapter
 }
@@ -114,10 +114,14 @@ func (o Orchestrator) ReconcileNode(ctx context.Context, spec Spec, node string)
 	return err
 }
 
-// ReconcileNodeTransition is the receipt-returning transaction used by the
-// controller so a safe revision identifier can be published in status. The full
-// rollback machine config remains only in process memory.
 func (o Orchestrator) ReconcileNodeTransition(ctx context.Context, spec Spec, previous []Network, node string) (ApplyReceipt, error) {
+	return o.ReconcileNodeTransitionValidated(ctx, spec, previous, node, nil)
+}
+
+// ReconcileNodeTransitionValidated keeps the post-apply topology check inside
+// Talos try mode. A patch that leaves management reachable but wires the wrong
+// VLAN/bridge topology is rolled back before Confirm is attempted.
+func (o Orchestrator) ReconcileNodeTransitionValidated(ctx context.Context, spec Spec, previous []Network, node string, validate func(NodeState) error) (ApplyReceipt, error) {
 	if o.Adapter == nil {
 		return ApplyReceipt{}, fmt.Errorf("Talos adapter is required")
 	}
@@ -137,18 +141,27 @@ func (o Orchestrator) ReconcileNodeTransition(ctx context.Context, spec Spec, pr
 		return ApplyReceipt{}, fmt.Errorf("Talos adapter returned an empty rollback revision for node %q", node)
 	}
 	if err := o.Adapter.VerifyManagement(ctx, node, spec.ProtectedManagementInterfaces); err != nil {
-		rollbackErr := o.Adapter.Rollback(ctx, node, receipt)
-		if rollbackErr != nil {
-			return receipt, fmt.Errorf("management verification failed on node %q: %v; rollback to revision %q also failed: %w", node, err, receipt.Revision, rollbackErr)
+		return receipt, rollbackFailure(ctx, o.Adapter, node, receipt, "management verification failed", err)
+	}
+	if validate != nil {
+		postState, inspectErr := o.Adapter.Inspect(ctx, node)
+		if inspectErr != nil {
+			return receipt, rollbackFailure(ctx, o.Adapter, node, receipt, "post-apply inspection failed", inspectErr)
 		}
-		return receipt, fmt.Errorf("management verification failed on node %q after network apply; rolled back to revision %q: %w", node, receipt.Revision, err)
+		if err := validate(postState); err != nil {
+			return receipt, rollbackFailure(ctx, o.Adapter, node, receipt, "post-apply topology validation failed", err)
+		}
 	}
 	if err := o.Adapter.Confirm(ctx, node, receipt); err != nil {
-		rollbackErr := o.Adapter.Rollback(ctx, node, receipt)
-		if rollbackErr != nil {
-			return receipt, fmt.Errorf("failed to confirm network configuration on node %q: %v; rollback to revision %q also failed: %w", node, err, receipt.Revision, rollbackErr)
-		}
-		return receipt, fmt.Errorf("failed to confirm network configuration on node %q; rolled back to revision %q: %w", node, receipt.Revision, err)
+		return receipt, rollbackFailure(ctx, o.Adapter, node, receipt, "failed to confirm network configuration", err)
 	}
 	return receipt, nil
+}
+
+func rollbackFailure(ctx context.Context, adapter TalosAdapter, node string, receipt ApplyReceipt, stage string, cause error) error {
+	rollbackErr := adapter.Rollback(ctx, node, receipt)
+	if rollbackErr != nil {
+		return fmt.Errorf("%s on node %q: %v; rollback to revision %q also failed: %w", stage, node, cause, receipt.Revision, rollbackErr)
+	}
+	return fmt.Errorf("%s on node %q; rolled back to revision %q: %w", stage, node, receipt.Revision, cause)
 }
