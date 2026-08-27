@@ -26,6 +26,7 @@
 ## @field {*SourceDisk} [disk] - Clone an existing vm-disk.
 
 ## @param {Source} source - The source used to create the disk or optical-media object.
+## @immutable
 source: {}
 
 ## @param {bool} optical - Defines if this tenant object is optical media. Platform source.iso entries are automatically optical even when this value is false.
