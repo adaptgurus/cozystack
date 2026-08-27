@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-template-controller
+  labels:
+    app.kubernetes.io/name: vm-template-controller
+spec:
+  replicas: {{ .Values.vmTemplateController.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vm-template-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vm-template-controller
+    spec:
+      serviceAccountName: vm-template-controller
+      enableServiceLinks: false
+      priorityClassName: system-cluster-critical
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vm-template-controller
+              topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: vm-template-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: controller
+        image: {{ .Values.vmTemplateController.image | quote }}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --metrics-bind-address={{ .Values.vmTemplateController.metricsBindAddress }}
+        - --health-probe-bind-address={{ .Values.vmTemplateController.healthProbeBindAddress }}
+        - --requeue={{ .Values.vmTemplateController.requeue }}
+        ports:
+        - name: metrics
+          containerPort: {{ trimPrefix ":" .Values.vmTemplateController.metricsBindAddress }}
+        - name: health
+          containerPort: {{ trimPrefix ":" .Values.vmTemplateController.healthProbeBindAddress }}
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+{{ toYaml .Values.vmTemplateController.resources | indent 10 }}
