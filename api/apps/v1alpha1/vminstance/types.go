@@ -70,18 +70,18 @@ type ConfigSpec struct {
 	CloudInitSeed string `json:"cloudInitSeed"`
 }
 
+type CDROM struct {
+	// Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.
+	Media string `json:"media,omitempty"`
+	// Stable CD/DVD device slot name.
+	Name string `json:"name"`
+}
+
 type Disk struct {
 	// Disk bus type (e.g. "sata").
 	Bus string `json:"bus,omitempty"`
 	// Disk name.
 	Name string `json:"name"`
-}
-
-type CDROM struct {
-	// Stable CD/DVD device slot name.
-	Name string `json:"name"`
-	// Optional optical VMDisk mounted in this slot. Clear the field to eject media while keeping the device.
-	Media string `json:"media,omitempty"`
 }
 
 type GPU struct {

@@ -8,7 +8,7 @@ spec:
     singular: vmtemplate
     plural: vmtemplates
     openAPISchema: |-
-      {"title":"Chart Values","type":"object","required":["sourceVM"],"properties":{"sourceVM":{"description":"Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.","type":"string","minLength":1,"maxLength":63,"x-cozystack-options":{"source":"vminstance"}},"mode":{"description":"Copy keeps the source VMInstance. Convert retires it only after the template is verified Ready and the source UID/generation still match preflight.","type":"string","default":"Copy","enum":["Copy","Convert"]},"excludeOpticalMedia":{"description":"Reusable templates always exclude installer, VirtIO-driver, rescue and other CD/DVD media before becoming Ready.","type":"boolean","default":true,"enum":[true]},"description":{"description":"Optional human-readable template description.","type":"string","default":"","maxLength":512}}}
+      {"title":"Chart Values","type":"object","properties":{"sourceVM":{"description":"Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.","type":"string","default":"","maxLength":63,"minLength":1,"x-cozystack-options":{"source":"vminstance"}},"mode":{"description":"Copy keeps the source VMInstance. Convert retires it only after the sanitized template is verified Ready and the source UID/generation still match preflight.","type":"string","default":"Copy","enum":["Copy","Convert"]},"excludeOpticalMedia":{"description":"Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template. Production template capture requires this to remain enabled.","type":"boolean","default":true,"enum":[true]},"description":{"description":"Optional human-readable template description.","type":"string","default":"","maxLength":512}}}
   release:
     prefix: vm-template-
     labels:
@@ -27,8 +27,8 @@ spec:
       - compute
       - virtual-machine
       - template
-    icon: PHN2ZyB3aWR0aD0iMTQ0IiBoZWlnaHQ9IjE0NCIgdmlld0JveD0iMCAwIDE0NCAxNDQiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjE0NCIgaGVpZ2h0PSIxNDQiIHJ4PSIyNCIgZmlsbD0iIzJFMzA2NyIvPjxwYXRoIGQ9Ik0zNCA0MGg3NmE4IDggMCAwIDEgOCA4djQ4YTggOCAwIDAgMS04IDhIMzRhOCA4IDAgMCAxLTgtOFY0OGE4IDggMCAwIDEgOC04WiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSI2Ii8+PHBhdGggZD0iTTQ0IDU2aDU2TTY0IDcyaDE2TTYwIDg4aDI0IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==
-    keysOrder: [["apiVersion"],["appVersion"],["kind"],["metadata"],["metadata","name"],["spec","sourceVM"],["spec","mode"],["spec","excludeOpticalMedia"],["spec","description"]]
+    icon: PHN2ZyB3aWR0aD0iMTQ0IiBoZWlnaHQ9IjE0NCIgdmlld0JveD0iMCAwIDE0NCAxNDQiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjE0NCIgaGVpZ2h0PSIxNDQiIHJ4PSIyNCIgZmlsbD0iIzJFMzA2NyIvPjxwYXRoIGQ9Ik0zNCA0MGg3NmE4IDggMCAwIDEgOCA4djQ4YTggOCAwIDAgMS04IDhIMzRhOCA4IDAgMCAxLTgtOFY0OGE4IDggMCAwIDEgOC04WiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSI2Ii8+PHBhdGggZD0iTTQ0IDU2aDU2TTY0IDcyaDE2TTYwIDg4aDI0IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPgo=
+    keysOrder: [["apiVersion"], ["appVersion"], ["kind"], ["metadata"], ["metadata", "name"], ["spec", "sourceVM"], ["spec", "mode"], ["spec", "excludeOpticalMedia"], ["spec", "description"]]
   secrets:
     exclude: []
     include: []

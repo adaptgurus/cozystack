@@ -15,21 +15,21 @@ type Config struct {
 	Spec          ConfigSpec `json:"spec,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="(self.fabricRef == '' && self.fabricNetwork == '') || (self.fabricRef != '' && self.fabricNetwork != '')",message="fabricRef and fabricNetwork must be set together"
 type ConfigSpec struct {
 	// Linux bridge on KubeVirt-capable nodes that carries this external VM network.
+	// +kubebuilder:default:=""
+	// +kubebuilder:validation:MinLength=1
 	Bridge string `json:"bridge"`
-	// 802.1Q VLAN ID. Use 0 for an untagged/native network.
+	// 802.1Q VLAN ID. Use 0 for an untagged/native network. Tagging is performed by the Talos VLAN interface below the Linux bridge, never by bridge CNI.
 	// +kubebuilder:default:=0
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=4094
-	Vlan int64 `json:"vlan"`
+	Vlan int `json:"vlan"`
 	// Interface MTU. Use 0 to inherit/default; otherwise use 576-9216.
 	// +kubebuilder:default:=0
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=9216
-	// +kubebuilder:validation:XValidation:rule="self == 0 || self >= 576",message="mtu must be 0 or between 576 and 9216"
-	Mtu int64 `json:"mtu"`
+	Mtu int `json:"mtu"`
 	// Optional cluster NetworkFabric backing this tenant network. Set together with fabricNetwork for verified node placement.
 	// +kubebuilder:default:=""
 	FabricRef string `json:"fabricRef"`

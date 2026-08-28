@@ -1,34 +1,26 @@
 {
   "title": "Chart Values",
   "type": "object",
-  "required": [
-    "bridge"
-  ],
-  "x-kubernetes-validations": [
-    {
-      "rule": "(self.fabricRef == '' && self.fabricNetwork == '') || (self.fabricRef != '' && self.fabricNetwork != '')",
-      "message": "fabricRef and fabricNetwork must be set together"
-    }
-  ],
   "properties": {
     "bridge": {
       "description": "Linux bridge on KubeVirt-capable nodes that carries this external VM network.",
       "type": "string",
+      "default": "",
       "minLength": 1
     },
     "vlan": {
-      "description": "802.1Q VLAN ID. Use 0 for an untagged/native network.",
+      "description": "802.1Q VLAN ID. Use 0 for an untagged/native network. Tagging is performed by the Talos VLAN interface below the Linux bridge, never by bridge CNI.",
       "type": "integer",
       "default": 0,
-      "minimum": 0,
-      "maximum": 4094
+      "maximum": 4094,
+      "minimum": 0
     },
     "mtu": {
       "description": "Interface MTU. Use 0 to inherit/default; otherwise use 576-9216.",
       "type": "integer",
       "default": 0,
-      "minimum": 0,
       "maximum": 9216,
+      "minimum": 0,
       "x-kubernetes-validations": [
         {
           "rule": "self == 0 || self >= 576",
@@ -66,5 +58,11 @@
       "type": "boolean",
       "default": false
     }
-  }
+  },
+  "x-kubernetes-validations": [
+    {
+      "rule": "(self.fabricRef == \"\" && self.fabricNetwork == \"\") || (self.fabricRef != \"\" && self.fabricNetwork != \"\")",
+      "message": "fabricRef and fabricNetwork must be set together"
+    }
+  ]
 }

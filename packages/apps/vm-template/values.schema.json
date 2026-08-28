@@ -1,26 +1,33 @@
 {
   "title": "Chart Values",
   "type": "object",
-  "required": ["sourceVM"],
   "properties": {
     "sourceVM": {
       "description": "Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.",
       "type": "string",
-      "minLength": 1,
+      "default": "",
       "maxLength": 63,
-      "x-cozystack-options": {"source": "vminstance"}
+      "minLength": 1,
+      "x-cozystack-options": {
+        "source": "vminstance"
+      }
     },
     "mode": {
-      "description": "Copy keeps the source VMInstance. Convert retires it only after the template is verified Ready and the source UID/generation still match preflight.",
+      "description": "Copy keeps the source VMInstance. Convert retires it only after the sanitized template is verified Ready and the source UID/generation still match preflight.",
       "type": "string",
       "default": "Copy",
-      "enum": ["Copy", "Convert"]
+      "enum": [
+        "Copy",
+        "Convert"
+      ]
     },
     "excludeOpticalMedia": {
-      "description": "Reusable templates always exclude installer, VirtIO-driver, rescue and other CD/DVD media before becoming Ready.",
+      "description": "Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template. Production template capture requires this to remain enabled.",
       "type": "boolean",
       "default": true,
-      "enum": [true]
+      "enum": [
+        true
+      ]
     },
     "description": {
       "description": "Optional human-readable template description.",

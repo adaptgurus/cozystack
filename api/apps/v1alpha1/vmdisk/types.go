@@ -27,9 +27,8 @@ type ConfigSpec struct {
 	// Optional human-readable media name shown in catalog metadata.
 	// +kubebuilder:default:=""
 	DisplayName string `json:"displayName"`
-	// Optional optical-media category.
+	// Optional optical-media category: installer, drivers, rescue, appliance, or custom.
 	// +kubebuilder:default:=""
-	// +kubebuilder:validation:Enum="";"installer";"drivers";"rescue";"appliance";"custom"
 	MediaCategory string `json:"mediaCategory"`
 	// Optional operating-system family metadata, for example Linux or Windows.
 	// +kubebuilder:default:=""
@@ -64,7 +63,7 @@ type Source struct {
 	Image *SourceImage `json:"image,omitempty"`
 	// Clone an ISO from the platform ISO Library. This source is always treated as optical media.
 	Iso *SourceISO `json:"iso,omitempty"`
-	// Upload local disk or ISO content. Set optical=true when uploading ISO media.
+	// Upload local content. Set optical=true when uploading ISO media.
 	Upload *SourceUpload `json:"upload,omitempty"`
 }
 
@@ -78,13 +77,13 @@ type SourceHTTP struct {
 	Url string `json:"url"`
 }
 
-type SourceImage struct {
-	// Name of the image to use.
+type SourceISO struct {
+	// Name of the platform ISO to use.
 	Name string `json:"name"`
 }
 
-type SourceISO struct {
-	// Name of the platform ISO to use.
+type SourceImage struct {
+	// Name of the image to use.
 	Name string `json:"name"`
 }
 

@@ -17,12 +17,14 @@ type Config struct {
 
 type ConfigSpec struct {
 	// Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.
+	// +kubebuilder:default:=""
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
 	SourceVM string `json:"sourceVM"`
-	// Copy keeps the source VMInstance. Convert retires it only after the template is verified Ready and the source UID/generation still match preflight.
+	// Copy keeps the source VMInstance. Convert retires it only after the sanitized template is verified Ready and the source UID/generation still match preflight.
 	// +kubebuilder:default:="Copy"
-	// +kubebuilder:validation:Enum=Copy;Convert
-	Mode string `json:"mode"`
-	// Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template.
+	Mode VMTemplateMode `json:"mode"`
+	// Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template. Production template capture requires this to remain enabled.
 	// +kubebuilder:default:=true
 	ExcludeOpticalMedia bool `json:"excludeOpticalMedia"`
 	// Optional human-readable template description.
@@ -30,3 +32,6 @@ type ConfigSpec struct {
 	// +kubebuilder:validation:MaxLength=512
 	Description string `json:"description"`
 }
+
+// +kubebuilder:validation:Enum="Copy";"Convert"
+type VMTemplateMode string
