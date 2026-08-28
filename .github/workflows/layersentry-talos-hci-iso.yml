@@ -131,15 +131,76 @@ jobs:
           cat "$checksum"
           cat "$manifest"
 
-      - name: Upload LayerSentry HCI ISO
+      - name: Split ISO into connector-safe transport parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ steps.package.outputs.artifact_name }}"
+          mkdir -p _out/transport
+          split -b 350M -d -a 2 "${{ steps.package.outputs.iso_path }}" "_out/transport/${base}.part-"
+
+          mapfile -t parts < <(find _out/transport -maxdepth 1 -type f -name "${base}.part-*" | sort)
+          test "${#parts[@]}" -eq 5
+          for part in "${parts[@]}"; do
+            test -s "$part"
+            size=$(stat -c '%s' "$part")
+            test "$size" -lt 536870912
+            sha256sum "$part"
+          done
+
+      - name: Upload ISO metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ steps.package.outputs.artifact_name }}
+          name: ${{ steps.package.outputs.artifact_name }}-metadata
           path: |
-            ${{ steps.package.outputs.iso_path }}
             ${{ steps.package.outputs.manifest_path }}
             ${{ steps.package.outputs.checksum_path }}
             packages/core/talos/images/talos/profiles/iso.yaml
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14
+
+      - name: Upload ISO part 00
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}-part-00
+          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-00
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload ISO part 01
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}-part-01
+          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-01
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload ISO part 02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}-part-02
+          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-02
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload ISO part 03
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}-part-03
+          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-03
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload ISO part 04
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}-part-04
+          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-04
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
