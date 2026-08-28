@@ -1,0 +1,130 @@
+name: LayerSentry HCI GUI Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-gui-diagnostic.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  gui-diagnostic:
+    name: Read-only GUI publication and authentication diagnostics
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Verify live GUI publication state without exposing secrets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $kubeconfig = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          $hostName = 'dashboard.10-10-10-200.nip.io'
+          $expectedIP = '10.10.10.200'
+          $out = Join-Path $env:RUNNER_TEMP 'layersentry-gui-diagnostic'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          if (-not (Test-Path $kubectl)) { throw "kubectl missing: $kubectl" }
+          if (-not (Test-Path $kubeconfig)) { throw "kubeconfig missing: $kubeconfig" }
+          $env:KUBECONFIG = $kubeconfig
+
+          function Capture-Kubectl {
+            param([string]$File,[string[]]$Arguments)
+            $text = @(& $kubectl @Arguments 2>&1)
+            $code = $LASTEXITCODE
+            ($text | Out-String) | Set-Content -Path (Join-Path $out $File) -Encoding UTF8
+            return $code
+          }
+
+          Capture-Kubectl 'nodes.txt' @('get','nodes','-o','wide') | Out-Null
+          Capture-Kubectl 'helmreleases.txt' @('get','hr','-A') | Out-Null
+          Capture-Kubectl 'services.txt' @('get','svc','-A','-o','wide') | Out-Null
+          Capture-Kubectl 'ingresses.txt' @('get','ingress','-A','-o','wide') | Out-Null
+          Capture-Kubectl 'gateways.txt' @('get','gateways.gateway.networking.k8s.io','-A','-o','wide') | Out-Null
+          Capture-Kubectl 'httproutes.txt' @('get','httproutes.gateway.networking.k8s.io','-A','-o','wide') | Out-Null
+          Capture-Kubectl 'metallb-pools.txt' @('get','ipaddresspools.metallb.io,l2advertisements.metallb.io','-A','-o','wide') | Out-Null
+
+          $rootHr = @(& $kubectl get hr -n tenant-root tenant-root -o json 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'tenant-root HelmRelease is missing' }
+          $rootObj = ($rootHr -join "`n") | ConvertFrom-Json
+          $rootReady = @($rootObj.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count -gt 0
+
+          $dashboardHr = @(& $kubectl get hr -n cozy-dashboard dashboard -o json 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'dashboard HelmRelease is missing' }
+          $dashboardObj = ($dashboardHr -join "`n") | ConvertFrom-Json
+          $dashboardReady = @($dashboardObj.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count -gt 0
+
+          $secretRaw = @(& $kubectl get secret -n tenant-root tenant-root -o json 2>$null)
+          if ($LASTEXITCODE -ne 0) { throw 'tenant-root authentication Secret is missing' }
+          $secretObj = ($secretRaw -join "`n") | ConvertFrom-Json
+          $tokenPresent = $null -ne $secretObj.data.token -and [string]$secretObj.data.token -ne ''
+
+          $dns = @()
+          try {
+            $dns = @(Resolve-DnsName $hostName -Type A -ErrorAction Stop | Where-Object IPAddress | Select-Object -ExpandProperty IPAddress -Unique)
+          } catch {
+            $dns = @()
+          }
+          $dnsExpected = $dns -contains $expectedIP
+
+          $tcp443 = $false
+          $client = New-Object System.Net.Sockets.TcpClient
+          try {
+            $async = $client.BeginConnect($expectedIP,443,$null,$null)
+            if ($async.AsyncWaitHandle.WaitOne(3000,$false)) {
+              $client.EndConnect($async)
+              $tcp443 = $true
+            }
+          } catch {
+            $tcp443 = $false
+          } finally {
+            $client.Close()
+          }
+
+          $curl = (Get-Command curl.exe -ErrorAction Stop).Source
+          $httpCode = (& $curl -k -sS -o NUL --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://$hostName/").Trim()
+          $curlExit = $LASTEXITCODE
+
+          $summary = @(
+            "orchestration_sha=$env:GITHUB_SHA",
+            "dashboard_hostname=$hostName",
+            "expected_ip=$expectedIP",
+            "root_tenant_helmrelease_ready=$rootReady",
+            "dashboard_helmrelease_ready=$dashboardReady",
+            "root_token_secret_present=$tokenPresent",
+            "dns_a_records=$($dns -join ',')",
+            "dns_matches_expected_ip=$dnsExpected",
+            "tcp_443_reachable=$tcp443",
+            "https_status_code=$httpCode",
+            "curl_exit_code=$curlExit",
+            "kubernetes_api_vip=10.10.10.10:6443",
+            "NOTE=no Secret data, tokens, kubeconfig, cookies, or private keys are written to this evidence"
+          )
+          $summary | Tee-Object -FilePath (Join-Path $out 'summary.txt')
+
+          if (-not $rootReady) { throw 'tenant-root HelmRelease is not Ready' }
+          if (-not $dashboardReady) { throw 'dashboard HelmRelease is not Ready' }
+          if (-not $tokenPresent) { throw 'tenant-root authentication token key is not present' }
+          if (-not $dnsExpected) { throw "Dashboard DNS does not resolve to expected MetalLB address $expectedIP" }
+          if (-not $tcp443) { throw "Dashboard address $expectedIP:443 is not reachable" }
+          if ($curlExit -ne 0 -or $httpCode -notmatch '^(200|301|302|303|307|308|401|403)$') {
+            throw "Dashboard HTTPS probe did not return an expected web/auth response: curl=$curlExit http=$httpCode"
+          }
+
+      - name: Upload read-only GUI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hci-gui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-gui-diagnostic
+          if-no-files-found: error
+          retention-days: 30
