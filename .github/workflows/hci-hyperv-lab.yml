@@ -1,0 +1,126 @@
+name: HCI Hyper-V Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-hyperv-lab.yml
+      - hack/hci-lab/**
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  hyperv-bootstrap:
+    name: Hyper-V bootstrap and inventory
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      HCI_VM_NAMES: sen1,sen2,sen3
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      HCI_VIP: 10.10.10.10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/hci-virtualization-v1.6.2-test
+          fetch-depth: 0
+
+      - name: Validate runner and Hyper-V permissions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Get-Command Get-VM, Start-VM, Set-VMProcessor, Get-VHD | Format-Table Name, Source
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+          $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "Elevated administrator: $isAdmin"
+          Get-VMHost | Format-List ComputerName,LogicalProcessorCount,VirtualMachineMigrationEnabled,VirtualMachineMigrationAuthenticationType
+
+      - name: Inventory VM configuration
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = $env:HCI_VM_NAMES -split ','
+          $missing = @()
+          foreach ($name in $names) {
+            $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+            if (-not $vm) { $missing += $name; continue }
+            Write-Host "==== VM $name ===="
+            $vm | Format-List Name,State,Status,Generation,ProcessorCount,MemoryStartup,DynamicMemoryEnabled,AutomaticStartAction,AutomaticStopAction
+            Get-VMProcessor -VMName $name | Format-List Count,ExposeVirtualizationExtensions,CompatibilityForMigrationEnabled
+            Get-VMNetworkAdapter -VMName $name | Format-List Name,SwitchName,MacAddress,MacAddressSpoofing,DhcpGuard,RouterGuard,IPAddresses
+            Get-VMHardDiskDrive -VMName $name | ForEach-Object {
+              Write-Host "Disk Controller=$($_.ControllerType) $($_.ControllerNumber):$($_.ControllerLocation) Path=$($_.Path)"
+              if ($_.Path) {
+                Get-VHD -Path $_.Path | Format-List Path,VhdType,VhdFormat,Size,FileSize,MinimumSize
+              }
+            }
+          }
+          if ($missing.Count -gt 0) {
+            throw "Required Hyper-V VMs not found: $($missing -join ', ')"
+          }
+
+      - name: Enable nested virtualization and start lab VMs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = $env:HCI_VM_NAMES -split ','
+          foreach ($name in $names) {
+            $vm = Get-VM -Name $name
+            if ($vm.State -ne 'Off') {
+              Write-Host "$name is $($vm.State); stopping gracefully before processor change"
+              Stop-VM -Name $name -Shutdown -ErrorAction SilentlyContinue
+              $deadline = (Get-Date).AddSeconds(45)
+              while ((Get-VM -Name $name).State -ne 'Off' -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+              if ((Get-VM -Name $name).State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
+            }
+            Set-VMProcessor -VMName $name -ExposeVirtualizationExtensions $true
+            $cpu = (Get-VMProcessor -VMName $name).Count
+            $mem = (Get-VMMemory -VMName $name).Startup
+            if ($cpu -lt 10) { throw "$name has only $cpu vCPU; expected at least 10" }
+            if ($mem -lt 30GB) { throw "$name startup RAM is $([math]::Round($mem/1GB,2)) GiB; expected at least 30 GiB" }
+            Start-VM -Name $name
+          }
+          Start-Sleep -Seconds 10
+          Get-VM -Name $names | Format-Table Name,State,Status,CPUUsage,MemoryAssigned,Uptime
+          foreach ($name in $names) {
+            if ((Get-VM -Name $name).State -ne 'Running') { throw "$name did not reach Running state" }
+            if (-not (Get-VMProcessor -VMName $name).ExposeVirtualizationExtensions) { throw "$name nested virtualization is not enabled" }
+          }
+
+      - name: Validate node and VIP reachability
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @($env:HCI_NODE_IPS -split ',') + @($env:HCI_VIP)
+          $results = foreach ($ip in $targets) {
+            $ping = Test-Connection -TargetName $ip -Count 2 -Quiet -ErrorAction SilentlyContinue
+            [pscustomobject]@{ Target = $ip; ICMP = $ping }
+          }
+          $results | Format-Table -AutoSize
+          $nodeFailures = $results | Where-Object { $_.Target -ne $env:HCI_VIP -and -not $_.ICMP }
+          if ($nodeFailures) {
+            throw "One or more Talos/Cozystack node IPs are not reachable after VM startup: $($nodeFailures.Target -join ', ')"
+          }
+          if (-not (($results | Where-Object Target -eq $env:HCI_VIP).ICMP)) {
+            Write-Warning "VIP $env:HCI_VIP is not reachable yet. This is acceptable before the control plane/VIP service is bootstrapped and will be a hard gate later."
+          }
+
+      - name: Tooling inventory
+        run: |
+          $tools = 'git','talosctl','talm','kubectl','helm','jq','yq','curl','go'
+          foreach ($tool in $tools) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if ($cmd) {
+              Write-Host "FOUND $tool -> $($cmd.Source)"
+              try { & $tool version 2>&1 | Select-Object -First 5 | ForEach-Object { Write-Host $_ } } catch { Write-Warning $_ }
+            } else {
+              Write-Warning "MISSING $tool"
+            }
+          }
