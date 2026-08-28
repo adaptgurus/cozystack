@@ -7,6 +7,7 @@ trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
 PROFILES="initramfs kernel iso installer nocloud metal"
 EMBEDDED_CONFIG="layersentry-hci-machine-config.yaml"
+LOCAL_ISCSI_TARGET_TARBALL="/extensions/layersentry-iscsi-target.tar"
 
 # Firmware already carried by the Cozystack Talos image. Keep this list broad
 # enough for the common bare-metal NIC/GPU/storage platforms we support.
@@ -22,8 +23,9 @@ FIRMWARES="amd-ucode amdgpu bnx2-bnx2x i915 intel-ice-firmware intel-ucode qlogi
 # publishes one.
 #
 # nfsd is the Sidero extension that supplies the Talos-version-matched NFSD
-# kernel module. nfs-utils supplies rpcbind/rpc.statd for NFSv3 locking; it is
-# not by itself a complete host export-management daemon.
+# kernel module. nfs-utils supplies rpcbind/rpc.statd for NFS client/NFSv3
+# support; LayerSentry's managed NFS export lifecycle is provided by the
+# platform storage layer rather than hard-coded exports in the ISO.
 #
 # trident-iscsi-tools is intentionally included even when NetApp Trident is not
 # installed: Sidero's extension is the supported catalog image that provides
@@ -72,10 +74,6 @@ if command -v crane >/dev/null 2>&1; then
   crane export "$CATALOG_IMAGE" | tar x -O image-digests > "$CATALOG_DIGESTS"
 else
   docker pull "$CATALOG_IMAGE" >/dev/null
-  # The Sidero extension catalog image intentionally has no default command.
-  # docker create still accepts an explicit placeholder command without starting
-  # the container, allowing us to export its rootfs and read image-digests even
-  # when the scratch-like catalog contains no executable at that path.
   catalog_container=$(docker create "$CATALOG_IMAGE" /bin/true)
   trap 'docker rm -f "$catalog_container" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT INT TERM
   docker export "$catalog_container" | tar x -O image-digests > "$CATALOG_DIGESTS"
@@ -141,6 +139,10 @@ for profile in $PROFILES; do
   esac
 
   extension_yaml=$(sed 's/^/    - imageRef: /' "$IMAGE_REFS")
+  # The custom LayerSentry iSCSI target is built locally as a validated Talos
+  # extension tarball and mounted into imager at /extensions.
+  extension_yaml="${extension_yaml}
+    - tarballPath: ${LOCAL_ISCSI_TARGET_TARBALL}"
 
   # Embedded configuration is a virtual system extension. Include it in every
   # boot/install asset that carries an initramfs so multipath and NFSD kernel
