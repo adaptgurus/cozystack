@@ -16,6 +16,12 @@ rules:
     resources: ["networkfabrics"]
     verbs: ["get"]
   - apiGroups: ["apps.cozystack.io"]
+    resources: ["vmnetworks"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["apps.cozystack.io"]
+    resources: ["vmnetworks/finalizers"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["apps.cozystack.io"]
     resources: ["tenants"]
     verbs: ["get"]
 ---
