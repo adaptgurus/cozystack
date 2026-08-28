@@ -24,7 +24,7 @@ if ($patcher -match "(?im)kubectl.*delete|linstor.*delete|storage-pool.*delete|p
     throw 'Patcher must not contain destructive storage mutation commands'
 }
 
-$tempRoot = Join-Path $env:TEMP "layersentry-linstor-static-$([guid]::NewGuid().ToString('N'))"
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) "layersentry-linstor-static-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 try {
     $fixture = Join-Path $tempRoot 'runtime-test.ps1'
