@@ -1,0 +1,61 @@
+name: HCI Regenerate VMInstance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-regenerate-vm-instance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          ref: feat/hci-virtualization-v1.6.2-test
+
+      - name: Install pinned values generator
+        run: |
+          set -euo pipefail
+          curl -sSL https://github.com/cozystack/cozyvalues-gen/releases/download/v1.6.0/cozyvalues-gen-linux-amd64.tar.gz | sudo tar -xzvf- -C /usr/local/bin/ cozyvalues-gen
+
+      - name: Regenerate and fail closed on unexpected paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C packages/apps/vm-instance generate
+          mapfile -t changed < <(git status --porcelain | sed -E 's/^.. //' | sort)
+          expected=(
+            api/apps/v1alpha1/vminstance/types.go
+            packages/apps/vm-instance/README.md
+            packages/apps/vm-instance/values.schema.json
+            packages/system/vm-instance-rd/cozyrds/vm-instance.yaml
+          )
+          printf '%s\n' "${expected[@]}" | sort > /tmp/expected
+          printf '%s\n' "${changed[@]}" | sort > /tmp/actual
+          if ! diff -u /tmp/expected /tmp/actual; then
+            echo '::error::Generator changed an unexpected path; refusing to commit.'
+            git status --short
+            exit 1
+          fi
+          git diff --check
+
+      - name: Commit exact generated output
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'adaptgurus'
+          git config user.email '73125939+adaptgurus@users.noreply.github.com'
+          git add api/apps/v1alpha1/vminstance/types.go \
+                  packages/apps/vm-instance/README.md \
+                  packages/apps/vm-instance/values.schema.json \
+                  packages/system/vm-instance-rd/cozyrds/vm-instance.yaml
+          git commit -m 'chore(vm): regenerate persistent state API artifacts'
+          git push origin HEAD:feat/hci-virtualization-v1.6.2-test
