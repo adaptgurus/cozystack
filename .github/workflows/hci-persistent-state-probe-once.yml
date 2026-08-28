@@ -1,0 +1,46 @@
+name: One-shot HCI persistent state read-only probe
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-persistent-state-probe-once.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  probe:
+    name: Read-only persistent state reconciliation probe
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - name: Probe effective runtime without mutation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          if (-not (Test-Path $kubectl)) { throw 'kubectl missing' }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw 'kubeconfig missing' }
+
+          Write-Host '=== NODES ==='
+          & $kubectl get nodes -o wide
+          Write-Host '=== PLATFORM HELMRELEASE ==='
+          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-system cozystack-platform -o yaml
+          Write-Host '=== PLATFORM PACKAGE ==='
+          & $kubectl get package.cozystack.io cozystack.cozystack-platform -o yaml
+          Write-Host '=== KUBEVIRT PACKAGE ==='
+          & $kubectl get package.cozystack.io cozystack.kubevirt -o yaml
+          Write-Host '=== KUBEVIRT HELMRELEASE ==='
+          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-kubevirt kubevirt -o yaml
+          Write-Host '=== EFFECTIVE KUBEVIRT CONFIG ==='
+          & $kubectl get kubevirt.kubevirt.io -n cozy-kubevirt kubevirt -o jsonpath='{.status.phase}{"`n"}{.spec.configuration}{"`n"}'
+          Write-Host '=== OPERATOR IMAGE ==='
+          & $kubectl get deployment -n cozy-system cozystack-operator -o jsonpath='{.spec.template.spec.containers[*].image}{"`n"}'
+          Write-Host '=== ALL PLATFORM/KUBEVIRT RELEASE STATUS ==='
+          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -A | Select-String 'cozystack-platform|kubevirt'
