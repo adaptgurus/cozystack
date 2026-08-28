@@ -22,6 +22,7 @@ import (
 const (
 	appsGroup             = "apps.cozystack.io"
 	vmNetworkResource     = "vmnetworks"
+	vmInstanceResource    = "vminstances"
 	vmInstanceKind        = "VMInstance"
 	applicationKindLabel  = "apps.cozystack.io/application.kind"
 	applicationGroupLabel = "apps.cozystack.io/application.group"
@@ -32,6 +33,9 @@ var (
 	helmReleaseGVR = schema.GroupVersionResource{
 		Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
 	}
+	vmNetworkGVR = schema.GroupVersionResource{
+		Group: appsGroup, Version: "v1alpha1", Resource: vmNetworkResource,
+	}
 	networkFabricGVR = schema.GroupVersionResource{
 		Group: "infrastructure.cozystack.io", Version: "v1alpha1", Resource: "networkfabrics",
 	}
@@ -39,6 +43,10 @@ var (
 
 type DependencyReader interface {
 	ReferencingVMInstances(ctx context.Context, namespace, networkName string) ([]string, error)
+}
+
+type NetworkReferenceReader interface {
+	ValidateReferences(ctx context.Context, namespace string, networkNames []string) (valid bool, message string, err error)
 }
 
 type FabricBinding struct {
@@ -113,6 +121,33 @@ func referencesNetwork(values map[string]interface{}, networkName string) bool {
 		}
 	}
 	return false
+}
+
+type DynamicNetworkReferenceReader struct {
+	dynamic dynamic.Interface
+}
+
+func NewDynamicNetworkReferenceReader(dynamicClient dynamic.Interface) *DynamicNetworkReferenceReader {
+	return &DynamicNetworkReferenceReader{dynamic: dynamicClient}
+}
+
+func (r *DynamicNetworkReferenceReader) ValidateReferences(ctx context.Context, namespace string, networkNames []string) (bool, string, error) {
+	if namespace == "" {
+		return false, "VMInstance namespace is required for VMNetwork validation", nil
+	}
+	for _, name := range networkNames {
+		network, err := r.dynamic.Resource(vmNetworkGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, fmt.Sprintf("VMNetwork %q does not exist in namespace %q", name, namespace), nil
+			}
+			return false, "", fmt.Errorf("get VMNetwork %q in namespace %q: %w", name, namespace, err)
+		}
+		if network.GetDeletionTimestamp() != nil {
+			return false, fmt.Sprintf("VMNetwork %q in namespace %q is being deleted", name, namespace), nil
+		}
+	}
+	return true, "", nil
 }
 
 type DynamicFabricReader struct {
@@ -211,6 +246,7 @@ func numericInt64(value interface{}) (int64, error) {
 type Handler struct {
 	dependencies DependencyReader
 	fabrics      FabricReader
+	networks     NetworkReferenceReader
 }
 
 func NewHandler(dependencies DependencyReader, fabrics ...FabricReader) *Handler {
@@ -218,6 +254,11 @@ func NewHandler(dependencies DependencyReader, fabrics ...FabricReader) *Handler
 	if len(fabrics) > 0 {
 		h.fabrics = fabrics[0]
 	}
+	return h
+}
+
+func (h *Handler) WithNetworkReferenceReader(networks NetworkReferenceReader) *Handler {
+	h.networks = networks
 	return h
 }
 
@@ -251,7 +292,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Validate(ctx context.Context, req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse {
-	if req.Resource.Group != appsGroup || req.Resource.Resource != vmNetworkResource {
+	if req.Resource.Group != appsGroup {
+		return allow()
+	}
+
+	if req.Resource.Resource == vmInstanceResource {
+		switch req.Operation {
+		case admissionv1.Create, admissionv1.Update:
+			return h.validateVMInstanceNetworks(ctx, req.Namespace, req.Object.Raw)
+		default:
+			return allow()
+		}
+	}
+
+	if req.Resource.Resource != vmNetworkResource {
 		return allow()
 	}
 
@@ -275,6 +329,64 @@ func (h *Handler) Validate(ctx context.Context, req *admissionv1.AdmissionReques
 	default:
 		return allow()
 	}
+}
+
+func (h *Handler) validateVMInstanceNetworks(ctx context.Context, namespace string, raw []byte) *admissionv1.AdmissionResponse {
+	names, err := vmInstanceNetworkNames(raw)
+	if err != nil {
+		return deny(http.StatusBadRequest, metav1.StatusReasonInvalid, fmt.Sprintf("cannot decode VMInstance network references: %v", err))
+	}
+	if len(names) == 0 {
+		return allow()
+	}
+	if h.networks == nil {
+		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, "VMNetwork reference reader is not configured")
+	}
+	valid, message, err := h.networks.ValidateReferences(ctx, namespace, names)
+	if err != nil {
+		return deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, fmt.Sprintf("cannot validate VMInstance VMNetwork references: %v", err))
+	}
+	if !valid {
+		return deny(http.StatusUnprocessableEntity, metav1.StatusReasonInvalid, message)
+	}
+	return allow()
+}
+
+func vmInstanceNetworkNames(raw []byte) ([]string, error) {
+	var object struct {
+		Spec map[string]interface{} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	for _, field := range []string{"networks", "subnets"} {
+		attachments, found, err := unstructured.NestedSlice(object.Spec, field)
+		if err != nil {
+			return nil, fmt.Errorf("read spec.%s: %w", field, err)
+		}
+		if !found {
+			continue
+		}
+		for i, attachment := range attachments {
+			m, ok := attachment.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("spec.%s[%d] must be an object", field, i)
+			}
+			name, _ := m["name"].(string)
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, fmt.Errorf("spec.%s[%d].name is required", field, i)
+			}
+			seen[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (h *Handler) validateFabric(ctx context.Context, raw []byte) *admissionv1.AdmissionResponse {
