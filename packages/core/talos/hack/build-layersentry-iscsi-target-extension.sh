@@ -36,12 +36,12 @@ docker run --rm \
       --repositories-file /etc/apk/repositories \
       "scsi-tgt=${SCSI_TGT_VERSION}"
 
-    # Talos system extensions reject special files and world-writable entries.
-    # apk may create a minimal /dev and cache while initializing an alternate
-    # root, neither of which is needed by the extension-service filesystem.
+    # Talos system extensions reject special files and world-writable regular
+    # files/directories. apk may create a minimal /dev and cache while
+    # initializing an alternate root; neither is needed by this service rootfs.
     rm -rf /pkg-root/dev /pkg-root/proc /pkg-root/sys /pkg-root/run \
            /pkg-root/tmp /pkg-root/var/tmp /pkg-root/var/cache/apk
-    find /pkg-root -xdev -perm -0002 -exec chmod o-w {} +
+    find /pkg-root -xdev \( -type f -o -type d \) -perm -0002 -exec chmod o-w {} +
 
     tar -C /pkg-root -cf /work/scsi-tgt-rootfs.tar .
   '
@@ -112,13 +112,14 @@ test -x "$SERVICE_ROOT/usr/sbin/tgtimg"
 test -s "$SERVICE_DEFS/layersentry-iscsi-target.yaml"
 test -s "$EXT_ROOT/manifest.yaml"
 
-# Fail locally if any special file or world-writable object survived cleanup.
+# Fail locally if any prohibited special file or world-writable regular
+# file/directory survived cleanup. Symlink mode bits are intentionally ignored.
 if find "$EXT_ROOT/rootfs" \( -type b -o -type c -o -type p -o -type s \) -print | grep -q .; then
   echo "ERROR: special file found in LayerSentry iSCSI target extension" >&2
   exit 1
 fi
-if find "$EXT_ROOT/rootfs" -perm -0002 -print | grep -q .; then
-  echo "ERROR: world-writable path found in LayerSentry iSCSI target extension" >&2
+if find "$EXT_ROOT/rootfs" \( -type f -o -type d \) -perm -0002 -print | grep -q .; then
+  echo "ERROR: world-writable file/directory found in LayerSentry iSCSI target extension" >&2
   exit 1
 fi
 
