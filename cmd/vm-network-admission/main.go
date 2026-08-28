@@ -6,8 +6,10 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -32,14 +34,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("build Kubernetes dynamic client: %v", err)
 	}
+	podNamespace := os.Getenv("POD_NAMESPACE")
+	if podNamespace == "" {
+		log.Fatal("POD_NAMESPACE is required to authorize VMNetwork finalizer release")
+	}
+	controllerUsername := fmt.Sprintf("system:serviceaccount:%s:vm-network-admission", podNamespace)
+	dependencies := vmnetworkadmission.NewDynamicDependencyReader(dyn)
 
 	mux := http.NewServeMux()
 	validator := vmnetworkadmission.NewHandler(
-		vmnetworkadmission.NewDynamicDependencyReader(dyn),
+		dependencies,
 		vmnetworkadmission.NewDynamicFabricReader(dyn),
 	).WithNetworkReferenceReader(vmnetworkadmission.NewDynamicNetworkReferenceReader(dyn))
 	authorized := vmnetworkadmission.NewTenantAuthorizationHandler(dyn, validator)
-	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(authorized, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
+	protected := vmnetworkadmission.NewProtectionAdmissionHandler(dependencies, controllerUsername, authorized)
+	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(protected, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -61,6 +70,12 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	go func() {
+		if err := vmnetworkadmission.RunProtectionController(ctx, dyn, dependencies, 2*time.Second); err != nil && ctx.Err() == nil {
+			log.Printf("VMNetwork reference-protection controller failed: %v", err)
+			stop()
+		}
+	}()
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
