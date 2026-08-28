@@ -1,0 +1,42 @@
+name: HCI Storage Engine Gate
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - pkg/storageengine/**
+      - packages/system/dashboard/images/console/apps/console/src/routes/StoragePage.tsx
+      - .github/workflows/hci-storage-engine-gate.yml
+  workflow_dispatch:
+
+concurrency:
+  group: hci-storage-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  storage-engine:
+    name: Storage engine safety and connector validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run storage engine tests
+        run: go test ./pkg/storageengine
+      - name: Reject destructive primitives in discovery-domain code
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RniE '\b(mkfs|wipefs|sgdisk|parted|pvcreate|vgcreate|lvcreate|zpool[[:space:]]+create|linstor[[:space:]]+storage-pool[[:space:]]+create)\b' pkg/storageengine; then
+            echo '::error::Storage discovery/domain code must remain side-effect free.'
+            exit 1
+          fi
