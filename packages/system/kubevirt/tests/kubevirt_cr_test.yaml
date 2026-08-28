@@ -5,7 +5,7 @@ release:
   name: kubevirt
   namespace: cozy-kubevirt
 tests:
-  - it: keeps the production default feature-gate set including native VM templates and omits optional platform configuration when values are empty
+  - it: keeps the production default feature-gate set including persistent VM state and native VM templates
     asserts:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
@@ -17,8 +17,12 @@ tests:
           - CPUManager
           - GPU
           - VMExport
+          - VMPersistentState
           - Snapshot
           - Template
+      - equal:
+          path: spec.configuration.vmStateStorageClass
+          value: replicated
       - equal:
           path: spec.configuration.virtTemplateDeployment.enabled
           value: true
@@ -45,8 +49,22 @@ tests:
           - CPUManager
           - GPU
           - VMExport
+          - VMPersistentState
+      - equal:
+          path: spec.configuration.vmStateStorageClass
+          value: replicated
       - notExists:
           path: spec.configuration.virtTemplateDeployment
+
+  - it: can omit the explicit VM state storage class while retaining the persistent-state feature gate
+    set:
+      vmStateStorageClass: ""
+    asserts:
+      - notExists:
+          path: spec.configuration.vmStateStorageClass
+      - contains:
+          path: spec.configuration.developerConfiguration.featureGates
+          content: VMPersistentState
 
   - it: emits cpuAllocationRatio under developerConfiguration when set
     set:
@@ -80,6 +98,7 @@ tests:
           - CPUManager
           - GPU
           - VMExport
+          - VMPersistentState
           - Snapshot
           - Template
           - HostDevices
