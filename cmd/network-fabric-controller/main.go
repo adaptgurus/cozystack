@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	var metricsAddr, healthAddr, talosconfig string
+	var metricsAddr, healthAddr, talosconfig, orphanedNodeCleanupAllowlist string
 	var requeue, tryTimeout time.Duration
 	var allowControlPlaneNetworking bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics bind address")
@@ -31,7 +31,13 @@ func main() {
 	flag.DurationVar(&requeue, "health-requeue", 2*time.Minute, "periodic NetworkFabric health recheck")
 	flag.DurationVar(&tryTimeout, "talos-try-timeout", 2*time.Minute, "Talos try-mode automatic rollback timeout")
 	flag.BoolVar(&allowControlPlaneNetworking, "allow-control-plane-networking", false, "allow NetworkFabric Talos mutation on Ready control-plane nodes explicitly selected by a fabric (disabled by default)")
+	flag.StringVar(&orphanedNodeCleanupAllowlist, "orphaned-node-cleanup-allowlist", "", "operator-only comma-separated exact <fabric>/<node> targets allowed to skip final Talos cleanup only after Kubernetes reports the Node NotFound; wildcards are forbidden")
 	flag.Parse()
+
+	orphanAllowlist, err := networkfabriccontroller.ParseOrphanedNodeCleanupAllowlist(orphanedNodeCleanupAllowlist)
+	if err != nil {
+		panic(err)
+	}
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -62,7 +68,12 @@ func main() {
 			return &networkfabric.TalosAPIAdapter{Talosconfig: talosconfig, Endpoint: endpoint, TryTimeout: tryTimeout}, nil
 		},
 	}
-	reconciler := networkfabriccontroller.NewInstrumentedReconciler(baseReconciler)
+	instrumentedReconciler := networkfabriccontroller.NewInstrumentedReconciler(baseReconciler)
+	reconciler := &networkfabriccontroller.OrphanRecoveryReconciler{
+		Base:      baseReconciler,
+		Inner:     instrumentedReconciler,
+		Allowlist: orphanAllowlist,
+	}
 
 	fabric := &unstructured.Unstructured{}
 	fabric.SetGroupVersionKind(networkfabriccontroller.NetworkFabricGVK)
