@@ -116,6 +116,13 @@ jobs:
             Run-Native { & $kubectl get vmnetworks.apps.cozystack.io -A -o yaml }
             Run-Native { & $kubectl get network-attachment-definitions.k8s.cni.cncf.io -A -o yaml }
 
+            Section 'NETWORK FABRIC CONTROLLER DIAGNOSTICS'
+            Run-Native { & $kubectl get hr -n cozy-network-fabric-controller network-fabric-controller -o yaml }
+            Run-Native { & $kubectl get deployment,replicaset,pods -n cozy-network-fabric-controller -o wide }
+            Run-Native { & $kubectl get pods -n cozy-network-fabric-controller -o json }
+            Run-Native { & $kubectl describe pods -n cozy-network-fabric-controller }
+            Run-Native { & $kubectl get events -n cozy-network-fabric-controller --sort-by=.lastTimestamp }
+
             Section 'ALL PODS'
             Run-Native { & $kubectl get pods -A -o wide }
 
