@@ -29,15 +29,18 @@ function Assert-NotContains([string]$Pattern,[string]$Message) {
     if ($text -match $Pattern) { throw $Message }
 }
 
-Assert-Contains "\$Namespace\s*=\s*'cozy-network-fabric-controller'" 'NetworkFabric controller namespace is not fixed to the chart namespace.'
-Assert-Contains "\$SecretName\s*=\s*'network-fabric-talosconfig'" 'Expected NetworkFabric Talos Secret name is missing.'
-Assert-Contains "\$SecretKey\s*=\s*'talosconfig'" 'Expected NetworkFabric Talos Secret key is missing.'
-Assert-Contains "Join-Path\s+\$StateRoot\s+'talosconfig'" 'Reconcile path does not source the preserved local Talos configuration.'
+# Regexes containing PowerShell variable names intentionally use single-quoted
+# strings so the test validates the literal source text rather than interpolating
+# this test script's own variables.
+Assert-Contains '\$Namespace\s*=\s*''cozy-network-fabric-controller''' 'NetworkFabric controller namespace is not fixed to the chart namespace.'
+Assert-Contains '\$SecretName\s*=\s*''network-fabric-talosconfig''' 'Expected NetworkFabric Talos Secret name is missing.'
+Assert-Contains '\$SecretKey\s*=\s*''talosconfig''' 'Expected NetworkFabric Talos Secret key is missing.'
+Assert-Contains 'Join-Path\s+\$StateRoot\s+''talosconfig''' 'Reconcile path does not source the preserved local Talos configuration.'
 Assert-Contains 'Talos client configuration missing; refusing' 'Missing Talos configuration does not fail closed.'
 Assert-Contains 'Wait-Until\s+-TimeoutSeconds\s+\$NamespaceTimeoutSeconds' 'Namespace reconciliation does not use a bounded readiness wait.'
-Assert-Contains "'create','secret','generic',\$SecretName" 'Secret manifest is not generated with kubectl create secret generic.'
-Assert-Contains "'--dry-run=client'" 'Secret generation is not client-side/dry-run before apply.'
-Assert-Contains "\$manifestProbe\.Text\s*\|\s*&\s*\$KubectlPath\s+'apply'\s+'-f'\s+'-'" 'Secret payload is not applied through stdin.'
+Assert-Contains '''create'',''secret'',''generic'',\$SecretName' 'Secret manifest is not generated with kubectl create secret generic.'
+Assert-Contains '''--dry-run=client''' 'Secret generation is not client-side/dry-run before apply.'
+Assert-Contains '\$manifestProbe\.Text\s*\|\s*&\s*\$KubectlPath\s+''apply''\s+''-f''\s+''-''' 'Secret payload is not applied through stdin.'
 Assert-Contains 'Get-FileHash\s+-Algorithm\s+SHA256' 'Reconciled Secret is not compared with the preserved Talos configuration.'
 Assert-Contains 'credential payload suppressed' 'Success logging does not explicitly enforce payload suppression.'
 Assert-Contains 'HelmRelease\s+\$Namespace/\$ControllerName\s+Ready' 'NetworkFabric HelmRelease readiness wait is missing.'
