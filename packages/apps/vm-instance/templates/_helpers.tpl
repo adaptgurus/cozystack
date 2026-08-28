@@ -6,6 +6,58 @@ Expand the name of the chart.
 {{- end }}
 
 {{/*
+Return the user-facing VM name from the Cozystack Helm release name.
+ApplicationDefinition releases are prefixed with vm-instance-, but all HCI
+resource-family names use the VMInstance metadata.name without that technical
+release prefix. Existing underlying resources keep their technical names.
+*/}}
+{{- define "virtual-machine.logicalName" -}}
+{{- $releaseName := .Release.Name -}}
+{{- if hasPrefix "vm-instance-" $releaseName -}}
+{{- trimPrefix "vm-instance-" $releaseName | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $releaseName | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Build a DNS-label-safe resource-family child name while preserving the role
+suffix (osdisk/datadisk/nic/sec). Long VM names are shortened with a stable
+8-character hash so distinct VM names do not silently collide after truncation.
+Usage: include "virtual-machine.familyChildName" (dict "base" $base "suffix" "nic")
+*/}}
+{{- define "virtual-machine.familyChildName" -}}
+{{- $base := .base | toString -}}
+{{- $suffix := .suffix | toString -}}
+{{- $candidate := printf "%s%s" $base $suffix -}}
+{{- if le (len $candidate) 63 -}}
+{{- $candidate -}}
+{{- else -}}
+{{- $hash := sha256sum $base | trunc 8 -}}
+{{- $room := sub 63 (add (len $suffix) 9) | int -}}
+{{- $shortBase := trunc $room $base | trimSuffix "-" -}}
+{{- printf "%s-%s%s" $shortBase $hash $suffix | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{/* Canonical first/next NIC attachment name: <vm>nic, <vm>nic2, ... */}}
+{{- define "virtual-machine.nicName" -}}
+{{- $base := include "virtual-machine.logicalName" .root -}}
+{{- $index := .index | int -}}
+{{- $suffix := "nic" -}}
+{{- if gt $index 0 -}}
+{{- $suffix = printf "nic%d" (add $index 1) -}}
+{{- end -}}
+{{- include "virtual-machine.familyChildName" (dict "base" $base "suffix" $suffix) -}}
+{{- end }}
+
+{{/* Canonical security-family name: <vm>sec. */}}
+{{- define "virtual-machine.securityGroupName" -}}
+{{- $base := include "virtual-machine.logicalName" . -}}
+{{- include "virtual-machine.familyChildName" (dict "base" $base "suffix" "sec") -}}
+{{- end }}
+
+{{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
@@ -36,6 +88,7 @@ Common labels
 {{- define "virtual-machine.labels" -}}
 helm.sh/chart: {{ include "virtual-machine.chart" . }}
 {{ include "virtual-machine.selectorLabels" . }}
+hci.cozystack.io/resource-family: {{ include "virtual-machine.logicalName" . | quote }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
