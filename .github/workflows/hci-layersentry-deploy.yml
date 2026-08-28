@@ -9,6 +9,8 @@ on:
       - .github/workflows/hci-layersentry-deploy.yml
       - hack/hci-lab/bootstrap-production.ps1
       - hack/hci-lab/test-bootstrap-static.ps1
+      - hack/hci-lab/reconcile-network-fabric-talosconfig.ps1
+      - hack/hci-lab/test-network-fabric-talosconfig-static.ps1
 
 permissions:
   contents: read
@@ -50,7 +52,7 @@ jobs:
           Remove-Item -Recurse -Force $sourceDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 
-          foreach ($name in 'bootstrap-production.ps1','test-bootstrap-static.ps1') {
+          foreach ($name in 'bootstrap-production.ps1','test-bootstrap-static.ps1','reconcile-network-fabric-talosconfig.ps1','test-network-fabric-talosconfig-static.ps1') {
             $repoPath = "hack/hci-lab/$name"
             $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$repoPath`?ref=$env:GITHUB_SHA"
             $file = Invoke-RestMethod -Headers $headers -Uri $uri
@@ -146,13 +148,17 @@ jobs:
           }
           Write-Host 'Runtime source delta is orchestration/test-only; immutable runtime artifact may be reused.'
 
-      - name: Parse exact current bootstrap before any mutation
+      - name: Parse exact current orchestration before any mutation
         run: |
           $ErrorActionPreference = 'Stop'
-          $test = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'test-bootstrap-static.ps1'
+          $bootstrapTest = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'test-bootstrap-static.ps1'
           $bootstrap = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'bootstrap-production.ps1'
-          & $test -BootstrapPath $bootstrap
+          $networkFabricTest = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'test-network-fabric-talosconfig-static.ps1'
+          $networkFabricReconcile = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'reconcile-network-fabric-talosconfig.ps1'
+          & $bootstrapTest -BootstrapPath $bootstrap
           if (-not $?) { throw 'Bootstrap static validation failed on self-hosted runner.' }
+          & $networkFabricTest -ReconcilePath $networkFabricReconcile
+          if (-not $?) { throw 'NetworkFabric Talos credential static validation failed on self-hosted runner.' }
 
       - name: Download exact runtime build manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -239,6 +245,13 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap
           if ($LASTEXITCODE -ne 0) { throw "LayerSentry bootstrap failed with exit code $LASTEXITCODE" }
 
+      - name: Reconcile NetworkFabric Talos credential and wait for controller
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reconcile = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'reconcile-network-fabric-talosconfig.ps1'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $reconcile
+          if ($LASTEXITCODE -ne 0) { throw "NetworkFabric Talos credential reconciliation failed with exit code $LASTEXITCODE" }
+
       - name: Capture non-secret deployment evidence
         if: always()
         run: |
@@ -265,6 +278,8 @@ jobs:
               Out-String | Set-Content -Path (Join-Path $out 'storage.txt') -Encoding UTF8
             & 'C:\hci-tools\kubectl.exe' exec -n cozy-linstor deploy/linstor-controller -- linstor storage-pool list 2>&1 |
               Out-String | Set-Content -Path (Join-Path $out 'linstor-pools.txt') -Encoding UTF8
+            & 'C:\hci-tools\kubectl.exe' get deployment,pods -n cozy-network-fabric-controller -o wide 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'network-fabric-controller.txt') -Encoding UTF8
           }
 
           Get-ChildItem 'C:\hci-diagnostics\production-bootstrap-*.txt' -ErrorAction SilentlyContinue |
