@@ -37,10 +37,11 @@ docker run --rm \
       "nfs-utils=${NFS_UTILS_VERSION}"
 
     # Alternate-root initialization can create device nodes/cache that Talos
-    # extensions neither need nor permit. Strip them and remove world-write bits.
+    # extensions neither need nor permit. Strip them and remove world-write bits
+    # from regular files/directories; symlink mode bits are not permissions.
     rm -rf /pkg-root/dev /pkg-root/proc /pkg-root/sys /pkg-root/run \
            /pkg-root/tmp /pkg-root/var/tmp /pkg-root/var/cache/apk
-    find /pkg-root -xdev -perm -0002 -exec chmod o-w {} +
+    find /pkg-root -xdev \( -type f -o -type d \) -perm -0002 -exec chmod o-w {} +
 
     tar -C /pkg-root -cf /work/nfs-server-rootfs.tar .
   '
@@ -164,13 +165,15 @@ test -x "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
 test -s "$SERVICE_DEFS/layersentry-nfs-server.yaml"
 test -s "$EXT_ROOT/manifest.yaml"
 
-# Validate the same basic rootfs restrictions before Talos Imager sees it.
+# Validate Talos' basic extension rootfs restrictions. Symlinks commonly have
+# 0777 mode by definition; only regular files/directories are checked for a
+# world-write bit.
 if find "$EXT_ROOT/rootfs" \( -type b -o -type c -o -type p -o -type s \) -print | grep -q .; then
   echo "ERROR: special file found in LayerSentry NFS server extension" >&2
   exit 1
 fi
-if find "$EXT_ROOT/rootfs" -perm -0002 -print | grep -q .; then
-  echo "ERROR: world-writable path found in LayerSentry NFS server extension" >&2
+if find "$EXT_ROOT/rootfs" \( -type f -o -type d \) -perm -0002 -print | grep -q .; then
+  echo "ERROR: world-writable file/directory found in LayerSentry NFS server extension" >&2
   exit 1
 fi
 
