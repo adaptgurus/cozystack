@@ -1,0 +1,60 @@
+name: One-shot HCI VMNetwork admission probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-vmnetwork-admission-probe-once.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  probe:
+    name: Read-only VMNetwork admission probe on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Capture live admission state
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          if (-not (Test-Path $kubectl)) { throw "kubectl missing: $kubectl" }
+
+          Write-Host '===== NODES ====='
+          & $kubectl get nodes -o wide
+          Write-Host '===== PLATFORM PACKAGE ====='
+          & $kubectl get package cozystack.cozystack-platform -o yaml
+          Write-Host '===== PLATFORM HELMRELEASE ====='
+          & $kubectl get helmrelease -n cozy-system cozystack-platform -o yaml
+          Write-Host '===== ADMISSION HELMRELEASE ====='
+          & $kubectl get helmrelease -n cozy-system vm-network-admission -o yaml
+          Write-Host '===== ADMISSION DEPLOYMENT ====='
+          & $kubectl get deployment -n cozy-system vm-network-admission -o yaml
+          Write-Host '===== ADMISSION PODS / IMAGE IDS ====='
+          & $kubectl get pods -n cozy-system -l app.kubernetes.io/name=vm-network-admission -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[0].ready,IMAGE:.spec.containers[0].image,IMAGEID:.status.containerStatuses[0].imageID,NODE:.spec.nodeName,START:.status.startTime'
+          Write-Host '===== ADMISSION REPLICASETS ====='
+          & $kubectl get replicaset -n cozy-system -l app.kubernetes.io/name=vm-network-admission -o wide
+          Write-Host '===== SERVICE ====='
+          & $kubectl get service -n cozy-system vm-network-admission -o yaml
+          Write-Host '===== ENDPOINTS ====='
+          & $kubectl get endpoints -n cozy-system vm-network-admission -o yaml
+          Write-Host '===== ENDPOINT SLICES ====='
+          & $kubectl get endpointslice -n cozy-system -l kubernetes.io/service-name=vm-network-admission -o yaml
+          Write-Host '===== WEBHOOK CONFIGURATION ====='
+          & $kubectl get validatingwebhookconfiguration vm-network-admission -o yaml
+          Write-Host '===== CERTIFICATE STATUS ====='
+          & $kubectl get certificate -n cozy-system vm-network-admission-serving-cert -o yaml
+          Write-Host '===== RECENT POD LOGS ====='
+          & $kubectl logs -n cozy-system deployment/vm-network-admission --tail=250 --timestamps=true
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'One or more read-only probe commands returned a non-zero exit code; inspect output above.'
+          }
