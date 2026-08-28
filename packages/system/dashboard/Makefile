@@ -33,7 +33,7 @@ build-console:
 		--metadata-file images/console.json \
 		--build-arg APP_VERSION=$(if $(COZYSTACK_VERSION),v$(COZYSTACK_VERSION),) \
 		--push=$(PUSH) \
-		--label "org.opencontainers.image.source=https://github.com/cozystack/cozystack" \
+		--label "org.opencontainers.image.source=$(SOURCE_REPOSITORY)" \
 		--load=$(LOAD)
 
 update-values-console:
@@ -50,7 +50,7 @@ image-token-proxy:
 		$(call cache-args,token-proxy) \
 		--metadata-file images/token-proxy.json \
 		--push=$(PUSH) \
-		--label "org.opencontainers.image.source=https://github.com/cozystack/cozystack" \
+		--label "org.opencontainers.image.source=$(SOURCE_REPOSITORY)" \
 		--load=$(LOAD)
 	IMAGE="$(REGISTRY)/token-proxy:$(IMAGE_TAG)@$$(yq e '."containerimage.digest"' images/token-proxy.json -r)" \
 		yq -i '.tokenProxy.image = strenv(IMAGE)' values.yaml
