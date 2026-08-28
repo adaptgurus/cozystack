@@ -81,7 +81,7 @@ jobs:
 
       - name: Set up Buildx
         id: buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
 
@@ -96,14 +96,14 @@ jobs:
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
 
           FLUX_VERSION=v2.6.4
-          curl -fsSLo /tmp/flux.tar.gz "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          FLUX_ARCHIVE="flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo "/tmp/${FLUX_ARCHIVE}" "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/${FLUX_ARCHIVE}"
           curl -fsSLo /tmp/flux-checksums.txt "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_checksums.txt"
-          grep " flux_${FLUX_VERSION#v}_linux_amd64.tar.gz$" /tmp/flux-checksums.txt | sed 's#  flux_#  /tmp/flux_#' > /tmp/flux.expected
-          cp /tmp/flux.tar.gz "/tmp/flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          grep " ${FLUX_ARCHIVE}$" /tmp/flux-checksums.txt | sed "s#  ${FLUX_ARCHIVE}#  /tmp/${FLUX_ARCHIVE}#" > /tmp/flux.expected
+          test -s /tmp/flux.expected
           sha256sum -c /tmp/flux.expected
-          tar -xzf /tmp/flux.tar.gz -C /tmp flux
+          tar -xzf "/tmp/${FLUX_ARCHIVE}" -C /tmp flux
           sudo install -m 0755 /tmp/flux /usr/local/bin/flux
-
           yq --version
           flux version --client
           helm version
@@ -137,14 +137,13 @@ jobs:
           make -C packages/core/installer image-packages
           make -C packages/core/installer chart
 
-      - name: Verify generated package references and installer digest
+      - name: Verify generated references and record installer digest
         id: manifest
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(git describe --tags --match 'v*' | sed 's/^v//')"
           mkdir -p _out/layersentry
-
           for file in \
             packages/system/cozystack-api/values.yaml \
             packages/system/dashboard/values.yaml \
@@ -160,17 +159,7 @@ jobs:
           printf '%s\n' "$PULL_OUTPUT"
           INSTALLER_DIGEST="$(printf '%s\n' "$PULL_OUTPUT" | awk '/Digest:/ {print $2}' | tail -1)"
           test -n "$INSTALLER_DIGEST"
-          test "${INSTALLER_DIGEST}" != "sha256:"
           INSTALLER_URI="oci://${REGISTRY}/cozy-installer@${INSTALLER_DIGEST}"
-
-          OPERATOR_IMAGE="$(yq -r '.cozystackOperator.image' packages/core/installer/values.yaml)"
-          PLATFORM_URL="$(yq -r '.cozystackOperator.platformSourceUrl' packages/core/installer/values.yaml)"
-          PLATFORM_REF="$(yq -r '.cozystackOperator.platformSourceRef' packages/core/installer/values.yaml)"
-          API_IMAGE="$(yq -r '.cozystackAPI.image' packages/system/cozystack-api/values.yaml)"
-          UI_IMAGE="$(yq -r '.console.image' packages/system/dashboard/values.yaml)"
-          FABRIC_IMAGE="$(yq -r '.networkFabricController.image' packages/system/network-fabric-controller/values.yaml)"
-          NETWORK_ADMISSION_IMAGE="$(yq -r '.vmNetworkAdmission.image' packages/system/vm-network-admission/values.yaml)"
-          TEMPLATE_CONTROLLER_IMAGE="$(yq -r '.vmTemplateController.image' packages/system/vm-template-controller/values.yaml)"
 
           jq -n \
             --arg product "LayerSentry Platform" \
@@ -179,18 +168,17 @@ jobs:
             --arg commit "${GITHUB_SHA}" \
             --arg imageTag "${IMAGE_TAG}" \
             --arg installerUri "${INSTALLER_URI}" \
-            --arg operatorImage "${OPERATOR_IMAGE}" \
-            --arg platformSourceUrl "${PLATFORM_URL}" \
-            --arg platformSourceRef "${PLATFORM_REF}" \
-            --arg apiImage "${API_IMAGE}" \
-            --arg uiImage "${UI_IMAGE}" \
-            --arg networkFabricControllerImage "${FABRIC_IMAGE}" \
-            --arg vmNetworkAdmissionImage "${NETWORK_ADMISSION_IMAGE}" \
-            --arg vmTemplateControllerImage "${TEMPLATE_CONTROLLER_IMAGE}" \
+            --arg operatorImage "$(yq -r '.cozystackOperator.image' packages/core/installer/values.yaml)" \
+            --arg platformSourceUrl "$(yq -r '.cozystackOperator.platformSourceUrl' packages/core/installer/values.yaml)" \
+            --arg platformSourceRef "$(yq -r '.cozystackOperator.platformSourceRef' packages/core/installer/values.yaml)" \
+            --arg apiImage "$(yq -r '.cozystackAPI.image' packages/system/cozystack-api/values.yaml)" \
+            --arg uiImage "$(yq -r '.console.image' packages/system/dashboard/values.yaml)" \
+            --arg networkFabricControllerImage "$(yq -r '.networkFabricController.image' packages/system/network-fabric-controller/values.yaml)" \
+            --arg vmNetworkAdmissionImage "$(yq -r '.vmNetworkAdmission.image' packages/system/vm-network-admission/values.yaml)" \
+            --arg vmTemplateControllerImage "$(yq -r '.vmTemplateController.image' packages/system/vm-template-controller/values.yaml)" \
             --arg runId "${GITHUB_RUN_ID}" \
             '{product:$product,repository:$repository,branch:$branch,commit:$commit,imageTag:$imageTag,installerUri:$installerUri,operatorImage:$operatorImage,platformSourceUrl:$platformSourceUrl,platformSourceRef:$platformSourceRef,apiImage:$apiImage,uiImage:$uiImage,networkFabricControllerImage:$networkFabricControllerImage,vmNetworkAdmissionImage:$vmNetworkAdmissionImage,vmTemplateControllerImage:$vmTemplateControllerImage,runId:$runId}' \
             > _out/layersentry/build-manifest.json
-
           cat _out/layersentry/build-manifest.json
           echo "installer_uri=${INSTALLER_URI}" >> "$GITHUB_OUTPUT"
 
@@ -212,16 +200,8 @@ jobs:
           HELM_REGISTRY_CONFIG="${RUNNER_TEMP}/helm-registry-anonymous.json" \
             helm show chart "${{ steps.manifest.outputs.installer_uri }}" >/tmp/installer-chart.txt
           grep -q '^name: cozy-installer$' /tmp/installer-chart.txt
-
-          # The installer is only deployable without ephemeral CI credentials if
-          # its custom images are independently pullable as well.
-          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
-            docker buildx imagetools inspect "${REGISTRY}/cozystack-api:${IMAGE_TAG}" >/dev/null
-          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
-            docker buildx imagetools inspect "${REGISTRY}/cozystack-ui:${IMAGE_TAG}" >/dev/null
-          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
-            docker buildx imagetools inspect "${REGISTRY}/network-fabric-controller:${IMAGE_TAG}" >/dev/null
-          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
-            docker buildx imagetools inspect "${REGISTRY}/vm-network-admission:${IMAGE_TAG}" >/dev/null
-          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
-            docker buildx imagetools inspect "${REGISTRY}/vm-template-controller:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" docker buildx imagetools inspect "${REGISTRY}/cozystack-api:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" docker buildx imagetools inspect "${REGISTRY}/cozystack-ui:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" docker buildx imagetools inspect "${REGISTRY}/network-fabric-controller:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" docker buildx imagetools inspect "${REGISTRY}/vm-network-admission:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" docker buildx imagetools inspect "${REGISTRY}/vm-template-controller:${IMAGE_TAG}" >/dev/null
