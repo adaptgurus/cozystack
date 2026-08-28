@@ -1,0 +1,161 @@
+name: LayerSentry Platform Lab Baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-platform-lab-baseline.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  baseline:
+    name: Read-only LayerSentry platform baseline on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    env:
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+    steps:
+      - name: Verify runner and tooling
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "branch=$env:GITHUB_REF_NAME"
+          Write-Host "sha=$env:GITHUB_SHA"
+          Write-Host "runner=$env:RUNNER_NAME"
+          Write-Host "runner_os=$env:RUNNER_OS"
+          Write-Host "runner_arch=$env:RUNNER_ARCH"
+
+          foreach ($path in @(
+            'C:\hci-tools\kubectl.exe',
+            'C:\hci-tools\talosctl.exe',
+            $env:KUBECONFIG,
+            $env:TALOSCONFIG
+          )) {
+            if (-not (Test-Path $path)) { throw "required TESTSER asset missing: $path" }
+            Write-Host "found=$path"
+          }
+
+      - name: Hyper-V and cluster health
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+
+          Write-Host '===== HYPER-V VMS ====='
+          Get-VM -Name sen1,sen2,sen3 | Select-Object Name,State,ProcessorCount,MemoryStartup,DynamicMemoryEnabled | Format-Table -AutoSize
+
+          Write-Host '===== KUBERNETES NODES ====='
+          & $kubectl get nodes -o wide
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl get nodes failed' }
+
+          Write-Host '===== ALL POD FAILURES / PENDING ====='
+          $pods = & $kubectl get pods -A --no-headers 2>$null
+          $pods | Where-Object { $_ -notmatch '\sRunning\s|\sCompleted\s' }
+
+          Write-Host '===== HELMRELEASES ====='
+          & $kubectl get hr -A 2>$null
+
+      - name: Virtualization and migration capabilities
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+
+          Write-Host '===== KUBEVIRT ====='
+          & $kubectl get kubevirt -A -o yaml 2>$null
+          Write-Host '===== KUBEVIRT COMPONENTS ====='
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'virt-api|virt-controller|virt-handler|virt-operator' -CaseSensitive:$false
+          Write-Host '===== CDI ====='
+          & $kubectl get cdi -A -o yaml 2>$null
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'cdi|uploadproxy|uploadserver' -CaseSensitive:$false
+          Write-Host '===== MULTUS / NAD ====='
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'multus' -CaseSensitive:$false
+          & $kubectl get network-attachment-definitions.k8s.cni.cncf.io -A -o wide 2>$null
+          Write-Host '===== VM / VMI / MIGRATIONS ====='
+          & $kubectl get virtualmachines.kubevirt.io -A -o wide 2>$null
+          & $kubectl get virtualmachineinstances.kubevirt.io -A -o wide 2>$null
+          & $kubectl get virtualmachineinstancemigrations.kubevirt.io -A -o wide 2>$null
+
+      - name: Storage and LINSTOR capabilities
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+
+          Write-Host '===== STORAGE CLASSES ====='
+          & $kubectl get storageclass -o custom-columns='NAME:.metadata.name,PROVISIONER:.provisioner,RECLAIM:.reclaimPolicy,BINDING:.volumeBindingMode,EXPAND:.allowVolumeExpansion,DEFAULT:.metadata.annotations.storageclass\.kubernetes\.io/is-default-class'
+          Write-Host '===== CSI DRIVERS ====='
+          & $kubectl get csidriver -o wide
+          Write-Host '===== CSI NODES ====='
+          & $kubectl get csinode -o yaml
+          Write-Host '===== PV / PVC / ATTACHMENTS ====='
+          & $kubectl get pv -o wide 2>$null
+          & $kubectl get pvc -A -o wide 2>$null
+          & $kubectl get volumeattachment -o wide 2>$null
+          Write-Host '===== SNAPSHOT API ====='
+          & $kubectl get volumesnapshotclass -o wide 2>$null
+          & $kubectl get volumesnapshot -A -o wide 2>$null
+          Write-Host '===== LINSTOR / PIRAEUS ====='
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'linstor|piraeus|drbd' -CaseSensitive:$false
+          & $kubectl get crd -o name 2>$null | Select-String -Pattern 'linstor|piraeus' -CaseSensitive:$false
+
+      - name: Network and firewall capabilities
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+
+          Write-Host '===== CILIUM ====='
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'cilium' -CaseSensitive:$false
+          & $kubectl get ciliumnetworkpolicies.cilium.io -A -o wide 2>$null
+          & $kubectl get ciliumclusterwidenetworkpolicies.cilium.io -o wide 2>$null
+          Write-Host '===== KUBERNETES NETWORKPOLICY ====='
+          & $kubectl get networkpolicy -A -o wide 2>$null
+          Write-Host '===== NETWORK FABRIC / VM NETWORK IF PRESENT ====='
+          & $kubectl get networkfabrics.infrastructure.cozystack.io -o yaml 2>$null
+          & $kubectl get vmnetworks.apps.cozystack.io -A -o yaml 2>$null
+
+      - name: Forklift discovery
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+
+          Write-Host '===== FORKLIFT / MTV CRDS ====='
+          & $kubectl get crd -o name 2>$null | Select-String -Pattern 'forklift|migration.*forklift|providers\.forklift|plans\.forklift' -CaseSensitive:$false
+          Write-Host '===== FORKLIFT COMPONENTS ====='
+          & $kubectl get pods -A -o wide 2>$null | Select-String -Pattern 'forklift|mtv' -CaseSensitive:$false
+
+      - name: Talos storage and host network extensions
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $talos = 'C:\hci-tools\talosctl.exe'
+
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== TALOS $node VERSION ====="
+            & $talos -n $node -e $node version
+            Write-Host "===== TALOS $node DISKS ====="
+            & $talos -n $node -e $node get disks -o yaml
+            Write-Host "===== TALOS $node BLOCKDEVICES ====="
+            & $talos -n $node -e $node get blockdevices -o yaml
+            Write-Host "===== TALOS $node DISCOVERED VOLUMES ====="
+            & $talos -n $node -e $node get discoveredvolumes -o yaml
+            Write-Host "===== TALOS $node EXTENSIONS ====="
+            & $talos -n $node -e $node get extensions -o yaml 2>$null
+            Write-Host "===== TALOS $node STORAGE SERVICES ====="
+            (& $talos -n $node -e $node get services -o yaml 2>$null) | Select-String -Pattern 'iscsi|multipath|nvme|lvm|udev' -CaseSensitive:$false
+            Write-Host "===== TALOS $node STABLE DEVICE IDS ====="
+            & $talos -n $node -e $node ls /dev/disk/by-id 2>$null
+            Write-Host "===== TALOS $node DEVICE MAPPER ====="
+            & $talos -n $node -e $node ls /dev/mapper 2>$null
+            Write-Host "===== TALOS $node FC HOSTS ====="
+            & $talos -n $node -e $node ls /sys/class/fc_host 2>$null
+            Write-Host "===== TALOS $node NETWORK LINKS ====="
+            & $talos -n $node -e $node get links -o yaml 2>$null
+          }
+
+          Write-Host 'SAFETY: read-only baseline only. No kubectl apply/create/patch/delete, talos patch/apply, disk formatting, partitioning, mount, pvcreate, vgcreate, zpool creation, LINSTOR pool creation, iSCSI login, FC zoning or NVMe connect is performed.'
