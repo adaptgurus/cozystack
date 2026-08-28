@@ -90,7 +90,9 @@ func TestBuildStaticLocalLVMRequiresExistingPathAndNode(t *testing.T) {
 		VolumeGroup: "vm-vg", DevicePath: "/dev/vm-vg/vm-001",
 	}
 	env := ConnectorEnvironment{
-		Snapshot: DiscoverySnapshot{Devices: []Device{{Node: "sen1", Path: "/dev/vm-vg/vm-001", WWID: "local-lv-001"}}},
+		Snapshot: DiscoverySnapshot{Devices: []Device{{
+			Node: "sen1", Path: "/dev/vm-vg/vm-001", WWID: "local-lv-001", VolumeGroup: "vm-vg",
+		}}},
 		NodeCapabilities: map[string]NodeStorageCapability{"sen1": {Node: "sen1", LVMTools: true}},
 	}
 	plan, err := BuildStaticVolumePlan(StaticVolumeRequest{
@@ -102,6 +104,28 @@ func TestBuildStaticLocalLVMRequiresExistingPathAndNode(t *testing.T) {
 	}
 	if plan.Local == nil || plan.Local.Path != "/dev/vm-vg/vm-001" || plan.Node != "sen1" {
 		t.Fatalf("unexpected local plan: %#v", plan)
+	}
+}
+
+func TestBuildStaticLocalLVMRejectsForeignVG(t *testing.T) {
+	connector := ConnectorSpec{
+		ID: "node-lvm", DisplayName: "Node LVM", BackendType: BackendLVM,
+		Mode: ConnectorModeHostManaged, Transport: TransportLocal,
+		Scope: ScopeSelectedNodes, Nodes: []string{"sen1"}, PerNode: true,
+		VolumeGroup: "vm-vg", DevicePath: "/dev/other-vg/vm-001",
+	}
+	env := ConnectorEnvironment{
+		Snapshot: DiscoverySnapshot{Devices: []Device{{
+			Node: "sen1", Path: "/dev/other-vg/vm-001", WWID: "local-lv-002", VolumeGroup: "other-vg",
+		}}},
+		NodeCapabilities: map[string]NodeStorageCapability{"sen1": {Node: "sen1", LVMTools: true}},
+	}
+	_, err := BuildStaticVolumePlan(StaticVolumeRequest{
+		Name: "local-vm-001", Connector: connector, CapacityBytes: 20 << 30,
+		VolumeMode: VolumeModeBlock, Node: "sen1",
+	}, env)
+	if err == nil {
+		t.Fatal("foreign volume-group ownership must be rejected")
 	}
 }
 
