@@ -1,0 +1,197 @@
+name: LayerSentry HCI Deploy
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-layersentry-deploy.yml
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: powershell
+
+env:
+  DEPLOY_SOURCE_SHA: 79d3f839c429f2483c4ba00b5132619c89486021
+  ARTIFACT_RUN_ID: '33162981192'
+  ARTIFACT_NAME: layersentry-hci-build-79d3f839c429f2483c4ba00b5132619c89486021
+
+jobs:
+  deploy:
+    name: Guarded deployment to Hyper-V lab
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - name: Wait for exact custom artifact build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ARTIFACT_RUN_ID"
+          $deadline = (Get-Date).AddMinutes(90)
+          do {
+            $run = Invoke-RestMethod -Headers $headers -Uri $url
+            Write-Host "Artifact run $($run.id): status=$($run.status) conclusion=$($run.conclusion) head=$($run.head_sha)"
+            if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) {
+              throw "Artifact run SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA"
+            }
+            if ($run.name -ne 'LayerSentry HCI Artifact Build') {
+              throw "Unexpected prerequisite workflow: $($run.name)"
+            }
+            if ($run.status -eq 'completed') {
+              if ($run.conclusion -ne 'success') { throw "Custom artifact build did not pass: $($run.conclusion)" }
+              break
+            }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date) -lt $deadline)
+          if ($run.status -ne 'completed' -or $run.conclusion -ne 'success') {
+            throw 'Timed out waiting for successful custom artifact build.'
+          }
+
+      - name: Checkout the exact artifact source revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.DEPLOY_SOURCE_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact LayerSentry build manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ runner.temp }}\layersentry-build
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: adaptgurus/cozystack
+          run-id: ${{ env.ARTIFACT_RUN_ID }}
+
+      - name: Verify immutable deployment provenance
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifestPath = Join-Path $env:RUNNER_TEMP 'layersentry-build\build-manifest.json'
+          if (-not (Test-Path $manifestPath)) { throw "Build manifest missing: $manifestPath" }
+          $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($m.product -ne 'LayerSentry Platform') { throw "Unexpected product identity: $($m.product)" }
+          if ($m.repository -ne 'adaptgurus/cozystack') { throw "Unexpected source repository: $($m.repository)" }
+          if ($m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected source branch: $($m.branch)" }
+          if ($m.commit -ne $env:DEPLOY_SOURCE_SHA) { throw "Manifest commit $($m.commit) does not match $env:DEPLOY_SOURCE_SHA" }
+          if ($m.runId -ne $env:ARTIFACT_RUN_ID) { throw "Manifest run ID $($m.runId) does not match $env:ARTIFACT_RUN_ID" }
+
+          $installerPattern = '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$'
+          if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not a digest-pinned adaptgurus artifact: $($m.installerUri)" }
+
+          $imagePattern = '^ghcr\.io/adaptgurus/cozystack/[a-z0-9._/-]+:[^@]+@sha256:[0-9a-f]{64}$'
+          foreach ($field in 'operatorImage','apiImage','uiImage','networkFabricControllerImage','vmNetworkAdmissionImage','vmTemplateControllerImage') {
+            $value = [string]$m.$field
+            if ($value -notmatch $imagePattern) { throw "$field is not a digest-pinned adaptgurus image: $value" }
+          }
+          if ([string]$m.platformSourceUrl -ne 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages') {
+            throw "Unexpected platform source: $($m.platformSourceUrl)"
+          }
+          if ([string]$m.platformSourceRef -notmatch '^digest=sha256:[0-9a-f]{64}$') {
+            throw "Platform source is not digest-pinned: $($m.platformSourceRef)"
+          }
+
+          "LAYERSENTRY_INSTALLER_URI=$($m.installerUri)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Verified LayerSentry commit $($m.commit) and immutable installer $($m.installerUri)"
+
+      - name: Install verified kubectl and Helm into C:\hci-tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $tools = 'C:\hci-tools'
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          $curl = (Get-Command curl.exe -ErrorAction Stop).Source
+
+          $kubectlVersion = 'v1.35.0'
+          $kubectl = Join-Path $tools 'kubectl.exe'
+          $kubectlTmp = "$kubectl.download"
+          & $curl --fail --location --connect-timeout 10 --max-time 300 --retry 2 --output $kubectlTmp "https://dl.k8s.io/release/$kubectlVersion/bin/windows/amd64/kubectl.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl download failed' }
+          $expectedKubectl = ((Invoke-RestMethod "https://dl.k8s.io/release/$kubectlVersion/bin/windows/amd64/kubectl.exe.sha256").Trim()).ToLowerInvariant()
+          $actualKubectl = (Get-FileHash -Algorithm SHA256 $kubectlTmp).Hash.ToLowerInvariant()
+          if ($actualKubectl -ne $expectedKubectl) { throw "kubectl checksum mismatch: $actualKubectl" }
+          Move-Item -Force $kubectlTmp $kubectl
+
+          $helmVersion = 'v3.18.6'
+          $helmArchive = "helm-$helmVersion-windows-amd64.zip"
+          $helmZip = Join-Path $tools $helmArchive
+          & $curl --fail --location --connect-timeout 10 --max-time 300 --retry 2 --output $helmZip "https://get.helm.sh/$helmArchive"
+          if ($LASTEXITCODE -ne 0) { throw 'Helm download failed' }
+          $checksumLine = (Invoke-RestMethod "https://get.helm.sh/$helmArchive.sha256sum").Trim()
+          $expectedHelm = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $actualHelm = (Get-FileHash -Algorithm SHA256 $helmZip).Hash.ToLowerInvariant()
+          if ($actualHelm -ne $expectedHelm) { throw "Helm checksum mismatch: $actualHelm" }
+          $extract = Join-Path $env:RUNNER_TEMP 'helm-extract'
+          Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+          Expand-Archive -Path $helmZip -DestinationPath $extract -Force
+          Copy-Item -Force (Join-Path $extract 'windows-amd64\helm.exe') (Join-Path $tools 'helm.exe')
+
+          $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $kubectl version --client
+          & (Join-Path $tools 'helm.exe') version
+
+      - name: Validate Hyper-V inventory before any disk write
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Runner is not elevated.' }
+          $expected = @{
+            sen1 = @('00:15:5d:0a:0a:11', 10)
+            sen2 = @('00:15:5d:0a:0a:12', 10)
+            sen3 = @('00:15:5d:0a:0a:13', 10)
+          }
+          foreach ($name in 'sen1','sen2','sen3') {
+            $vm = Get-VM -Name $name -ErrorAction Stop
+            $cpu = (Get-VMProcessor -VMName $name).Count
+            $ram = (Get-VMMemory -VMName $name).Startup
+            $disks = @(Get-VMHardDiskDrive -VMName $name)
+            if ($cpu -lt 10) { throw "$name has only $cpu vCPU" }
+            if ($ram -lt 30GB) { throw "$name has less than 30 GiB RAM" }
+            if ($disks.Count -ne 2) { throw "$name has $($disks.Count) VHDs; expected exactly 2" }
+            $sizes = @($disks | ForEach-Object { (Get-VHD -Path $_.Path).Size })
+            if (-not ($sizes | Where-Object { $_ -ge 95GB -and $_ -le 110GB })) { throw "$name 100-GB OS VHD not found" }
+            if (-not ($sizes | Where-Object { $_ -ge 290GB -and $_ -le 310GB })) { throw "$name 300-GB data VHD not found" }
+            Write-Host "$name state=$($vm.State) cpu=$cpu ramGiB=$([math]::Round($ram/1GB,1)) disks=$($sizes.Count)"
+          }
+
+      - name: Execute guarded LayerSentry bootstrap
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') {
+            throw 'Digest-pinned LayerSentry installer was not provided.'
+          }
+          $source = Join-Path $env:GITHUB_WORKSPACE 'hack\hci-lab\bootstrap-production.ps1'
+          $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
+          $text = Get-Content -Raw $source
+          $old = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
+          $new = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
+          $matches = ([regex]::Matches($text, [regex]::Escape($old))).Count
+          if ($matches -ne 1) { throw "Expected exactly one upstream installer call in guarded source; found $matches" }
+          $text = $text.Replace($old, $new)
+          if ($text -match 'oci://ghcr\.io/cozystack/cozystack/cozy-installer') { throw 'Upstream installer reference remains after guarded substitution.' }
+          Set-Content -Path $patched -Value $text -Encoding UTF8
+          Write-Host "Starting guarded deployment of $env:DEPLOY_SOURCE_SHA using $env:LAYERSENTRY_INSTALLER_URI"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $patched
+          if ($LASTEXITCODE -ne 0) { throw "LayerSentry bootstrap failed with exit code $LASTEXITCODE" }
+
+      - name: Capture deployment state
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Get-VM -Name sen1,sen2,sen3 | Format-Table Name,State,Status,CPUUsage,MemoryAssigned,Uptime -AutoSize
+          if (Test-Path 'C:\hci-state\cozystack-hci-lab\kubeconfig') {
+            $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+            & 'C:\hci-tools\kubectl.exe' get nodes -o wide
+            & 'C:\hci-tools\kubectl.exe' get hr -A
+            & 'C:\hci-tools\kubectl.exe' get pods -A
+          }
