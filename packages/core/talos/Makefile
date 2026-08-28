@@ -8,17 +8,19 @@ include ../../../hack/common-envs.mk
 update:
 	hack/gen-profiles.sh
 
-# Build the LayerSentry userspace iSCSI target as a local Talos system extension.
-# The extension is consumed by imager through tarballPath, so it never needs to
-# be pushed to an external registry merely to build a release ISO.
-layersentry-iscsi-target-extension:
+# Build LayerSentry server-side storage services as local Talos system
+# extensions. They are consumed by imager through tarballPath, so release builds
+# do not depend on publishing intermediate extension images to another registry.
+layersentry-storage-server-extensions:
 	mkdir -p ../../../_out/extensions
 	hack/build-layersentry-iscsi-target-extension.sh ../../../_out/extensions
+	hack/build-layersentry-nfs-server-extension.sh ../../../_out/extensions
 	test -s ../../../_out/extensions/layersentry-iscsi-target.tar
+	test -s ../../../_out/extensions/layersentry-nfs-server.tar
 
 # Resolve the exact digest-pinned official extension set and build the local
-# LayerSentry extension before producing a boot asset.
-refresh-profiles: layersentry-iscsi-target-extension
+# LayerSentry extensions before producing a boot asset.
+refresh-profiles: layersentry-storage-server-extensions
 	hack/gen-profiles.sh $(TALOS_VERSION)
 
 image: image-matchbox image-talos
