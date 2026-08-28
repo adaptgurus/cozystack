@@ -301,6 +301,7 @@ func storagePoolProvider(dyn dynamic.Interface) providerFunc {
 						collectPoolKeys(zm["pools"], pools)
 					}
 				}
+			}
 		}
 		items := make([]corev1alpha1.OptionItem, 0, len(pools))
 		for p := range pools {
