@@ -1,0 +1,35 @@
+suite: vm-instance resource family naming
+
+templates:
+  - templates/vm.yaml
+
+release:
+  name: vm-instance-windows10
+  namespace: tenant-test
+
+set:
+  instanceType: ""
+  instanceProfile: ""
+  cloudInitSeed: family-test
+  resources:
+    cpu: 2
+    sockets: 1
+    memory: 4Gi
+  disks: []
+  networks: []
+
+tests:
+  - it: exposes windows10 as the VM family and windows10sec as its security family
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: vm
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/security-group"]
+          value: windows10sec
