@@ -1,0 +1,46 @@
+name: LayerSentry HCI Diagnose
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-layersentry-diagnose.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    name: Read-only live cluster diagnostics
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - name: Inspect Talos and Kubernetes state
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $talosctl = 'C:\hci-tools\talosctl.exe'
+          $state = 'C:\hci-state\cozystack-hci-lab'
+          $env:KUBECONFIG = Join-Path $state 'kubeconfig'
+          Write-Host '=== TALOS VERSIONS ==='
+          foreach ($ip in '10.10.10.11','10.10.10.12','10.10.10.13') {
+            & $talosctl --talosconfig (Join-Path $state 'talosconfig') version --nodes $ip --endpoints $ip
+          }
+          Write-Host '=== NODES ==='
+          & $kubectl get nodes -o wide
+          & $kubectl describe nodes
+          Write-Host '=== CRDS ==='
+          & $kubectl get crd
+          Write-Host '=== PODS ==='
+          & $kubectl get pods -A -o wide
+          Write-Host '=== COZYSTACK OPERATOR ==='
+          & $kubectl describe pod -n cozy-system -l app.kubernetes.io/name=cozystack-operator
+          Write-Host '=== COREDNS ==='
+          & $kubectl describe pod -n kube-system -l k8s-app=kube-dns
+          Write-Host '=== EVENTS ==='
+          & $kubectl get events -A --sort-by=.lastTimestamp
