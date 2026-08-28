@@ -52,6 +52,8 @@ jobs:
           Save-RepoFile 'hack/hci-lab/test-bootstrap-static.ps1' $env:GITHUB_SHA 'test-bootstrap-static.ps1'
           Save-RepoFile 'hack/hci-lab/reconcile-network-fabric-talosconfig.ps1' $env:GITHUB_SHA 'reconcile-network-fabric-talosconfig.ps1'
           Save-RepoFile 'hack/hci-lab/test-network-fabric-talosconfig-static.ps1' $env:GITHUB_SHA 'test-network-fabric-talosconfig-static.ps1'
+          Save-RepoFile 'hack/hci-lab/ensure-default-image-certification.ps1' $env:GITHUB_SHA 'ensure-default-image-certification.ps1'
+          Save-RepoFile 'hack/hci-lab/test-default-image-certification-static.ps1' $env:GITHUB_SHA 'test-default-image-certification-static.ps1'
           Save-RepoFile 'hack/hci-live/test-linux-vm-product-live.ps1' $env:RUNTIME_SOURCE_SHA 'test-linux-vm-product-live.ps1'
           "LAYERSENTRY_CERT_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -105,6 +107,8 @@ jobs:
           if (-not $?) { throw 'Bootstrap static validation failed.' }
           & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-network-fabric-talosconfig-static.ps1') -ReconcilePath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'reconcile-network-fabric-talosconfig.ps1')
           if (-not $?) { throw 'NetworkFabric static validation failed.' }
+          & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-default-image-certification-static.ps1') -ScriptPath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'ensure-default-image-certification.ps1')
+          if (-not $?) { throw 'Default image certification static validation failed.' }
 
       - name: Download exact runtime build manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -156,6 +160,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'reconcile-network-fabric-talosconfig.ps1')
           if ($LASTEXITCODE -ne 0) { throw "NetworkFabric reconcile failed with exit code $LASTEXITCODE" }
+
+      - name: Ensure product default Linux image fixture
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'ensure-default-image-certification.ps1') -EvidenceRoot $env:LAYERSENTRY_CERT_EVIDENCE
+          if ($LASTEXITCODE -ne 0) { throw "Default image certification setup failed with exit code $LASTEXITCODE" }
 
       - name: Run persistent TPM Linux VM lifecycle proof
         run: |
