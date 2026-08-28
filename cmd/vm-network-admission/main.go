@@ -37,7 +37,7 @@ func main() {
 	validator := vmnetworkadmission.NewHandler(
 		vmnetworkadmission.NewDynamicDependencyReader(dyn),
 		vmnetworkadmission.NewDynamicFabricReader(dyn),
-	)
+	).WithNetworkReferenceReader(vmnetworkadmission.NewDynamicNetworkReferenceReader(dyn))
 	authorized := vmnetworkadmission.NewTenantAuthorizationHandler(dyn, validator)
 	mux.Handle("/validate-vmnetwork", vmnetworkadmission.NewStrictHandler(authorized, vmnetworkadmission.DefaultMaxAdmissionBodyBytes))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -70,7 +70,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("VMNetwork validating admission listening on %s", *addr)
+	log.Printf("VMNetwork/VMInstance network validating admission listening on %s", *addr)
 	if err := server.ListenAndServeTLS(*certFile, *keyFile); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve admission webhook: %v", err)
 	}
