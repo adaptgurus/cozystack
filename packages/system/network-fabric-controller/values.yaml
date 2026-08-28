@@ -5,6 +5,9 @@ networkFabricController:
   healthProbeBindAddress: ":8081"
   healthRequeue: "2m"
   talosTryTimeout: "2m"
+  # Operator-only exact comma-separated <fabric>/<node> targets. Keep empty
+  # during normal operation. Wildcards are rejected by the controller.
+  orphanedNodeCleanupAllowlist: ""
   talosconfig:
     secretName: network-fabric-talosconfig
     key: talosconfig
