@@ -14,14 +14,18 @@ import (
 
 var nativeTemplateGVK = schema.GroupVersionKind{Group: "template.kubevirt.io", Version: "v1alpha1", Kind: "VirtualMachineTemplate"}
 
-const opticalSanitizedAnnotation = "virtualization.cozystack.io/optical-sanitized"
+const (
+	opticalSanitizedAnnotation   = "virtualization.cozystack.io/optical-sanitized"
+	bootstrapSanitizedAnnotation = "virtualization.cozystack.io/bootstrap-sanitized"
+)
 
 // SanitizingBackend decorates the native KubeVirt template backend. It never
-// reports a template Ready while CD/DVD devices remain in the captured VM.
-// This is intentionally a backend invariant rather than a dashboard option:
-// reusable HCI templates must not replicate installer or VirtIO media into
-// every future VM, and Convert must not retire its source before the sanitized
-// definition has been durably persisted.
+// reports a template Ready while CD/DVD devices or source-instance bootstrap
+// credentials remain in the captured VM. This is intentionally a backend
+// invariant rather than a dashboard option: reusable HCI templates must not
+// replicate installer/VirtIO media, cloud-init/Sysprep inputs or source SSH
+// access-credential references into every future VM. Convert therefore cannot
+// retire its source before the sanitized definition has been durably persisted.
 type SanitizingBackend struct {
 	vmtemplate.Backend
 	Client client.Client
@@ -41,29 +45,50 @@ func (b *SanitizingBackend) VerifyTemplate(ctx context.Context, ref vmtemplate.T
 	if err := b.Client.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, tpl); err != nil {
 		return vmtemplate.TemplateState{}, fmt.Errorf("get native VirtualMachineTemplate %s/%s for sanitation: %w", ref.Namespace, ref.Name, err)
 	}
+	base := tpl.DeepCopy()
+	changed := false
+
 	optical, err := vmtemplate.TemplateOpticalVolumes(tpl)
 	if err != nil {
 		return vmtemplate.TemplateState{}, err
 	}
-	if len(optical) == 0 {
-		return state, nil
+	if len(optical) > 0 {
+		result, err := vmtemplate.StripOpticalVolumes(tpl, optical)
+		if err != nil {
+			return vmtemplate.TemplateState{}, err
+		}
+		if !result.Changed {
+			return vmtemplate.TemplateState{}, fmt.Errorf("native template %s/%s reports optical devices %v but sanitation made no change", ref.Namespace, ref.Name, optical)
+		}
+		changed = true
+		annotations := tpl.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[opticalSanitizedAnnotation] = "true"
+		annotations["virtualization.cozystack.io/excluded-optical-count"] = fmt.Sprintf("%d", len(optical))
+		tpl.SetAnnotations(annotations)
 	}
 
-	base := tpl.DeepCopy()
-	result, err := vmtemplate.StripOpticalVolumes(tpl, optical)
+	bootstrap, err := vmtemplate.StripOneTimeBootstrap(tpl)
 	if err != nil {
 		return vmtemplate.TemplateState{}, err
 	}
-	if !result.Changed {
-		return vmtemplate.TemplateState{}, fmt.Errorf("native template %s/%s reports optical devices %v but sanitation made no change", ref.Namespace, ref.Name, optical)
+	if bootstrap.Changed {
+		changed = true
+		annotations := tpl.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[bootstrapSanitizedAnnotation] = "true"
+		annotations["virtualization.cozystack.io/excluded-bootstrap-volume-count"] = fmt.Sprintf("%d", len(bootstrap.RemovedVolumes))
+		annotations["virtualization.cozystack.io/excluded-access-credential-count"] = fmt.Sprintf("%d", bootstrap.RemovedAccessCredentials)
+		tpl.SetAnnotations(annotations)
 	}
-	annotations := tpl.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
+
+	if !changed {
+		return state, nil
 	}
-	annotations[opticalSanitizedAnnotation] = "true"
-	annotations["virtualization.cozystack.io/excluded-optical-count"] = fmt.Sprintf("%d", len(optical))
-	tpl.SetAnnotations(annotations)
 	if err := b.Client.Patch(ctx, tpl, client.MergeFrom(base)); err != nil {
 		return vmtemplate.TemplateState{}, fmt.Errorf("persist sanitized VirtualMachineTemplate %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
