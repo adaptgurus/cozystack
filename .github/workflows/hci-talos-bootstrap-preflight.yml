@@ -165,15 +165,22 @@ jobs:
 
             $diskLines = & $env:HCI_TALOSCTL get disks --insecure --nodes $node.IP --endpoints $node.IP 2>&1
             if ($LASTEXITCODE -ne 0) { throw "$($node.Name) disk discovery failed" }
-            $osLine = ($diskLines | Where-Object { $_ -match '^sda\s' } | Out-String)
-            $dataLine = ($diskLines | Where-Object { $_ -match '^sdb\s' } | Out-String)
-            if (-not $osLine) { throw "$($node.Name) has no sda OS candidate" }
-            if (-not $dataLine) { throw "$($node.Name) has no sdb data candidate" }
-            if ($osLine -notmatch [regex]::Escape($node.OsWwid) -or $osLine -notmatch '107 GB') {
-              throw "$($node.Name) sda identity/size mismatch; refusing any install"
+
+            # Locate disks by immutable WWID first; only then assert the expected
+            # device name and size. Talos tables contain leading NODE/NAMESPACE/TYPE
+            # columns, so matching '^sda'/'^sdb' is incorrect and unsafe.
+            $osMatches = @($diskLines | Where-Object { $_ -match [regex]::Escape($node.OsWwid) })
+            $dataMatches = @($diskLines | Where-Object { $_ -match [regex]::Escape($node.DataWwid) })
+            if ($osMatches.Count -ne 1) { throw "$($node.Name) expected exactly one OS WWID $($node.OsWwid), found $($osMatches.Count)" }
+            if ($dataMatches.Count -ne 1) { throw "$($node.Name) expected exactly one data WWID $($node.DataWwid), found $($dataMatches.Count)" }
+
+            $osLine = ($osMatches[0] | Out-String)
+            $dataLine = ($dataMatches[0] | Out-String)
+            if ($osLine -notmatch '\bruntime\s+Disk\s+sda\s' -or $osLine -notmatch '\b107 GB\b') {
+              throw "$($node.Name) OS WWID is not the expected sda/107 GB disk; refusing any install"
             }
-            if ($dataLine -notmatch [regex]::Escape($node.DataWwid) -or $dataLine -notmatch '322 GB') {
-              throw "$($node.Name) sdb identity/size mismatch; refusing any install"
+            if ($dataLine -notmatch '\bruntime\s+Disk\s+sdb\s' -or $dataLine -notmatch '\b322 GB\b') {
+              throw "$($node.Name) data WWID is not the expected sdb/322 GB disk; refusing any install"
             }
 
             $links = (& $env:HCI_TALOSCTL get links --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
