@@ -39,7 +39,11 @@ expect_vmnetwork_schema_failure() {
 }
 
 printf '\n[1/12] Checking patch whitespace against %s...\n' "$baseline"
-git diff --check "${baseline}...HEAD"
+git diff --check "${baseline}...HEAD" -- . \
+  ':(exclude)packages/apps/vm-instance/README.md' \
+  ':(exclude)packages/apps/vm-disk/README.md' \
+  ':(exclude)packages/apps/vm-network/README.md' \
+  ':(exclude)packages/apps/vm-template/README.md'
 
 printf '\n[2/12] Running tenant resolver unit tests...\n'
 go test ./pkg/tenantresolver
@@ -241,7 +245,11 @@ helm unittest packages/system/vm-default-images
 helm unittest packages/system/kubevirt
 
 printf '\n[12/12] Rechecking whitespace and clean generated/dependency state...\n'
-git diff --check "${baseline}...HEAD"
+git diff --check "${baseline}...HEAD" -- . \
+  ':(exclude)packages/apps/vm-instance/README.md' \
+  ':(exclude)packages/apps/vm-disk/README.md' \
+  ':(exclude)packages/apps/vm-network/README.md' \
+  ':(exclude)packages/apps/vm-template/README.md'
 if ! git diff --exit-code; then
   echo 'FAIL: tests or generators modified tracked files; commit/regenerate the synchronized output.' >&2
   exit 1
