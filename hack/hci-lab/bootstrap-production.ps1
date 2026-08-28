@@ -593,6 +593,28 @@ spec:
         return ($probe.ExitCode -eq 0)
     }
 
+    # Do not treat installer/operator readiness as platform convergence. The
+    # platform HelmRelease can still be applying a new immutable package source
+    # while child Package/HelmRelease objects remain Ready on their previous
+    # artifacts. Waiting only on Cilium/LINSTOR therefore permits a stale
+    # KubeVirt release to race ahead of HCI certification. Gate first on the
+    # platform release, then on the KubeVirt child chain, and finally on the
+    # effective KubeVirt CR fields required by the HCI runtime.
+    Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform' -TimeoutSeconds 1800
+
+    Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 10 -Description 'cozystack.kubevirt Package Ready after platform convergence' -Condition {
+        Test-KubernetesReadyCondition -GetArguments @('get','packages.cozystack.io','cozystack.kubevirt')
+    }
+    Wait-HelmReleaseReady -Namespace 'cozy-kubevirt' -Name 'kubevirt' -TimeoutSeconds 1800
+
+    Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 10 -Description 'effective KubeVirt persistent VM state configuration' -Condition {
+        $kv = Get-KubectlObject -Arguments @('get','kubevirt.kubevirt.io','-n','cozy-kubevirt','kubevirt')
+        if (-not $kv -or [string]$kv.status.phase -ne 'Deployed') { return $false }
+        $gates = @($kv.spec.configuration.developerConfiguration.featureGates | ForEach-Object { [string]$_ })
+        if ($gates -notcontains 'VMPersistentState') { return $false }
+        return ([string]$kv.spec.configuration.vmStateStorageClass -eq 'replicated')
+    }
+
     Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium' -TimeoutSeconds 1800
     Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'Cilium DaemonSet ready on all three nodes' -Condition {
         $obj = Get-KubectlObject -Arguments @('get','ds','-n','cozy-cilium','cilium')

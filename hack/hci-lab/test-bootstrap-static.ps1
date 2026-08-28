@@ -44,10 +44,29 @@ Assert-Contains 'refusing to bootstrap etcd again' 'Existing authenticated Talos
 Assert-Contains 'Digest-pinned LayerSentry installer is required' 'Digest-pinned custom installer guard is missing.'
 Assert-Contains 'packages\.cozystack\.io' 'Package CRD readiness gate is missing.'
 Assert-Contains 'packagesources\.cozystack\.io' 'PackageSource CRD readiness gate is missing.'
+Assert-Contains "Wait-HelmReleaseReady\s+-Namespace\s+'cozy-system'\s+-Name\s+'cozystack-platform'" 'Bootstrap does not wait for the platform HelmRelease to converge.'
+Assert-Contains "Wait-HelmReleaseReady\s+-Namespace\s+'cozy-kubevirt'\s+-Name\s+'kubevirt'" 'Bootstrap does not wait for the KubeVirt child HelmRelease.'
+Assert-Contains 'effective KubeVirt persistent VM state configuration' 'Bootstrap lacks an effective KubeVirt persistent-state convergence gate.'
+Assert-Contains "-notcontains\s+'VMPersistentState'" 'Bootstrap does not require VMPersistentState in the live KubeVirt CR.'
+Assert-Contains "vmStateStorageClass\s+-eq\s+'replicated'" 'Bootstrap does not require the replicated VM state StorageClass in the live KubeVirt CR.'
 Assert-Contains 'Cilium DaemonSet ready on all three nodes' 'Cilium readiness gate is missing.'
 Assert-Contains 'three LINSTOR data storage pools' 'All-node LINSTOR storage-pool gate is missing.'
 Assert-NotContains 'oci://ghcr\.io/cozystack/cozystack/cozy-installer' 'Bootstrap contains an upstream installer URI and can bypass custom provenance.'
 Assert-NotContains "Invoke-External\s+\$Talm\s+'bootstrap'" 'Bootstrap still uses Talm for etcd bootstrap rather than authenticated talosctl.'
+
+$platformApplyIndex = $text.IndexOf('Apply-YamlText $platform')
+$platformReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform'")
+$effectiveKubeVirtIndex = $text.IndexOf("effective KubeVirt persistent VM state configuration")
+$ciliumReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium'")
+if ($platformApplyIndex -lt 0 -or $platformReadyIndex -le $platformApplyIndex) {
+    throw 'Platform HelmRelease readiness gate is not ordered after platform Package apply.'
+}
+if ($effectiveKubeVirtIndex -le $platformReadyIndex) {
+    throw 'Effective KubeVirt convergence gate is not ordered after platform HelmRelease readiness.'
+}
+if ($ciliumReadyIndex -le $effectiveKubeVirtIndex) {
+    throw 'Cilium readiness can still run before effective KubeVirt platform convergence.'
+}
 
 $lines = Get-Content $BootstrapPath
 $mutationIndex = -1
