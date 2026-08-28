@@ -38,6 +38,13 @@ jobs:
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
+      - name: Validate default image certification fixture safety
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./hack/hci-lab/test-default-image-certification-static.ps1
+          if (-not $?) { throw 'Default image certification static validation failed.' }
+
       - name: Test canonical VM resource family naming
         shell: bash
         run: |
