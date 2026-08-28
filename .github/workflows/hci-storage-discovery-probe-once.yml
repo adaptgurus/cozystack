@@ -1,0 +1,114 @@
+name: One-shot HCI storage discovery probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-storage-discovery-probe-once.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  discover:
+    name: Read-only HCI storage discovery on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+    steps:
+      - name: Verify read-only tooling
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kubectl = Get-Command kubectl -ErrorAction SilentlyContinue
+          $talosctl = Get-Command talosctl -ErrorAction SilentlyContinue
+          if (-not $kubectl) {
+            $candidate = 'C:\hci-tools\kubectl.exe'
+            if (Test-Path $candidate) { $kubectl = Get-Item $candidate }
+          }
+          if (-not $kubectl) { throw 'kubectl is required for storage discovery' }
+          Write-Host "kubectl: $($kubectl.Source ?? $kubectl.FullName)"
+          if ($talosctl) { Write-Host "talosctl: $($talosctl.Source)" } else { Write-Warning 'talosctl is not on PATH; Kubernetes inventory will still run.' }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+          $talosConfig = 'C:\hci-state\cozystack-hci-lab\talosconfig'
+          if (Test-Path $talosConfig) {
+            $env:TALOSCONFIG = $talosConfig
+            Write-Host "TALOSCONFIG=$talosConfig"
+          }
+
+      - name: Discover Kubernetes storage control plane
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== NODES ====='
+          kubectl get nodes -o wide
+
+          Write-Host '===== STORAGE CLASSES ====='
+          kubectl get storageclass -o custom-columns='NAME:.metadata.name,PROVISIONER:.provisioner,RECLAIM:.reclaimPolicy,BINDING:.volumeBindingMode,EXPAND:.allowVolumeExpansion,DEFAULT:.metadata.annotations.storageclass\.kubernetes\.io/is-default-class'
+          Write-Host '===== STORAGE CLASS YAML ====='
+          kubectl get storageclass -o yaml
+
+          Write-Host '===== CSI DRIVERS ====='
+          kubectl get csidriver -o wide
+          Write-Host '===== CSI NODES ====='
+          kubectl get csinode -o yaml
+
+          Write-Host '===== PERSISTENT VOLUMES ====='
+          kubectl get pv -o custom-columns='NAME:.metadata.name,CAPACITY:.spec.capacity.storage,SC:.spec.storageClassName,STATUS:.status.phase,DRIVER:.spec.csi.driver,VOLUME_HANDLE:.spec.csi.volumeHandle,CLAIM_NS:.spec.claimRef.namespace,CLAIM:.spec.claimRef.name'
+          Write-Host '===== PERSISTENT VOLUME CLAIMS ====='
+          kubectl get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,VOLUME:.spec.volumeName,CAPACITY:.status.capacity.storage,SC:.spec.storageClassName'
+
+          Write-Host '===== VOLUME ATTACHMENTS ====='
+          kubectl get volumeattachment -o custom-columns='NAME:.metadata.name,ATTACHER:.spec.attacher,NODE:.spec.nodeName,PV:.spec.source.persistentVolumeName,ATTACHED:.status.attached'
+
+          Write-Host '===== SNAPSHOT API ====='
+          kubectl api-resources --api-group=snapshot.storage.k8s.io
+          kubectl get volumesnapshotclass -o wide 2>$null
+          kubectl get volumesnapshot -A -o wide 2>$null
+
+          Write-Host '===== STORAGE RELATED CRDS ====='
+          kubectl get crd -o name | Select-String -Pattern 'linstor|piraeus|zfs|storage|snapshot' -CaseSensitive:$false
+
+          Write-Host '===== STORAGE RELATED PODS ====='
+          kubectl get pods -A -o wide | Select-String -Pattern 'linstor|piraeus|zfs|csi|snapshot' -CaseSensitive:$false
+
+          Write-Host '===== LINSTOR / PIRAeus OBJECTS WHEN PRESENT ====='
+          $apiResources = kubectl api-resources -o name 2>$null
+          foreach ($resource in $apiResources) {
+            if ($resource -match '(?i)linstor|piraeus') {
+              Write-Host "--- $resource ---"
+              kubectl get $resource -A -o wide 2>$null
+            }
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'One or more optional read-only Kubernetes discovery commands returned non-zero; inspect the sections above.'
+          }
+
+      - name: Discover Talos block devices and stable identities
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $talos = Get-Command talosctl -ErrorAction SilentlyContinue
+          if (-not $talos) {
+            Write-Warning 'talosctl not available; skipping Talos device inventory.'
+            exit 0
+          }
+          $talosConfig = 'C:\hci-state\cozystack-hci-lab\talosconfig'
+          if (Test-Path $talosConfig) { $env:TALOSCONFIG = $talosConfig }
+
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== TALOS NODE $node : DISKS ====="
+            talosctl -n $node -e $node get disks -o yaml
+            Write-Host "===== TALOS NODE $node : BLOCKDEVICES ====="
+            talosctl -n $node -e $node get blockdevices -o yaml
+            Write-Host "===== TALOS NODE $node : DISCOVERED VOLUMES ====="
+            talosctl -n $node -e $node get discoveredvolumes -o yaml
+          }
+
+          Write-Host 'SAFETY: this workflow contains no wipe, format, partition, mount, mkfs, zpool create, vgcreate, pvcreate, linstor storage-pool create, kubectl apply, patch, delete, or create operation.'
