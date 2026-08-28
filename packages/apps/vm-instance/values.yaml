@@ -29,6 +29,10 @@
 ## @field {quantity} [memory] - Amount of memory allocated.
 ## @field {quantity} [sockets] - Number of CPU sockets (vCPU topology).
 
+## @typedef {struct} TPM - Virtual TPM configuration.
+## @field {bool} enabled - Attach an emulated TPM device to the VM.
+## @field {bool} persistent - Persist this VM's unique TPM state in KubeVirt backend storage so it survives restart, migration and node replacement.
+
 ## @param {bool} external - Enable external access from outside the cluster.
 external: false
 
@@ -100,6 +104,11 @@ cpuModel: ""
 ## @param {Resources} [resources] - Resource configuration for the virtual machine.
 resources: {}
 
+## @param {TPM} [tpm] - Virtual TPM configuration. Persistent TPM state is unique per VM and is stored on the cluster VM-state StorageClass; it is never shared between different guests.
+tpm:
+  enabled: false
+  persistent: true
+
 ## @param {[]string} sshKeys - List of SSH public keys for authentication.
 sshKeys: []
 ## Example:
@@ -108,7 +117,7 @@ sshKeys: []
 ##   - ssh-ed25519 ...
 ##
 
-## @param {string} cloudInit - Cloud-init user data.
+## @param {string} cloudInit - Cloud-init user data. Stored in a per-VM Kubernetes Secret, so it is available from every cluster node.
 cloudInit: ""
 ## Example:
 ## cloudInit: |
@@ -116,6 +125,11 @@ cloudInit: ""
 ##   password: ubuntu
 ##   chpasswd: { expire: False }
 ##
+
+## @param {string} cloudInitSecretRef - Optional existing Secret in the VM namespace containing a `userdata` key. Multiple VMs may intentionally reference the same Secret to share one cloud-init source. Mutually exclusive with cloudInit.
+cloudInitSecretRef: ""
+## Example:
+## cloudInitSecretRef: "shared-linux-cloud-init"
 
 ## @param {string} cloudInitSeed - Seed string to generate SMBIOS UUID for the VM.
 cloudInitSeed: ""
