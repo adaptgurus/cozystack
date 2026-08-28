@@ -17,9 +17,13 @@ FIRMWARES="amd-ucode amdgpu bnx2-bnx2x i915 intel-ice-firmware intel-ucode qlogi
 # These are deliberately baked into every LayerSentry Talos boot asset so a
 # node has the host-side tooling required by storage/network controllers from
 # first boot. Hardware-specific kernel capabilities (SR-IOV, VFIO, RDMA/RoCE,
-# NVMe/RDMA and NVMe/TCP) are provided by the Talos kernel and the matching
-# device drivers; these extensions add the userspace/service pieces where
-# Talos publishes one.
+# NVMe/RDMA, NVMe/FC and NVMe/TCP) are provided by the Talos kernel and matching
+# device drivers; these extensions add the userspace/service pieces where Talos
+# publishes one.
+#
+# nfsd is the Sidero extension that supplies the Talos-version-matched NFSD
+# kernel module. nfs-utils supplies rpcbind/rpc.statd for NFSv3 locking; it is
+# not by itself a complete host export-management daemon.
 #
 # trident-iscsi-tools is intentionally included even when NetApp Trident is not
 # installed: Sidero's extension is the supported catalog image that provides
@@ -27,6 +31,7 @@ FIRMWARES="amd-ucode amdgpu bnx2-bnx2x i915 intel-ice-firmware intel-ucode qlogi
 HCI_EXTENSIONS="\
 iscsi-tools \
 multipath-tools \
+nfsd \
 nfs-utils \
 nfsrahead \
 nvme-cli \
@@ -138,9 +143,9 @@ for profile in $PROFILES; do
   extension_yaml=$(sed 's/^/    - imageRef: /' "$IMAGE_REFS")
 
   # Embedded configuration is a virtual system extension. Include it in every
-  # boot/install asset that carries an initramfs so multipath kernel modules and
-  # multipathd defaults are active from first boot and remain available through
-  # install/upgrade media. A kernel-only artifact cannot carry embedded config.
+  # boot/install asset that carries an initramfs so multipath and NFSD kernel
+  # modules, multipathd defaults, and LayerSentry's host-ingress accept policy
+  # are active from first boot. A kernel-only artifact cannot carry config.
   if [ "$profile" = "kernel" ]; then
     customization_yaml=""
   else
