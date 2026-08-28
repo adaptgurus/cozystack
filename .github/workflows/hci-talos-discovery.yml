@@ -185,9 +185,27 @@ jobs:
       - name: Confirm cluster is not already bootstrapped
         run: |
           $ErrorActionPreference = 'Stop'
+          function Test-TcpPortFast {
+            param(
+              [Parameter(Mandatory=$true)][string]$ComputerName,
+              [Parameter(Mandatory=$true)][int]$Port,
+              [int]$TimeoutMs = 3000
+            )
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($ComputerName, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+              $client.EndConnect($async)
+              return $true
+            } catch {
+              return $false
+            } finally {
+              $client.Close()
+            }
+          }
+
           foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
-            $kube = Test-NetConnection -ComputerName $node -Port 6443 -WarningAction SilentlyContinue
-            if ($kube.TcpTestSucceeded) {
+            if (Test-TcpPortFast -ComputerName $node -Port 6443 -TimeoutMs 3000) {
               throw "Kubernetes API is already reachable on $node; refusing discovery workflow to classify this as a blank cluster"
             }
           }
@@ -197,6 +215,25 @@ jobs:
         if: always()
         run: |
           $ErrorActionPreference = 'Continue'
+          function Test-TcpPortFast {
+            param(
+              [Parameter(Mandatory=$true)][string]$ComputerName,
+              [Parameter(Mandatory=$true)][int]$Port,
+              [int]$TimeoutMs = 3000
+            )
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($ComputerName, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+              $client.EndConnect($async)
+              return $true
+            } catch {
+              return $false
+            } finally {
+              $client.Close()
+            }
+          }
+
           Write-Host '==== persistent diagnostic files ===='
           Get-ChildItem $env:HCI_DIAG_DIR -Force -ErrorAction SilentlyContinue | Format-Table FullName,Length,LastWriteTimeUtc -AutoSize
 
@@ -206,8 +243,8 @@ jobs:
           Write-Host '==== node endpoint state ===='
           foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
             $icmp = Test-Connection -ComputerName $node -Count 1 -Quiet -ErrorAction SilentlyContinue
-            $talos = Test-NetConnection -ComputerName $node -Port 50000 -WarningAction SilentlyContinue
-            $kube = Test-NetConnection -ComputerName $node -Port 6443 -WarningAction SilentlyContinue
-            Write-Host "$node ICMP=$icmp TCP50000=$($talos.TcpTestSucceeded) TCP6443=$($kube.TcpTestSucceeded)"
+            $talos = Test-TcpPortFast -ComputerName $node -Port 50000 -TimeoutMs 3000
+            $kube = Test-TcpPortFast -ComputerName $node -Port 6443 -TimeoutMs 3000
+            Write-Host "$node ICMP=$icmp TCP50000=$talos TCP6443=$kube"
             Get-NetNeighbor -IPAddress $node -ErrorAction SilentlyContinue | Format-Table ifIndex,IPAddress,LinkLayerAddress,State -AutoSize
           }
