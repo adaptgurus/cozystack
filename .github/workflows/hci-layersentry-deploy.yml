@@ -194,6 +194,11 @@ jobs:
           $patchedText = [regex]::Replace($text, $authPattern, $newAuth, 1)
           if ($patchedText -eq $text) { throw 'Test-AuthenticatedTalos guard point was not patched.' }
           $text = $patchedText
+          $oldApply = '            Invoke-External $Talm ''apply'' ''-f'' $nodeFile ''-i'''
+          $newApply = '            Invoke-External $Talm ''--nodes'' $node.IP ''--endpoints'' $node.IP ''apply'' ''-f'' $nodeFile ''-i'''
+          $applyMatches = ([regex]::Matches($text, [regex]::Escape($oldApply))).Count
+          if ($applyMatches -ne 1) { throw "Expected exactly one guarded Talm apply point; found $applyMatches" }
+          $text = $text.Replace($oldApply, $newApply)
           $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
           $newInstaller = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
           $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
