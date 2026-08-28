@@ -59,12 +59,18 @@ type ConfigSpec struct {
 	// Resource configuration for the virtual machine.
 	// +kubebuilder:default:={}
 	Resources Resources `json:"resources,omitempty"`
+	// Virtual TPM configuration. Persistent TPM state is unique per VM and is stored on the cluster VM-state StorageClass; it is never shared between different guests.
+	// +kubebuilder:default:={}
+	Tpm TPM `json:"tpm,omitempty"`
 	// List of SSH public keys for authentication.
 	// +kubebuilder:default:={}
 	SshKeys []string `json:"sshKeys,omitempty"`
-	// Cloud-init user data.
+	// Cloud-init user data. Stored in a per-VM Kubernetes Secret, so it is available from every cluster node.
 	// +kubebuilder:default:=""
 	CloudInit string `json:"cloudInit"`
+	// Optional existing Secret in the VM namespace containing a `userdata` key. Multiple VMs may intentionally reference the same Secret to share one cloud-init source. Mutually exclusive with cloudInit.
+	// +kubebuilder:default:=""
+	CloudInitSecretRef string `json:"cloudInitSecretRef"`
 	// Seed string to generate SMBIOS UUID for the VM.
 	// +kubebuilder:default:=""
 	CloudInitSeed string `json:"cloudInitSeed"`
@@ -101,6 +107,15 @@ type Resources struct {
 	Memory resource.Quantity `json:"memory,omitempty"`
 	// Number of CPU sockets (vCPU topology).
 	Sockets resource.Quantity `json:"sockets,omitempty"`
+}
+
+type TPM struct {
+	// Attach an emulated TPM device to the VM.
+	// +kubebuilder:default:=false
+	Enabled bool `json:"enabled"`
+	// Persist this VM's unique TPM state in KubeVirt backend storage so it survives restart, migration and node replacement.
+	// +kubebuilder:default:=true
+	Persistent bool `json:"persistent"`
 }
 
 // +kubebuilder:validation:Enum="PortList";"WholeIP"

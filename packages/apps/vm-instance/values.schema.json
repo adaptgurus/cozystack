@@ -212,6 +212,27 @@
         }
       }
     },
+    "tpm": {
+      "description": "Virtual TPM configuration. Persistent TPM state is unique per VM and is stored on the cluster VM-state StorageClass; it is never shared between different guests.",
+      "type": "object",
+      "default": {},
+      "required": [
+        "enabled",
+        "persistent"
+      ],
+      "properties": {
+        "enabled": {
+          "description": "Attach an emulated TPM device to the VM.",
+          "type": "boolean",
+          "default": false
+        },
+        "persistent": {
+          "description": "Persist this VM's unique TPM state in KubeVirt backend storage so it survives restart, migration and node replacement.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
     "sshKeys": {
       "description": "List of SSH public keys for authentication.",
       "type": "array",
@@ -221,7 +242,12 @@
       }
     },
     "cloudInit": {
-      "description": "Cloud-init user data.",
+      "description": "Cloud-init user data. Stored in a per-VM Kubernetes Secret, so it is available from every cluster node.",
+      "type": "string",
+      "default": ""
+    },
+    "cloudInitSecretRef": {
+      "description": "Optional existing Secret in the VM namespace containing a `userdata` key. Multiple VMs may intentionally reference the same Secret to share one cloud-init source. Mutually exclusive with cloudInit.",
       "type": "string",
       "default": ""
     },
