@@ -37,35 +37,78 @@ jobs:
           if (-not (Test-Path $kubeconfig)) { throw "kubeconfig missing: $kubeconfig" }
           $env:KUBECONFIG = $kubeconfig
 
+          function Invoke-NativeCommand {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [Parameter(Mandatory = $true)][string[]]$Arguments
+            )
+
+            # Windows PowerShell 5.1 can promote native stderr into a terminating
+            # NativeCommandError when the caller uses ErrorActionPreference=Stop.
+            # Temporarily downgrade only PowerShell's treatment of native stderr,
+            # then make the native process exit code authoritative.
+            $savedErrorActionPreference = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'Continue'
+              $lines = @(& $Command @Arguments 2>&1)
+              $exitCode = $LASTEXITCODE
+            } finally {
+              $ErrorActionPreference = $savedErrorActionPreference
+            }
+
+            $text = (($lines | ForEach-Object { $_.ToString() }) -join "`n")
+            return [pscustomobject]@{
+              ExitCode = [int]$exitCode
+              Text = $text
+            }
+          }
+
+          # Regression probes: benign stderr with exit 0 must not terminate the
+          # workflow, while a genuine non-zero exit must remain observable.
+          $stderrProbe = Invoke-NativeCommand -Command $env:ComSpec -Arguments @('/d','/s','/c','echo benign-stderr 1>&2 & exit /b 0')
+          if ($stderrProbe.ExitCode -ne 0 -or $stderrProbe.Text -notmatch 'benign-stderr') {
+            throw 'native stderr capture regression: exit-0 stderr was not captured safely'
+          }
+          $failureProbe = Invoke-NativeCommand -Command $env:ComSpec -Arguments @('/d','/s','/c','echo expected-failure 1>&2 & exit /b 7')
+          if ($failureProbe.ExitCode -ne 7 -or $failureProbe.Text -notmatch 'expected-failure') {
+            throw 'native exit-code capture regression: genuine process failure was lost'
+          }
+
+          function Invoke-Kubectl {
+            param([string[]]$Arguments)
+            return Invoke-NativeCommand -Command $kubectl -Arguments $Arguments
+          }
+
           function Capture-Kubectl {
             param([string]$File,[string[]]$Arguments)
-            $text = @(& $kubectl @Arguments 2>&1)
-            $code = $LASTEXITCODE
-            ($text | Out-String) | Set-Content -Path (Join-Path $out $File) -Encoding UTF8
-            return $code
+            $result = Invoke-Kubectl -Arguments $Arguments
+            $result.Text | Set-Content -Path (Join-Path $out $File) -Encoding UTF8
+            ([string]$result.ExitCode) | Set-Content -Path (Join-Path $out ($File + '.exitcode')) -Encoding ASCII
+            return $result.ExitCode
           }
 
           Capture-Kubectl 'nodes.txt' @('get','nodes','-o','wide') | Out-Null
           Capture-Kubectl 'helmreleases.txt' @('get','hr','-A') | Out-Null
+          Capture-Kubectl 'pods.txt' @('get','pods','-A','-o','wide') | Out-Null
           Capture-Kubectl 'services.txt' @('get','svc','-A','-o','wide') | Out-Null
           Capture-Kubectl 'ingresses.txt' @('get','ingress','-A','-o','wide') | Out-Null
           Capture-Kubectl 'gateways.txt' @('get','gateways.gateway.networking.k8s.io','-A','-o','wide') | Out-Null
           Capture-Kubectl 'httproutes.txt' @('get','httproutes.gateway.networking.k8s.io','-A','-o','wide') | Out-Null
           Capture-Kubectl 'metallb-pools.txt' @('get','ipaddresspools.metallb.io,l2advertisements.metallb.io','-A','-o','wide') | Out-Null
 
-          $rootHr = @(& $kubectl get hr -n tenant-root tenant-root -o json 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'tenant-root HelmRelease is missing' }
-          $rootObj = ($rootHr -join "`n") | ConvertFrom-Json
+          $rootResult = Invoke-Kubectl -Arguments @('get','hr','-n','tenant-root','tenant-root','-o','json')
+          if ($rootResult.ExitCode -ne 0) { throw "tenant-root HelmRelease query failed: exit=$($rootResult.ExitCode)" }
+          $rootObj = $rootResult.Text | ConvertFrom-Json
           $rootReady = @($rootObj.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count -gt 0
 
-          $dashboardHr = @(& $kubectl get hr -n cozy-dashboard dashboard -o json 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'dashboard HelmRelease is missing' }
-          $dashboardObj = ($dashboardHr -join "`n") | ConvertFrom-Json
+          $dashboardResult = Invoke-Kubectl -Arguments @('get','hr','-n','cozy-dashboard','dashboard','-o','json')
+          if ($dashboardResult.ExitCode -ne 0) { throw "dashboard HelmRelease query failed: exit=$($dashboardResult.ExitCode)" }
+          $dashboardObj = $dashboardResult.Text | ConvertFrom-Json
           $dashboardReady = @($dashboardObj.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count -gt 0
 
-          $secretRaw = @(& $kubectl get secret -n tenant-root tenant-root -o json 2>$null)
-          if ($LASTEXITCODE -ne 0) { throw 'tenant-root authentication Secret is missing' }
-          $secretObj = ($secretRaw -join "`n") | ConvertFrom-Json
+          $secretResult = Invoke-Kubectl -Arguments @('get','secret','-n','tenant-root','tenant-root','-o','json')
+          if ($secretResult.ExitCode -ne 0) { throw "tenant-root authentication Secret query failed: exit=$($secretResult.ExitCode)" }
+          $secretObj = $secretResult.Text | ConvertFrom-Json
           $tokenPresent = $null -ne $secretObj.data.token -and [string]$secretObj.data.token -ne ''
 
           $dns = @()
@@ -91,8 +134,14 @@ jobs:
           }
 
           $curl = (Get-Command curl.exe -ErrorAction Stop).Source
-          $httpCode = (& $curl -k -sS -o NUL --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://$hostName/").Trim()
-          $curlExit = $LASTEXITCODE
+          $curlResult = Invoke-NativeCommand -Command $curl -Arguments @('-k','-sS','-o','NUL','--connect-timeout','5','--max-time','15','-w','%{http_code}',"https://$hostName/")
+          $curlExit = $curlResult.ExitCode
+          $httpMatch = [regex]::Match($curlResult.Text, '(\d{3})\s*$')
+          if ($httpMatch.Success) {
+            $httpCode = $httpMatch.Groups[1].Value
+          } else {
+            $httpCode = '000'
+          }
 
           $summary = @(
             "orchestration_sha=$env:GITHUB_SHA",
