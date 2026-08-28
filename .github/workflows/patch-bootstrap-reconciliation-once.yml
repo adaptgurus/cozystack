@@ -44,7 +44,21 @@ jobs:
               raise SystemExit(f'static-test anchor count={q.count(test_anchor)}, expected 1')
           q = q.replace(test_anchor, test_replacement)
 
-          order_block = r'''\n$platformApplyIndex = $text.IndexOf('Apply-YamlText $platform')\n$platformReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform'")\n$effectiveKubeVirtIndex = $text.IndexOf("effective KubeVirt persistent VM state configuration")\n$ciliumReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium'")\nif ($platformApplyIndex -lt 0 -or $platformReadyIndex -le $platformApplyIndex) {\n    throw 'Platform HelmRelease readiness gate is not ordered after platform Package apply.'\n}\nif ($effectiveKubeVirtIndex -le $platformReadyIndex) {\n    throw 'Effective KubeVirt convergence gate is not ordered after platform HelmRelease readiness.'\n}\nif ($ciliumReadyIndex -le $effectiveKubeVirtIndex) {\n    throw 'Cilium readiness can still run before effective KubeVirt platform convergence.'\n}\n'''
+          order_block = '''
+          $platformApplyIndex = $text.IndexOf('Apply-YamlText $platform')
+          $platformReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform'")
+          $effectiveKubeVirtIndex = $text.IndexOf("effective KubeVirt persistent VM state configuration")
+          $ciliumReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium'")
+          if ($platformApplyIndex -lt 0 -or $platformReadyIndex -le $platformApplyIndex) {
+              throw 'Platform HelmRelease readiness gate is not ordered after platform Package apply.'
+          }
+          if ($effectiveKubeVirtIndex -le $platformReadyIndex) {
+              throw 'Effective KubeVirt convergence gate is not ordered after platform HelmRelease readiness.'
+          }
+          if ($ciliumReadyIndex -le $effectiveKubeVirtIndex) {
+              throw 'Cilium readiness can still run before effective KubeVirt platform convergence.'
+          }
+          '''
           marker = "\n$lines = Get-Content $BootstrapPath\n"
           if q.count(marker) != 1:
               raise SystemExit('static order marker not unique')
