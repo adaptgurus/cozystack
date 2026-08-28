@@ -169,6 +169,30 @@ jobs:
           $source = $env:LAYERSENTRY_BOOTSTRAP_PATH
           $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
           $text = Get-Content -Raw $source
+
+          $invokePattern = '(?ms)^function Invoke-External \{.*?^\}\r?\n\r?\nfunction Install-PinnedTools'
+          $invokeLines = @(
+            'function Invoke-External {'
+            '    param([Parameter(Mandatory=$true)][string]$FilePath,[Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments)'
+            '    $savedErrorActionPreference = $ErrorActionPreference'
+            '    $exitCode = 1'
+            '    try {'
+            "        `$ErrorActionPreference = 'Continue'"
+            '        & $FilePath @Arguments'
+            '        $exitCode = $LASTEXITCODE'
+            '    } finally {'
+            '        $ErrorActionPreference = $savedErrorActionPreference'
+            '    }'
+            '    if ($exitCode -ne 0) { throw "$FilePath failed with exit code $exitCode" }'
+            '}'
+            ''
+            'function Install-PinnedTools'
+          )
+          $newInvoke = $invokeLines -join "`r`n"
+          $patchedText = [regex]::Replace($text, $invokePattern, $newInvoke, 1)
+          if ($patchedText -eq $text) { throw 'Invoke-External native stderr guard point was not patched.' }
+          $text = $patchedText
+
           $authPattern = '(?ms)^function Test-AuthenticatedTalos\(\[string\]\$IP\) \{.*?^\}\r?\n\r?\nfunction Assert-HyperVSafety'
           $authLines = @(
             'function Test-AuthenticatedTalos([string]$IP) {'
@@ -195,10 +219,30 @@ jobs:
           if ($patchedText -eq $text) { throw 'Test-AuthenticatedTalos guard point was not patched.' }
           $text = $patchedText
 
-          $initNeedle = "    Initialize-TalmProject`r`n`r`n    foreach (`$node in `$Nodes) {"
-          if (-not $text.Contains($initNeedle)) {
-            $initNeedle = "    Initialize-TalmProject`n`n    foreach (`$node in `$Nodes) {"
+          $templateNeedle = @(
+            '        & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr'
+            '        if ($LASTEXITCODE -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }'
+          ) -join "`r`n"
+          if (-not $text.Contains($templateNeedle)) {
+            $templateNeedle = $templateNeedle.Replace("`r`n","`n")
           }
+          if (-not $text.Contains($templateNeedle)) { throw 'Direct talm template guard point was not found.' }
+          $templateLines = @(
+            '        $savedTemplateErrorActionPreference = $ErrorActionPreference'
+            '        $templateExitCode = 1'
+            '        try {'
+            "            `$ErrorActionPreference = 'Continue'"
+            '            & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr'
+            '            $templateExitCode = $LASTEXITCODE'
+            '        } finally {'
+            '            $ErrorActionPreference = $savedTemplateErrorActionPreference'
+            '        }'
+            '        if ($templateExitCode -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }'
+          )
+          $text = $text.Replace($templateNeedle, ($templateLines -join "`r`n"))
+
+          $initNeedle = "    Initialize-TalmProject`r`n`r`n    foreach (`$node in `$Nodes) {"
+          if (-not $text.Contains($initNeedle)) { $initNeedle = "    Initialize-TalmProject`n`n    foreach (`$node in `$Nodes) {" }
           if (-not $text.Contains($initNeedle)) { throw 'Talm project initialization guard point was not found.' }
           $hostnameFixLines = @(
             '    Initialize-TalmProject'
@@ -221,16 +265,16 @@ jobs:
             ''
             '    foreach ($node in $Nodes) {'
           )
-          $hostnameFix = $hostnameFixLines -join "`r`n"
-          $text = $text.Replace($initNeedle, $hostnameFix)
+          $text = $text.Replace($initNeedle, ($hostnameFixLines -join "`r`n"))
 
           $oldApply = '            Invoke-External $Talm ''apply'' ''-f'' $nodeFile ''-i'''
           $newApply = '            Invoke-External $Talm ''--nodes'' $node.IP ''--endpoints'' $node.IP ''apply'' ''-f'' $nodeFile ''-i'''
           $applyMatches = ([regex]::Matches($text, [regex]::Escape($oldApply))).Count
           if ($applyMatches -ne 1) { throw "Expected exactly one guarded Talm apply point; found $applyMatches" }
           $text = $text.Replace($oldApply, $newApply)
+
           $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
-          $newInstaller = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
+          $newInstaller = 'Invoke-External $Helm ''upgrade'' ''--install'' ''cozystack'' $env:LAYERSENTRY_INSTALLER_URI ''--namespace'' ''cozy-system'' ''--create-namespace'' ''--wait'' ''--timeout'' ''10m'''
           $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
           if ($installerMatches -ne 1) { throw "Expected exactly one upstream installer call in guarded source; found $installerMatches" }
           $text = $text.Replace($oldInstaller, $newInstaller)
