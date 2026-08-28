@@ -16,7 +16,7 @@ set:
     memory: 2Gi
   disks: []
 tests:
-  - it: preserves the default pod network and attaches one tenant external network
+  - it: preserves the default pod network and names the first VM NIC from the VM family
     set:
       networks:
         - name: prod-vlan120
@@ -26,15 +26,18 @@ tests:
           value: default
       - equal:
           path: spec.template.spec.domain.devices.interfaces[1].name
-          value: prod-vlan120
+          value: test-vmnic
       - equal:
           path: spec.template.spec.networks[0].name
           value: default
       - equal:
+          path: spec.template.spec.networks[1].name
+          value: test-vmnic
+      - equal:
           path: spec.template.spec.networks[1].multus.networkName
           value: tenant-test/prod-vlan120
 
-  - it: attaches multiple tenant external networks without replacing the default network
+  - it: numbers later VM NICs while keeping backing VMNetworks independent
     set:
       networks:
         - name: prod-vlan120
@@ -42,10 +45,16 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.domain.devices.interfaces[1].name
-          value: prod-vlan120
+          value: test-vmnic
       - equal:
           path: spec.template.spec.domain.devices.interfaces[2].name
-          value: backup-vlan130
+          value: test-vmnic2
+      - equal:
+          path: spec.template.spec.networks[1].name
+          value: test-vmnic
+      - equal:
+          path: spec.template.spec.networks[2].name
+          value: test-vmnic2
       - equal:
           path: spec.template.spec.networks[1].multus.networkName
           value: tenant-test/prod-vlan120
