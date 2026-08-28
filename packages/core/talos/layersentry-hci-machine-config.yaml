@@ -1,0 +1,27 @@
+# LayerSentry HCI Talos runtime defaults.
+#
+# This configuration is embedded into LayerSentry boot/install assets by
+# hack/gen-profiles.sh. Keep array-specific WWID/product overrides outside this
+# generic image policy; controllers or site machine-config patches can add them.
+#
+# Talos v1.13.6 multipath-tools requires dm_multipath plus a supported path
+# selector module. dm-service-time is not available in this Talos kernel, so the
+# image deliberately uses round-robin.
+version: v1alpha1
+machine:
+  kernel:
+    modules:
+      - name: dm_multipath
+      - name: dm_round-robin
+---
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: multipathd
+configFiles:
+  - mountPath: /etc/multipath.conf
+    content: |
+      defaults {
+          user_friendly_names no
+          find_multipaths yes
+          path_selector "round-robin 0"
+      }
