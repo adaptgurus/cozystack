@@ -76,47 +76,46 @@ jobs:
 
           $talm = Join-Path $env:HCI_TOOLS_DIR 'talm.exe'
           $talmZip = Join-Path $env:HCI_TOOLS_DIR "talm-$env:HCI_TALM_VERSION-windows-amd64.zip"
-          $needTalm = $true
-          if (Test-Path $talm) {
-            $v = (& $talm version 2>&1 | Out-String)
-            if ($LASTEXITCODE -eq 0 -and $v -match '0\.34\.0') {
-              $needTalm = $false
-              Write-Host 'Existing talm.exe reports v0.34.0.'
-            }
-          }
-
-          if ($needTalm) {
-            $zipHash = if (Test-Path $talmZip) { (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant() } else { '' }
+          $zipHash = if (Test-Path $talmZip) { (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant() } else { '' }
+          if ($zipHash -ne $env:HCI_TALM_ZIP_SHA256) {
+            Remove-Item -Force $talmZip -ErrorAction SilentlyContinue
+            $url = "https://github.com/cozystack/talm/releases/download/$env:HCI_TALM_VERSION/talm-windows-amd64.zip"
+            & $curl --fail --location --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --output $talmZip $url
+            if ($LASTEXITCODE -ne 0) { throw "talm archive download failed: curl exit $LASTEXITCODE" }
+            $zipHash = (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant()
             if ($zipHash -ne $env:HCI_TALM_ZIP_SHA256) {
               Remove-Item -Force $talmZip -ErrorAction SilentlyContinue
-              $url = "https://github.com/cozystack/talm/releases/download/$env:HCI_TALM_VERSION/talm-windows-amd64.zip"
-              & $curl --fail --location --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --output $talmZip $url
-              if ($LASTEXITCODE -ne 0) { throw "talm archive download failed: curl exit $LASTEXITCODE" }
-              $zipHash = (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant()
-              if ($zipHash -ne $env:HCI_TALM_ZIP_SHA256) {
-                Remove-Item -Force $talmZip -ErrorAction SilentlyContinue
-                throw "talm archive checksum mismatch: expected $env:HCI_TALM_ZIP_SHA256 got $zipHash"
-              }
+              throw "talm archive checksum mismatch: expected $env:HCI_TALM_ZIP_SHA256 got $zipHash"
             }
+          }
+          Write-Host "Verified talm $env:HCI_TALM_VERSION archive SHA256=$env:HCI_TALM_ZIP_SHA256"
 
-            $extract = Join-Path $env:TEMP "talm-$env:GITHUB_RUN_ID"
+          # Always install talm.exe from the checksum-verified pinned archive. Do not
+          # trust a pre-existing executable based on a project-loading version command.
+          $extract = Join-Path $env:TEMP "talm-$env:GITHUB_RUN_ID"
+          Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          try {
+            Expand-Archive -Path $talmZip -DestinationPath $extract -Force
+            $candidate = Get-ChildItem $extract -Recurse -Filter talm.exe | Select-Object -First 1
+            if (-not $candidate) { throw 'Verified talm archive does not contain talm.exe' }
+            Copy-Item -Force $candidate.FullName $talm
+          } finally {
             Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force $extract | Out-Null
-            try {
-              Expand-Archive -Path $talmZip -DestinationPath $extract -Force
-              $candidate = Get-ChildItem $extract -Recurse -Filter talm.exe | Select-Object -First 1
-              if (-not $candidate) { throw 'Verified talm archive does not contain talm.exe' }
-              Copy-Item -Force $candidate.FullName $talm
-            } finally {
-              Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
-            }
           }
 
-          $talmVersion = (& $talm version 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $talmVersion -notmatch '0\.34\.0') {
-            throw "Installed talm does not report required v0.34.0: $talmVersion"
+          # talm v0.34.0 subcommands (including `talm version`) load Chart.yaml in
+          # PersistentPreRunE. Root help is deliberately used as the non-project
+          # executable smoke test; exact release identity is established by the
+          # pinned release URL plus the verified archive SHA256 above.
+          $talmHelp = (& $talm --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) {
+            throw "talm non-project --help smoke test failed: $talmHelp"
           }
-          Write-Host ($talmVersion.Trim())
+          if ($talmHelp -notmatch 'Manage Talos the GitOps Way') {
+            throw 'talm --help output did not match the expected v0.34.0 CLI identity'
+          }
+          Write-Host 'talm non-project executable smoke test passed.'
 
           "HCI_TALOSCTL=$talosctl" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
           "HCI_TALM=$talm" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
