@@ -174,7 +174,7 @@ jobs:
             --arg apiImage "$(yq -r '.cozystackAPI.image' packages/system/cozystack-api/values.yaml)" \
             --arg uiImage "$(yq -r '.console.image' packages/system/dashboard/values.yaml)" \
             --arg networkFabricControllerImage "$(yq -r '.networkFabricController.image' packages/system/network-fabric-controller/values.yaml)" \
-            --arg vmNetworkAdmissionImage "$(yq -r '.vmNetworkAdmission.image' packages/system/vm-network-admission/values.yaml)" \
+            --arg vmNetworkAdmissionImage "$(yq -r '.image' packages/system/vm-network-admission/values.yaml)" \
             --arg vmTemplateControllerImage "$(yq -r '.vmTemplateController.image' packages/system/vm-template-controller/values.yaml)" \
             --arg runId "${GITHUB_RUN_ID}" \
             '{product:$product,repository:$repository,branch:$branch,commit:$commit,imageTag:$imageTag,installerUri:$installerUri,operatorImage:$operatorImage,platformSourceUrl:$platformSourceUrl,platformSourceRef:$platformSourceRef,apiImage:$apiImage,uiImage:$uiImage,networkFabricControllerImage:$networkFabricControllerImage,vmNetworkAdmissionImage:$vmNetworkAdmissionImage,vmTemplateControllerImage:$vmTemplateControllerImage,runId:$runId}' \
