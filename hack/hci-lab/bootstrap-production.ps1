@@ -46,21 +46,60 @@ function Test-TcpPort {
     } catch { return $false } finally { $client.Close() }
 }
 
+function Invoke-NativeText {
+    param([Parameter(Mandatory=$true)][string]$FilePath,[string[]]$Arguments=@())
+    $savedErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    $output = @()
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $FilePath @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $output += $_.Exception.Message
+        $exitCode = 1
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    return [pscustomobject]@{ ExitCode=$exitCode; Text=(($output | Out-String).TrimEnd()); Lines=$output }
+}
+
 function Wait-Until {
-    param([scriptblock]$Condition,[int]$TimeoutSeconds,[int]$IntervalSeconds=5,[string]$Description='condition')
+    param([Parameter(Mandatory=$true)][scriptblock]$Condition,[Parameter(Mandatory=$true)][int]$TimeoutSeconds,[int]$IntervalSeconds=5,[string]$Description='condition')
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastTransientError = $null
     do {
-        if (& $Condition) { return }
+        $savedErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $result = @(& $Condition)
+            if ($result.Count -gt 0 -and [bool]$result[-1]) { return }
+        } catch {
+            $lastTransientError = $_.Exception.Message
+            Write-Host "Transient error while waiting for $Description: $lastTransientError"
+        } finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
+        if ((Get-Date) -ge $deadline) { break }
         Write-Host "Waiting for $Description ..."
         Start-Sleep -Seconds $IntervalSeconds
     } while ((Get-Date) -lt $deadline)
+    if ($lastTransientError) { throw "Timed out waiting for $Description. Last transient error: $lastTransientError" }
     throw "Timed out waiting for $Description"
 }
 
 function Invoke-External {
     param([Parameter(Mandatory=$true)][string]$FilePath,[Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments)
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$FilePath failed with exit code $LASTEXITCODE" }
+    $savedErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $FilePath @Arguments
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    if ($exitCode -ne 0) { throw "$FilePath failed with exit code $exitCode" }
 }
 
 function Install-PinnedTools {
@@ -106,8 +145,8 @@ function Install-PinnedTools {
 function Test-AuthenticatedTalos([string]$IP) {
     $talosconfig = Join-Path $StateRoot 'talosconfig'
     if (-not (Test-Path $talosconfig)) { return $false }
-    & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP *> $null
-    return ($LASTEXITCODE -eq 0)
+    $probe = Invoke-NativeText -FilePath $Talosctl -Arguments @('--talosconfig',$talosconfig,'version','--nodes',$IP,'--endpoints',$IP)
+    return ($probe.ExitCode -eq 0 -and $probe.Text -match 'Tag:\s+v1\.13\.6')
 }
 
 function Assert-HyperVSafety {
@@ -116,9 +155,15 @@ function Assert-HyperVSafety {
     $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Runner is not elevated.' }
 
-    if (-not (Test-Path $IsoPath)) { throw "Cozystack ISO missing: $IsoPath" }
-    $isoHash = (Get-FileHash -Algorithm SHA256 $IsoPath).Hash.ToLowerInvariant()
-    if ($isoHash -ne $IsoSha256) { throw "Cozystack ISO checksum mismatch: $isoHash" }
+    $authenticatedCount = 0
+    foreach ($node in $Nodes) { if (Test-AuthenticatedTalos $node.IP) { $authenticatedCount++ } }
+    if ($authenticatedCount -lt $Nodes.Count) {
+        if (-not (Test-Path $IsoPath)) { throw "Cozystack ISO missing while at least one node still needs installation: $IsoPath" }
+        $isoHash = (Get-FileHash -Algorithm SHA256 $IsoPath).Hash.ToLowerInvariant()
+        if ($isoHash -ne $IsoSha256) { throw "Cozystack ISO checksum mismatch: $isoHash" }
+    } else {
+        Write-Host 'All three nodes already authenticate with Talos; installation ISO is not required for this resume.'
+    }
 
     foreach ($node in $Nodes) {
         $vm = Get-VM -Name $node.Name -ErrorAction Stop
@@ -142,15 +187,49 @@ function Assert-HyperVSafety {
 }
 
 function Assert-MaintenanceDiskIdentity([pscustomobject]$Node) {
-    $lines = & $Talosctl get disks --insecure --nodes $Node.IP --endpoints $Node.IP 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "$($Node.Name) maintenance disk discovery failed" }
-    $osMatches = @($lines | Where-Object { $_ -match [regex]::Escape($Node.OsWwid) })
-    $dataMatches = @($lines | Where-Object { $_ -match [regex]::Escape($Node.DataWwid) })
+    $probe = Invoke-NativeText -FilePath $Talosctl -Arguments @('get','disks','--insecure','--nodes',$Node.IP,'--endpoints',$Node.IP)
+    if ($probe.ExitCode -ne 0) { throw "$($Node.Name) maintenance disk discovery failed: $($probe.Text)" }
+    $osMatches = @($probe.Lines | Where-Object { $_ -match [regex]::Escape($Node.OsWwid) })
+    $dataMatches = @($probe.Lines | Where-Object { $_ -match [regex]::Escape($Node.DataWwid) })
     if ($osMatches.Count -ne 1 -or $dataMatches.Count -ne 1) { throw "$($Node.Name) immutable WWID verification failed" }
     $osLine = ($osMatches[0] | Out-String)
     $dataLine = ($dataMatches[0] | Out-String)
     if ($osLine -notmatch '\bruntime\s+Disk\s+sda\s' -or $osLine -notmatch '\b107 GB\b') { throw "$($Node.Name) OS WWID is not /dev/sda 107 GB" }
     if ($dataLine -notmatch '\bruntime\s+Disk\s+sdb\s' -or $dataLine -notmatch '\b322 GB\b') { throw "$($Node.Name) data WWID is not /dev/sdb 322 GB" }
+}
+
+function Assert-AuthenticatedDataDiskIdentity {
+    param([Parameter(Mandatory=$true)][pscustomobject]$Node,[switch]$RequireBlank)
+    $talosconfig = Join-Path $StateRoot 'talosconfig'
+    if (-not (Test-AuthenticatedTalos $Node.IP)) { throw "$($Node.Name) is not authenticated; refusing storage inspection" }
+
+    $disks = Invoke-NativeText -FilePath $Talosctl -Arguments @('--talosconfig',$talosconfig,'get','disks','--nodes',$Node.IP,'--endpoints',$Node.IP)
+    if ($disks.ExitCode -ne 0) { throw "$($Node.Name) authenticated disk discovery failed: $($disks.Text)" }
+    $osMatches = @($disks.Lines | Where-Object { $_ -match [regex]::Escape($Node.OsWwid) })
+    $dataMatches = @($disks.Lines | Where-Object { $_ -match [regex]::Escape($Node.DataWwid) })
+    if ($osMatches.Count -ne 1 -or $dataMatches.Count -ne 1) { throw "$($Node.Name) authenticated WWID verification failed" }
+    $osLine = ($osMatches[0] | Out-String)
+    $dataLine = ($dataMatches[0] | Out-String)
+    if ($osLine -notmatch '\bruntime\s+Disk\s+sda\s' -or $osLine -notmatch '\b107 GB\b') { throw "$($Node.Name) expected OS WWID does not map to /dev/sda 107 GB" }
+    if ($dataLine -notmatch '\bruntime\s+Disk\s+sdb\s' -or $dataLine -notmatch '\b322 GB\b') { throw "$($Node.Name) expected data WWID does not map to /dev/sdb 322 GB" }
+    if ($Node.OsWwid -eq $Node.DataWwid) { throw "$($Node.Name) OS and data WWIDs collide" }
+
+    $mounts = Invoke-NativeText -FilePath $Talosctl -Arguments @('--talosconfig',$talosconfig,'get','mounts','--nodes',$Node.IP,'--endpoints',$Node.IP)
+    if ($mounts.ExitCode -ne 0) { throw "$($Node.Name) mount discovery failed: $($mounts.Text)" }
+    if ($mounts.Text -match '(?m)\s/dev/sdb(?:\s|\d)') { throw "$($Node.Name) /dev/sdb is mounted; refusing storage mutation" }
+
+    if ($RequireBlank) {
+        $volumes = Invoke-NativeText -FilePath $Talosctl -Arguments @('--talosconfig',$talosconfig,'get','discoveredvolumes','--nodes',$Node.IP,'--endpoints',$Node.IP,'-o','yaml')
+        if ($volumes.ExitCode -ne 0) { throw "$($Node.Name) discovered-volume inspection failed: $($volumes.Text)" }
+        $docs = @($volumes.Text -split '(?m)^---\s*$')
+        $sdbDocs = @($docs | Where-Object { $_ -match '(?m)^\s+id:\s+sdb\s*$' -and $_ -match '(?m)^\s+dev_path:\s+/dev/sdb\s*$' })
+        if ($sdbDocs.Count -ne 1) { throw "$($Node.Name) expected exactly one whole-disk /dev/sdb discovered-volume record; found $($sdbDocs.Count)" }
+        $sdb = $sdbDocs[0]
+        if ($sdb -notmatch '(?m)^\s+size:\s+322122547200\s*$') { throw "$($Node.Name) /dev/sdb size is not exactly 322122547200 bytes" }
+        if ($sdb -notmatch '(?m)^\s+name:\s+""\s*$') { throw "$($Node.Name) /dev/sdb has a discovered filesystem/signature; refusing initialization" }
+        if ($volumes.Text -match '(?m)^\s+(?:id:\s+sdb\d+|dev_path:\s+/dev/sdb\d+)\s*$') { throw "$($Node.Name) /dev/sdb has partitions; refusing initialization" }
+    }
+    Write-Host "$($Node.Name) authenticated data disk verified: /dev/sdb WWID=$($Node.DataWwid) requireBlank=$RequireBlank"
 }
 
 function Initialize-TalmProject {
@@ -179,6 +258,22 @@ function Initialize-TalmProject {
     if ((Get-Content -Raw $valuesPath) -notmatch [regex]::Escape($TalosImage)) { throw 'Talm state is not pinned to expected Cozystack Talos image' }
     if (-not (Test-Path (Join-Path $StateRoot 'talosconfig'))) { throw 'Talm did not produce talosconfig' }
     New-Item -ItemType Directory -Force -Path (Join-Path $StateRoot 'nodes') | Out-Null
+
+    $hostnameHelper = Join-Path $StateRoot 'charts\talm\templates\_helpers.tpl'
+    if (-not (Test-Path $hostnameHelper)) { throw "Talm hostname helper missing: $hostnameHelper" }
+    $hostnameTemplate = Get-Content -Raw $hostnameHelper
+    $hostnamePattern = '(?m)^kind: HostnameConfig\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$'
+    $hostnameMatches = ([regex]::Matches($hostnameTemplate,$hostnamePattern)).Count
+    if ($hostnameMatches -eq 1) {
+        $hostnameReplacement = "kind: HostnameConfig`r`nauto: off`r`nhostname: {{ include `"talm.discovered.hostname`" . | quote }}"
+        $hostnameTemplate = [regex]::Replace($hostnameTemplate,$hostnamePattern,$hostnameReplacement,1)
+        Set-Content -Path $hostnameHelper -Value $hostnameTemplate -Encoding UTF8
+        Write-Host 'Normalized Talos v1.13 HostnameConfig to auto: off plus static hostname.'
+    } elseif ($hostnameTemplate -match '(?m)^kind: HostnameConfig\r?\nauto: off\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$') {
+        Write-Host 'Talos v1.13 HostnameConfig normalization already present.'
+    } else {
+        throw "Expected exactly one Talm HostnameConfig template; found $hostnameMatches unnormalized matches."
+    }
 }
 
 function Render-NodeConfig([pscustomobject]$Node) {
@@ -186,8 +281,14 @@ function Render-NodeConfig([pscustomobject]$Node) {
     Push-Location $StateRoot
     try {
         $stderr = Join-Path $StateRoot "nodes\$($Node.Name).stderr.txt"
-        & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr
-        if ($LASTEXITCODE -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }
+        $savedErrorActionPreference = $ErrorActionPreference
+        $templateExitCode = 1
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr
+            $templateExitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedErrorActionPreference }
+        if ($templateExitCode -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }
         Remove-Item -Force $stderr -ErrorAction SilentlyContinue
     } finally { Pop-Location }
     $render = Get-Content -Raw $nodeFile
@@ -202,6 +303,7 @@ function Render-NodeConfig([pscustomobject]$Node) {
 function Install-TalosCluster {
     Write-Section 'TALOS INSTALL AND KUBERNETES BOOTSTRAP'
     Initialize-TalmProject
+    $installedThisRun = $false
 
     foreach ($node in $Nodes) {
         if (Test-AuthenticatedTalos $node.IP) {
@@ -210,14 +312,15 @@ function Install-TalosCluster {
             continue
         }
 
-        $version = (& $Talosctl version --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
-        if ($LASTEXITCODE -ne 0 -or $version -notmatch 'Tag:\s+v1\.13\.6') { throw "$($node.Name) is neither authenticated nor expected v1.13.6 maintenance mode" }
+        $version = Invoke-NativeText -FilePath $Talosctl -Arguments @('version','--insecure','--nodes',$node.IP,'--endpoints',$node.IP)
+        if ($version.ExitCode -ne 0 -or $version.Text -notmatch 'Tag:\s+v1\.13\.6') { throw "$($node.Name) is neither authenticated nor expected v1.13.6 maintenance mode" }
         Assert-MaintenanceDiskIdentity $node
         $nodeFile = Render-NodeConfig $node
         Push-Location $StateRoot
         try {
             Write-Host "Applying Talos to $($node.Name) OS disk /dev/sda. /dev/sdb remains untouched."
-            Invoke-External $Talm 'apply' '-f' $nodeFile '-i'
+            Invoke-External $Talm '--nodes' $node.IP '--endpoints' $node.IP 'apply' '-f' $nodeFile '-i'
+            $installedThisRun = $true
         } finally { Pop-Location }
         Get-VMDvdDrive -VMName $node.Name -ErrorAction SilentlyContinue | Set-VMDvdDrive -Path $null -ErrorAction SilentlyContinue
     }
@@ -228,19 +331,15 @@ function Install-TalosCluster {
     }
 
     if (-not (Test-TcpPort $Vip 6443 2500)) {
-        Push-Location $StateRoot
-        try { Invoke-External $Talm 'bootstrap' '-f' (Join-Path $StateRoot 'nodes\sen1.yaml') }
-        finally { Pop-Location }
+        if (-not $installedThisRun) { throw "Kubernetes API VIP $Vip is unavailable on an already-authenticated cluster; refusing to bootstrap etcd again" }
+        Invoke-External $Talosctl '--talosconfig' (Join-Path $StateRoot 'talosconfig') 'bootstrap' '--nodes' $Nodes[0].IP '--endpoints' $Nodes[0].IP
     } else { Write-Host "Kubernetes API on $Vip is already available; skipping etcd bootstrap." }
 
     Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description "Kubernetes API on VIP $Vip" -Condition { Test-TcpPort $Vip 6443 2500 }
 
-    Push-Location $StateRoot
-    try {
-        Invoke-External $Talm 'kubeconfig' '-f' (Join-Path $StateRoot 'nodes\sen1.yaml')
-    } finally { Pop-Location }
+    Invoke-External $Talosctl '--talosconfig' (Join-Path $StateRoot 'talosconfig') 'kubeconfig' (Join-Path $StateRoot 'kubeconfig') '--force' '--merge=false' '--nodes' $Nodes[0].IP '--endpoints' $Nodes[0].IP
     $kubeconfig = Join-Path $StateRoot 'kubeconfig'
-    if (-not (Test-Path $kubeconfig)) { throw 'Talm did not produce kubeconfig' }
+    if (-not (Test-Path $kubeconfig)) { throw 'talosctl did not produce kubeconfig' }
     $env:KUBECONFIG = $kubeconfig
 }
 
@@ -271,12 +370,60 @@ function Apply-YamlText([string]$Yaml) {
     } finally { Remove-Item -Force $tmp -ErrorAction SilentlyContinue }
 }
 
+function Test-KubernetesReadyCondition {
+    param([Parameter(Mandatory=$true)][string[]]$GetArguments)
+    $args = @($GetArguments + @('-o','json'))
+    $probe = Invoke-NativeText -FilePath $Kubectl -Arguments $args
+    if ($probe.ExitCode -ne 0 -or -not $probe.Text) { return $false }
+    try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
+    foreach ($condition in @($obj.status.conditions)) {
+        if ($condition.type -eq 'Ready' -and $condition.status -eq 'True') { return $true }
+    }
+    return $false
+}
+
+function Wait-CrdEstablished([string]$Name,[int]$TimeoutSeconds=900) {
+    Wait-Until -TimeoutSeconds $TimeoutSeconds -IntervalSeconds 10 -Description "CRD $Name Established" -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','crd',$Name,'-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
+        foreach ($condition in @($obj.status.conditions)) {
+            if ($condition.type -eq 'Established' -and $condition.status -eq 'True') { return $true }
+        }
+        return $false
+    }
+}
+
+function Wait-HelmReleaseReady([string]$Namespace,[string]$Name,[int]$TimeoutSeconds=1800) {
+    Wait-Until -TimeoutSeconds $TimeoutSeconds -IntervalSeconds 15 -Description "HelmRelease $Namespace/$Name Ready" -Condition {
+        Test-KubernetesReadyCondition -GetArguments @('get','hr','-n',$Namespace,$Name)
+    }
+}
+
+function Wait-DeploymentAvailable([string]$Namespace,[string]$Name,[int]$TimeoutSeconds=900) {
+    Wait-Until -TimeoutSeconds $TimeoutSeconds -IntervalSeconds 10 -Description "deployment $Namespace/$Name available" -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','deployment','-n',$Namespace,$Name,'-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
+        return ([int]$obj.status.availableReplicas -ge 1)
+    }
+}
+
 function Install-CozystackPlatform {
-    Write-Section 'COZYSTACK 1.6.2 PLATFORM'
+    Write-Section 'LAYERSENTRY / COZYSTACK 1.6.2 PLATFORM'
     Invoke-Kubectl 'get' 'nodes' '-o' 'wide'
 
-    & $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m
-    if ($LASTEXITCODE -ne 0) { throw 'Cozystack operator Helm installation failed' }
+    $installerUri = [string]$env:LAYERSENTRY_INSTALLER_URI
+    if ($installerUri -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') { throw "Digest-pinned LayerSentry installer is required; got '$installerUri'" }
+    Invoke-External $Helm 'upgrade' '--install' 'cozystack' $installerUri '--namespace' 'cozy-system' '--create-namespace' '--wait' '--timeout' '10m'
+
+    Wait-DeploymentAvailable -Namespace 'cozy-system' -Name 'cozystack-operator' -TimeoutSeconds 900
+    Wait-CrdEstablished -Name 'packages.cozystack.io' -TimeoutSeconds 900
+    Wait-CrdEstablished -Name 'packagesources.cozystack.io' -TimeoutSeconds 900
+
+    Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'custom Cozystack platform PackageSource Ready' -Condition {
+        Test-KubernetesReadyCondition -GetArguments @('get','packagesources.cozystack.io','cozystack.cozystack-platform')
+    }
 
     $platform = @"
 apiVersion: cozystack.io/v1alpha1
@@ -302,16 +449,47 @@ spec:
 "@
     Apply-YamlText $platform
 
-    Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 15 -Description 'Cozystack LINSTOR controller deployment' -Condition {
-        & $Kubectl get deployment -n cozy-linstor linstor-controller *> $null
-        if ($LASTEXITCODE -ne 0) { return $false }
-        $available = (& $Kubectl get deployment -n cozy-linstor linstor-controller -o jsonpath='{.status.availableReplicas}' 2>$null | Out-String).Trim()
-        return ($available -match '^[1-9]')
+    Wait-Until -TimeoutSeconds 300 -IntervalSeconds 5 -Description 'platform Package accepted by API' -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','packages.cozystack.io','cozystack.cozystack-platform','-o','name')
+        return ($probe.ExitCode -eq 0)
     }
+
+    Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium' -TimeoutSeconds 1800
+    Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'Cilium DaemonSet ready on all three nodes' -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','ds','-n','cozy-cilium','cilium','-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
+        return ([int]$obj.status.desiredNumberScheduled -eq 3 -and [int]$obj.status.numberReady -eq 3)
+    }
+    Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'all three Kubernetes nodes Ready' -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','nodes','-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
+        if (@($obj.items).Count -ne 3) { return $false }
+        foreach ($item in @($obj.items)) {
+            $ready = $false
+            foreach ($condition in @($item.status.conditions)) {
+                if ($condition.type -eq 'Ready' -and $condition.status -eq 'True') { $ready = $true; break }
+            }
+            if (-not $ready) { return $false }
+        }
+        return $true
+    }
+
+    Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'cozy-linstor namespace' -Condition {
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','namespace','cozy-linstor','-o','name')
+        return ($probe.ExitCode -eq 0)
+    }
+    foreach ($hr in 'piraeus-operator-crds','piraeus-operator','linstor','linstor-scheduler') {
+        Wait-HelmReleaseReady -Namespace 'cozy-linstor' -Name $hr -TimeoutSeconds 1800
+    }
+    Wait-DeploymentAvailable -Namespace 'cozy-linstor' -Name 'linstor-controller' -TimeoutSeconds 1800
 }
 
 function Get-KubernetesNodeNameByIP([string]$IP) {
-    $json = (& $Kubectl get nodes -o json | Out-String) | ConvertFrom-Json
+    $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','nodes','-o','json')
+    if ($probe.ExitCode -ne 0) { throw "Kubernetes node inventory failed: $($probe.Text)" }
+    $json = $probe.Text | ConvertFrom-Json
     foreach ($item in $json.items) {
         foreach ($address in $item.status.addresses) {
             if ($address.type -eq 'InternalIP' -and $address.address -eq $IP) { return $item.metadata.name }
@@ -321,33 +499,45 @@ function Get-KubernetesNodeNameByIP([string]$IP) {
 }
 
 function Invoke-Linstor([string[]]$Args) {
-    & $Kubectl exec -n cozy-linstor deploy/linstor-controller -- linstor @Args
-    if ($LASTEXITCODE -ne 0) { throw "LINSTOR command failed: $($Args -join ' ')" }
+    Invoke-External $Kubectl 'exec' '-n' 'cozy-linstor' 'deploy/linstor-controller' '--' 'linstor' @Args
+}
+
+function Get-LinstorText([string[]]$Args) {
+    return Invoke-NativeText -FilePath $Kubectl -Arguments @('exec','-n','cozy-linstor','deploy/linstor-controller','--','linstor') + $Args
 }
 
 function Configure-HCIStorage {
-    Write-Section 'LINSTOR/ZFS ON /DEV/SDB'
+    Write-Section 'LINSTOR/ZFS ON VERIFIED /DEV/SDB'
     $nodeNames = @{}
     foreach ($node in $Nodes) { $nodeNames[$node.Name] = Get-KubernetesNodeNameByIP $node.IP }
 
-    $physical = (& $Kubectl exec -n cozy-linstor deploy/linstor-controller -- linstor physical-storage list 2>&1 | Out-String)
-    $pools = (& $Kubectl exec -n cozy-linstor deploy/linstor-controller -- linstor storage-pool list 2>&1 | Out-String)
     foreach ($node in $Nodes) {
         $k8sName = $nodeNames[$node.Name]
-        if ($pools -match "(?m).*\b$([regex]::Escape($k8sName))\b.*\bdata\b") {
+        $pools = Get-LinstorText @('storage-pool','list')
+        if ($pools.ExitCode -ne 0) { throw "LINSTOR storage-pool inventory failed: $($pools.Text)" }
+        $hasPool = ($pools.Text -match "(?m).*\b$([regex]::Escape($k8sName))\b.*\bdata\b")
+        if ($hasPool) {
+            Assert-AuthenticatedDataDiskIdentity -Node $node
             Write-Host "$k8sName already has LINSTOR data pool; preserving it."
             continue
         }
-        if ($physical -notmatch [regex]::Escape("$k8sName[/dev/sdb]")) {
-            throw "$k8sName does not expose blank /dev/sdb to LINSTOR and has no existing data pool; refusing destructive storage action"
-        }
+
+        Assert-AuthenticatedDataDiskIdentity -Node $node -RequireBlank
+        $physical = Get-LinstorText @('physical-storage','list')
+        if ($physical.ExitCode -ne 0) { throw "LINSTOR physical-storage inventory failed: $($physical.Text)" }
+        if ($physical.Text -notmatch [regex]::Escape("$k8sName[/dev/sdb]")) { throw "$k8sName does not expose verified blank /dev/sdb to LINSTOR; refusing destructive storage action" }
+
         Invoke-Linstor @('physical-storage','create-device-pool','zfs',$k8sName,'/dev/sdb','--pool-name','data','--storage-pool','data')
+        Wait-Until -TimeoutSeconds 300 -IntervalSeconds 10 -Description "LINSTOR data pool on $k8sName" -Condition {
+            $verify = Get-LinstorText @('storage-pool','list')
+            return ($verify.ExitCode -eq 0 -and $verify.Text -match "(?m).*\b$([regex]::Escape($k8sName))\b.*\bdata\b")
+        }
+        Write-Host "$k8sName data pool created and re-read successfully before continuing."
     }
 
     foreach ($node in $Nodes) {
         $k8sName = $nodeNames[$node.Name]
-        & $Kubectl exec -n cozy-linstor "pod/linstor-satellite.$k8sName" -- zpool set failmode=continue data
-        if ($LASTEXITCODE -ne 0) { throw "Failed to set ZFS failmode=continue on $k8sName" }
+        Invoke-External $Kubectl 'exec' '-n' 'cozy-linstor' "pod/linstor-satellite.$k8sName" '--' 'zpool' 'set' 'failmode=continue' 'data'
     }
 
     $storageClasses = @'
@@ -390,10 +580,8 @@ allowVolumeExpansion: true
 
 function Configure-NetworkingAndRootServices {
     Write-Section 'METALLB AND ROOT SERVICES'
-    Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'MetalLB CRDs' -Condition {
-        & $Kubectl get crd ipaddresspools.metallb.io *> $null
-        return ($LASTEXITCODE -eq 0)
-    }
+    Wait-CrdEstablished -Name 'ipaddresspools.metallb.io' -TimeoutSeconds 900
+    Wait-CrdEstablished -Name 'l2advertisements.metallb.io' -TimeoutSeconds 900
 
     $networking = @"
 ---
@@ -420,8 +608,8 @@ spec:
     Apply-YamlText $networking
 
     Wait-Until -TimeoutSeconds 900 -IntervalSeconds 10 -Description 'root tenant CR' -Condition {
-        & $Kubectl get -n tenant-root tenants.apps.cozystack.io root *> $null
-        return ($LASTEXITCODE -eq 0)
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','-n','tenant-root','tenants.apps.cozystack.io','root','-o','name')
+        return ($probe.ExitCode -eq 0)
     }
     Invoke-Kubectl 'patch' '-n' 'tenant-root' 'tenants.apps.cozystack.io' 'root' '--type=merge' '-p' '{"spec":{"ingress":true,"monitoring":true,"etcd":true}}'
 }
@@ -431,9 +619,9 @@ function Final-ProductionLikeGates {
     Invoke-Kubectl 'wait' '--for=condition=Ready' 'nodes' '--all' '--timeout=20m'
 
     Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 20 -Description 'all Flux HelmReleases Ready=True' -Condition {
-        $raw = & $Kubectl get hr -A -o json 2>$null
-        if ($LASTEXITCODE -ne 0) { return $false }
-        $obj = ($raw | Out-String) | ConvertFrom-Json
+        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','hr','-A','-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        try { $obj = $probe.Text | ConvertFrom-Json } catch { return $false }
         if (-not $obj.items -or $obj.items.Count -eq 0) { return $false }
         foreach ($item in $obj.items) {
             $ready = $false
@@ -445,8 +633,8 @@ function Final-ProductionLikeGates {
         return $true
     }
 
-    $sc = & $Kubectl get storageclass replicated -o jsonpath='{.provisioner}'
-    if (($sc | Out-String).Trim() -ne 'linstor.csi.linbit.com') { throw 'replicated StorageClass is not backed by LINSTOR CSI' }
+    $sc = Invoke-NativeText -FilePath $Kubectl -Arguments @('get','storageclass','replicated','-o','jsonpath={.provisioner}')
+    if ($sc.ExitCode -ne 0 -or $sc.Text.Trim() -ne 'linstor.csi.linbit.com') { throw 'replicated StorageClass is not backed by LINSTOR CSI' }
 
     Invoke-Kubectl 'get' 'nodes' '-o' 'wide'
     Invoke-Kubectl 'get' 'hr' '-A'
@@ -489,7 +677,7 @@ try {
     Configure-NetworkingAndRootServices
     Final-ProductionLikeGates
     Write-Evidence
-    Write-Host 'HCI bootstrap completed: Talos, Kubernetes, Cozystack, LINSTOR/ZFS, DRBD replicated storage, MetalLB and root services passed the configured gates.'
+    Write-Host 'HCI bootstrap completed: authenticated Talos was preserved, platform readiness gates passed, verified data WWIDs were used for LINSTOR/ZFS, DRBD replicated storage and root networking.'
 } catch {
     Write-Error $_
     try {
