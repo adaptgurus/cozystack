@@ -1,0 +1,63 @@
+suite: VM persistent state and portable cloud-init
+templates:
+  - templates/vm.yaml
+release:
+  name: vm-instance-testvm
+  namespace: tenant-test
+tests:
+  - it: renders a per-VM persistent TPM device for HA-safe identity
+    set:
+      instanceType: ""
+      instanceProfile: ""
+      resources.cpu: 1
+      resources.sockets: 1
+      resources.memory: 1Gi
+      tpm.enabled: true
+      tpm.persistent: true
+    asserts:
+      - equal:
+          path: spec.template.spec.domain.devices.tpm.persistent
+          value: true
+
+  - it: leaves TPM absent unless the product option is enabled
+    set:
+      instanceType: ""
+      instanceProfile: ""
+      resources.cpu: 1
+      resources.sockets: 1
+      resources.memory: 1Gi
+    asserts:
+      - notExists:
+          path: spec.template.spec.domain.devices.tpm
+
+  - it: can reference one cluster Secret as a reusable cloud-init source
+    set:
+      instanceType: ""
+      instanceProfile: ""
+      resources.cpu: 1
+      resources.sockets: 1
+      resources.memory: 1Gi
+      cloudInitSecretRef: shared-linux-cloud-init
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: cloudinitdisk
+      - equal:
+          path: spec.template.spec.volumes[0].cloudInitNoCloud.secretRef.name
+          value: shared-linux-cloud-init
+      - equal:
+          path: spec.template.spec.domain.devices.disks[0].name
+          value: cloudinitdisk
+
+  - it: rejects ambiguous inline and shared cloud-init sources
+    set:
+      instanceType: ""
+      instanceProfile: ""
+      resources.cpu: 1
+      resources.sockets: 1
+      resources.memory: 1Gi
+      cloudInit: "#cloud-config"
+      cloudInitSecretRef: shared-linux-cloud-init
+    asserts:
+      - failedTemplate:
+          errorMessage: cloudInit and cloudInitSecretRef are mutually exclusive
