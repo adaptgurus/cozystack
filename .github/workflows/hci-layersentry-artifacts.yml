@@ -81,7 +81,7 @@ jobs:
 
       - name: Set up Buildx
         id: buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f8ac0403b4cbd6f # v3
         with:
           driver: docker-container
 
@@ -90,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           YQ_VERSION=v4.45.4
-          YQ_SHA256=26f3f1d61f7b74f5184bdc572e3b38d21449c2bd3fc61a354313f9b48b15f0fe
+          YQ_SHA256=b96de04645707e14a12f52c37e6266832e03c29e95b9b139cddcae7314466e69
           curl -fsSLo /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
