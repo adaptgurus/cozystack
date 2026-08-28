@@ -32,59 +32,61 @@ jobs:
           Remove-Item -Recurse -Force $evidence -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $evidence | Out-Null
 
-          function Capture([string]$Name, [string[]]$Args, [switch]$AllowFailure) {
+          function Capture {
+            param(
+              [Parameter(Mandatory=$true)][string]$Name,
+              [Parameter(Mandatory=$true)][string[]]$KubectlArgs,
+              [switch]$AllowFailure
+            )
             $path = Join-Path $evidence $Name
-            "# kubectl $($Args -join ' ')" | Set-Content -Path $path -Encoding utf8
-            $output = & $kubectl @Args 2>&1
+            "# kubectl $($KubectlArgs -join ' ')" | Set-Content -Path $path -Encoding utf8
+            $output = & $kubectl @KubectlArgs 2>&1
             $code = $LASTEXITCODE
             $output | Tee-Object -FilePath $path -Append
             "`n# exit=$code" | Add-Content -Path $path -Encoding utf8
-            if ($code -ne 0 -and -not $AllowFailure) { throw "kubectl $($Args -join ' ') failed: $code" }
+            if ($code -ne 0 -and -not $AllowFailure) { throw "kubectl $($KubectlArgs -join ' ') failed: $code" }
             return @($output)
           }
 
-          Capture '00-nodes.txt' @('get','nodes','-o','wide') | Out-Null
-          Capture '01-namespaces.txt' @('get','ns','cozy-public','-o','wide') | Out-Null
-          Capture '02-public-pvc.txt' @('get','pvc','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
-          Capture '03-public-dv.txt' @('get','datavolumes.cdi.kubevirt.io','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
-          Capture '04-public-pods.txt' @('get','pods','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
-          Capture '05-public-events.txt' @('get','events','-n','cozy-public','--sort-by=.lastTimestamp') -AllowFailure | Out-Null
-          Capture '06-helmreleases.txt' @('get','helmreleases.helm.toolkit.fluxcd.io','-A','-o','wide') -AllowFailure | Out-Null
-          Capture '07-packages.txt' @('get','packages.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
-          Capture '08-packagesources.txt' @('get','packagesources.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
-          Capture '09-app-api-resources.txt' @('api-resources','--api-group=apps.cozystack.io','-o','wide') -AllowFailure | Out-Null
-          Capture '10-app-api-discovery.txt' @('get','--raw','/apis/apps.cozystack.io/v1alpha1') -AllowFailure | Out-Null
-          Capture '11-all-public.txt' @('get','all','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '00-nodes.txt' -KubectlArgs @('get','nodes','-o','wide') | Out-Null
+          Capture -Name '01-namespaces.txt' -KubectlArgs @('get','ns','cozy-public','-o','wide') | Out-Null
+          Capture -Name '02-public-pvc.txt' -KubectlArgs @('get','pvc','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '03-public-dv.txt' -KubectlArgs @('get','datavolumes.cdi.kubevirt.io','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '04-public-pods.txt' -KubectlArgs @('get','pods','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '05-public-events.txt' -KubectlArgs @('get','events','-n','cozy-public','--sort-by=.lastTimestamp') -AllowFailure | Out-Null
+          Capture -Name '06-helmreleases.txt' -KubectlArgs @('get','helmreleases.helm.toolkit.fluxcd.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '07-packages.txt' -KubectlArgs @('get','packages.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '08-packagesources.txt' -KubectlArgs @('get','packagesources.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '09-app-api-resources.txt' -KubectlArgs @('api-resources','--api-group=apps.cozystack.io','-o','wide') -AllowFailure | Out-Null
+          Capture -Name '10-app-api-discovery.txt' -KubectlArgs @('get','--raw','/apis/apps.cozystack.io/v1alpha1') -AllowFailure | Out-Null
+          Capture -Name '11-all-public.txt' -KubectlArgs @('get','all','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
 
           $api = & $kubectl api-resources --verbs=list --namespaced=true -o name 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $candidates = @($api | Where-Object { $_ -match '(?i)(image|disk|virtualmachine|vm)' } | Sort-Object -Unique)
-            $candidatePath = Join-Path $evidence '12-image-related-api-resources.txt'
-            $candidates | Set-Content $candidatePath -Encoding utf8
-            foreach ($resource in $candidates) {
-              if ($resource -match '(?i)secret|configmap') { continue }
-              $safe = ($resource -replace '[^A-Za-z0-9_.-]','_')
-              Capture ("resource-$safe.txt") @('get',$resource,'-n','cozy-public','-o','wide') -AllowFailure | Out-Null
-            }
+          if ($LASTEXITCODE -ne 0) { throw 'api-resources discovery failed' }
+          $candidates = @($api | Where-Object { $_ -match '(?i)(image|disk|virtualmachine|vm)' } | Sort-Object -Unique)
+          $candidatePath = Join-Path $evidence '12-image-related-api-resources.txt'
+          $candidates | Set-Content $candidatePath -Encoding utf8
+          foreach ($resource in $candidates) {
+            if ($resource -match '(?i)secret|configmap') { continue }
+            $safe = ($resource -replace '[^A-Za-z0-9_.-]','_')
+            Capture -Name ("resource-$safe.txt") -KubectlArgs @('get',$resource,'-n','cozy-public','-o','wide') -AllowFailure | Out-Null
           }
 
           $hr = & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            foreach ($line in @($hr | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
-              $parts = @($line -split '\s+' | Where-Object { $_ })
-              if ($parts.Count -ge 2) {
-                Capture ("helmrelease-$($parts[0])-$($parts[1]).txt") @('describe','helmrelease.helm.toolkit.fluxcd.io',$parts[1],'-n',$parts[0]) -AllowFailure | Out-Null
-              }
+          if ($LASTEXITCODE -ne 0) { throw 'HelmRelease inventory failed' }
+          foreach ($line in @($hr | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+            $parts = @($line -split '\s+' | Where-Object { $_ })
+            if ($parts.Count -ge 2) {
+              Capture -Name ("helmrelease-$($parts[0])-$($parts[1]).txt") -KubectlArgs @('describe','helmrelease.helm.toolkit.fluxcd.io',$parts[1],'-n',$parts[0]) -AllowFailure | Out-Null
             }
           }
 
           $pkg = & $kubectl get packages.cozystack.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            foreach ($line in @($pkg | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
-              $parts = @($line -split '\s+' | Where-Object { $_ })
-              if ($parts.Count -ge 2) {
-                Capture ("package-$($parts[0])-$($parts[1]).txt") @('get','packages.cozystack.io',$parts[1],'-n',$parts[0],'-o','yaml') -AllowFailure | Out-Null
-              }
+          if ($LASTEXITCODE -ne 0) { throw 'Package inventory failed' }
+          foreach ($line in @($pkg | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+            $parts = @($line -split '\s+' | Where-Object { $_ })
+            if ($parts.Count -ge 2) {
+              Capture -Name ("package-$($parts[0])-$($parts[1]).txt") -KubectlArgs @('get','packages.cozystack.io',$parts[1],'-n',$parts[0],'-o','yaml') -AllowFailure | Out-Null
             }
           }
 
