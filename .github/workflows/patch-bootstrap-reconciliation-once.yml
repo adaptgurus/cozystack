@@ -1,0 +1,66 @@
+name: One-shot patch bootstrap reconciliation ordering
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/patch-bootstrap-reconciliation-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch bootstrap and static guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "adaptgurus/cozystack"
+          test "$GITHUB_REF_NAME" = "feat/hci-virtualization-v1.6.2-test"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('hack/hci-lab/bootstrap-production.ps1')
+          s = p.read_text()
+          anchor = """    Wait-Until -TimeoutSeconds 300 -IntervalSeconds 5 -Description 'platform Package accepted by API' -Condition {\n        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @(\n            'get','packages.cozystack.io','cozystack.cozystack-platform','-o','name'\n        )\n        return ($probe.ExitCode -eq 0)\n    }\n\n    Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium' -TimeoutSeconds 1800\n"""
+          replacement = """    Wait-Until -TimeoutSeconds 300 -IntervalSeconds 5 -Description 'platform Package accepted by API' -Condition {\n        $probe = Invoke-NativeText -FilePath $Kubectl -Arguments @(\n            'get','packages.cozystack.io','cozystack.cozystack-platform','-o','name'\n        )\n        return ($probe.ExitCode -eq 0)\n    }\n\n    # Do not treat installer/operator readiness as platform convergence. The\n    # platform HelmRelease can still be applying a new immutable package source\n    # while child Package/HelmRelease objects remain Ready on their previous\n    # artifacts. Waiting only on Cilium/LINSTOR therefore permits a stale\n    # KubeVirt release to race ahead of HCI certification. Gate first on the\n    # platform release, then on the KubeVirt child chain, and finally on the\n    # effective KubeVirt CR fields required by the HCI runtime.\n    Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform' -TimeoutSeconds 1800\n\n    Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 10 -Description 'cozystack.kubevirt Package Ready after platform convergence' -Condition {\n        Test-KubernetesReadyCondition -GetArguments @('get','packages.cozystack.io','cozystack.kubevirt')\n    }\n    Wait-HelmReleaseReady -Namespace 'cozy-kubevirt' -Name 'kubevirt' -TimeoutSeconds 1800\n\n    Wait-Until -TimeoutSeconds 1800 -IntervalSeconds 10 -Description 'effective KubeVirt persistent VM state configuration' -Condition {\n        $kv = Get-KubectlObject -Arguments @('get','kubevirt.kubevirt.io','-n','cozy-kubevirt','kubevirt')\n        if (-not $kv -or [string]$kv.status.phase -ne 'Deployed') { return $false }\n        $gates = @($kv.spec.configuration.developerConfiguration.featureGates | ForEach-Object { [string]$_ })\n        if ($gates -notcontains 'VMPersistentState') { return $false }\n        return ([string]$kv.spec.configuration.vmStateStorageClass -eq 'replicated')\n    }\n\n    Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium' -TimeoutSeconds 1800\n"""
+          if s.count(anchor) != 1:
+              raise SystemExit(f'bootstrap anchor count={s.count(anchor)}, expected 1')
+          p.write_text(s.replace(anchor, replacement))
+
+          t = Path('hack/hci-lab/test-bootstrap-static.ps1')
+          q = t.read_text()
+          test_anchor = """Assert-Contains 'packagesources\\.cozystack\\.io' 'PackageSource CRD readiness gate is missing.'\nAssert-Contains 'Cilium DaemonSet ready on all three nodes' 'Cilium readiness gate is missing.'\n"""
+          test_replacement = """Assert-Contains 'packagesources\\.cozystack\\.io' 'PackageSource CRD readiness gate is missing.'\nAssert-Contains \"Wait-HelmReleaseReady\\s+-Namespace\\s+'cozy-system'\\s+-Name\\s+'cozystack-platform'\" 'Bootstrap does not wait for the platform HelmRelease to converge.'\nAssert-Contains \"Wait-HelmReleaseReady\\s+-Namespace\\s+'cozy-kubevirt'\\s+-Name\\s+'kubevirt'\" 'Bootstrap does not wait for the KubeVirt child HelmRelease.'\nAssert-Contains 'effective KubeVirt persistent VM state configuration' 'Bootstrap lacks an effective KubeVirt persistent-state convergence gate.'\nAssert-Contains \"-notcontains\\s+'VMPersistentState'\" 'Bootstrap does not require VMPersistentState in the live KubeVirt CR.'\nAssert-Contains \"vmStateStorageClass\\s+-eq\\s+'replicated'\" 'Bootstrap does not require the replicated VM state StorageClass in the live KubeVirt CR.'\nAssert-Contains 'Cilium DaemonSet ready on all three nodes' 'Cilium readiness gate is missing.'\n"""
+          if q.count(test_anchor) != 1:
+              raise SystemExit(f'static-test anchor count={q.count(test_anchor)}, expected 1')
+          q = q.replace(test_anchor, test_replacement)
+
+          order_block = r'''\n$platformApplyIndex = $text.IndexOf('Apply-YamlText $platform')\n$platformReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-system' -Name 'cozystack-platform'")\n$effectiveKubeVirtIndex = $text.IndexOf("effective KubeVirt persistent VM state configuration")\n$ciliumReadyIndex = $text.IndexOf("Wait-HelmReleaseReady -Namespace 'cozy-cilium' -Name 'cilium'")\nif ($platformApplyIndex -lt 0 -or $platformReadyIndex -le $platformApplyIndex) {\n    throw 'Platform HelmRelease readiness gate is not ordered after platform Package apply.'\n}\nif ($effectiveKubeVirtIndex -le $platformReadyIndex) {\n    throw 'Effective KubeVirt convergence gate is not ordered after platform HelmRelease readiness.'\n}\nif ($ciliumReadyIndex -le $effectiveKubeVirtIndex) {\n    throw 'Cilium readiness can still run before effective KubeVirt platform convergence.'\n}\n'''
+          marker = "\n$lines = Get-Content $BootstrapPath\n"
+          if q.count(marker) != 1:
+              raise SystemExit('static order marker not unique')
+          q = q.replace(marker, order_block + marker)
+          t.write_text(q)
+          PY
+
+          git diff --check
+          pwsh -NoProfile -File hack/hci-lab/test-bootstrap-static.ps1 -BootstrapPath hack/hci-lab/bootstrap-production.ps1
+          mapfile -t changed < <(git status --short | awk '{print $2}' | sort)
+          printf 'changed=%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = "hack/hci-lab/bootstrap-production.ps1"
+          test "${changed[1]}" = "hack/hci-lab/test-bootstrap-static.ps1"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add hack/hci-lab/bootstrap-production.ps1 hack/hci-lab/test-bootstrap-static.ps1
+          git commit -m "fix(hci): gate bootstrap on platform convergence"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
