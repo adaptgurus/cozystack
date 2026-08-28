@@ -32,6 +32,22 @@ jobs:
           Remove-Item -Recurse -Force $evidence -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $evidence | Out-Null
 
+          function Invoke-KubectlCaptured {
+            param([Parameter(Mandatory=$true)][string[]]$KubectlArgs)
+            $previousPreference = $ErrorActionPreference
+            try {
+              # Native tools may emit diagnostics to stderr while still returning exit code 0.
+              # Judge kubectl by its native exit code and preserve combined output for evidence.
+              $ErrorActionPreference = 'Continue'
+              $output = & $kubectl @KubectlArgs 2>&1
+              $code = $LASTEXITCODE
+            }
+            finally {
+              $ErrorActionPreference = $previousPreference
+            }
+            return [pscustomobject]@{ Output = @($output); ExitCode = $code }
+          }
+
           function Capture {
             param(
               [Parameter(Mandatory=$true)][string]$Name,
@@ -40,12 +56,13 @@ jobs:
             )
             $path = Join-Path $evidence $Name
             "# kubectl $($KubectlArgs -join ' ')" | Set-Content -Path $path -Encoding utf8
-            $output = & $kubectl @KubectlArgs 2>&1
-            $code = $LASTEXITCODE
-            $output | Tee-Object -FilePath $path -Append
-            "`n# exit=$code" | Add-Content -Path $path -Encoding utf8
-            if ($code -ne 0 -and -not $AllowFailure) { throw "kubectl $($KubectlArgs -join ' ') failed: $code" }
-            return @($output)
+            $result = Invoke-KubectlCaptured -KubectlArgs $KubectlArgs
+            $result.Output | Tee-Object -FilePath $path -Append
+            "`n# exit=$($result.ExitCode)" | Add-Content -Path $path -Encoding utf8
+            if ($result.ExitCode -ne 0 -and -not $AllowFailure) {
+              throw "kubectl $($KubectlArgs -join ' ') failed: $($result.ExitCode)"
+            }
+            return @($result.Output)
           }
 
           Capture -Name '00-nodes.txt' -KubectlArgs @('get','nodes','-o','wide') | Out-Null
@@ -61,9 +78,9 @@ jobs:
           Capture -Name '10-app-api-discovery.txt' -KubectlArgs @('get','--raw','/apis/apps.cozystack.io/v1alpha1') -AllowFailure | Out-Null
           Capture -Name '11-all-public.txt' -KubectlArgs @('get','all','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
 
-          $api = & $kubectl api-resources --verbs=list --namespaced=true -o name 2>$null
-          if ($LASTEXITCODE -ne 0) { throw 'api-resources discovery failed' }
-          $candidates = @($api | Where-Object { $_ -match '(?i)(image|disk|virtualmachine|vm)' } | Sort-Object -Unique)
+          $apiResult = Invoke-KubectlCaptured -KubectlArgs @('api-resources','--verbs=list','--namespaced=true','-o','name')
+          if ($apiResult.ExitCode -ne 0) { throw 'api-resources discovery failed' }
+          $candidates = @($apiResult.Output | Where-Object { $_ -match '(?i)(image|disk|virtualmachine|vm)' } | Sort-Object -Unique)
           $candidatePath = Join-Path $evidence '12-image-related-api-resources.txt'
           $candidates | Set-Content $candidatePath -Encoding utf8
           foreach ($resource in $candidates) {
@@ -72,18 +89,18 @@ jobs:
             Capture -Name ("resource-$safe.txt") -KubectlArgs @('get',$resource,'-n','cozy-public','-o','wide') -AllowFailure | Out-Null
           }
 
-          $hr = & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
-          if ($LASTEXITCODE -ne 0) { throw 'HelmRelease inventory failed' }
-          foreach ($line in @($hr | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+          $hrResult = Invoke-KubectlCaptured -KubectlArgs @('get','helmreleases.helm.toolkit.fluxcd.io','-A','-o','custom-columns=NS:.metadata.namespace,NAME:.metadata.name','--no-headers')
+          if ($hrResult.ExitCode -ne 0) { throw 'HelmRelease inventory failed' }
+          foreach ($line in @($hrResult.Output | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
             $parts = @($line -split '\s+' | Where-Object { $_ })
             if ($parts.Count -ge 2) {
               Capture -Name ("helmrelease-$($parts[0])-$($parts[1]).txt") -KubectlArgs @('describe','helmrelease.helm.toolkit.fluxcd.io',$parts[1],'-n',$parts[0]) -AllowFailure | Out-Null
             }
           }
 
-          $pkg = & $kubectl get packages.cozystack.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
-          if ($LASTEXITCODE -ne 0) { throw 'Package inventory failed' }
-          foreach ($line in @($pkg | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+          $pkgResult = Invoke-KubectlCaptured -KubectlArgs @('get','packages.cozystack.io','-A','-o','custom-columns=NS:.metadata.namespace,NAME:.metadata.name','--no-headers')
+          if ($pkgResult.ExitCode -ne 0) { throw 'Package inventory failed' }
+          foreach ($line in @($pkgResult.Output | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
             $parts = @($line -split '\s+' | Where-Object { $_ })
             if ($parts.Count -ge 2) {
               Capture -Name ("package-$($parts[0])-$($parts[1]).txt") -KubectlArgs @('get','packages.cozystack.io',$parts[1],'-n',$parts[0],'-o','yaml') -AllowFailure | Out-Null
