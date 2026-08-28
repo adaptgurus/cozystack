@@ -1,30 +1,35 @@
-# External VM network published into the tenant namespace.
-#
-# IMPORTANT: bridge must exist on every VM-capable Talos node that may schedule
-# a VM using this network. When fabricRef/fabricNetwork are set, NetworkFabric
-# verifies the node bridge/VLAN/MTU and publishes a scheduling capability label.
+##
+## @section External VM network
+##
+
+## @param {string} bridge - Linux bridge on KubeVirt-capable nodes that carries this external VM network.
+## @minLength 1
 bridge: ""
 
-# VLAN is inventory/validation metadata describing the physical fabric backing
-# this bridge. It is not inserted into bridge-CNI because tagging is performed
-# by the Talos VLAN interface underneath the Linux bridge.
+## @param {int} vlan - 802.1Q VLAN ID. Use 0 for an untagged/native network. Tagging is performed by the Talos VLAN interface below the Linux bridge, never by bridge CNI.
+## @minimum 0
+## @maximum 4094
 vlan: 0
 
-# Optional expected MTU. Use 0 to inherit the node bridge/CNI environment.
+## @param {int} mtu - Interface MTU. Use 0 to inherit/default; otherwise use 576-9216.
+## @minimum 0
+## @maximum 9216
 mtu: 0
 
-# Optional NetworkFabric binding. Set both fields together for production-managed
-# physical networks. Leaving both empty preserves the legacy direct-bridge path.
+## @param {string} fabricRef - Optional cluster NetworkFabric backing this tenant network. Set together with fabricNetwork for verified node placement.
 fabricRef: ""
+
+## @param {string} fabricNetwork - Network name inside fabricRef. Set together with fabricRef.
 fabricNetwork: ""
 
-# Optional human-readable description stored as metadata.
+## @param {string} description - Human-readable description of the physical VM network.
 description: ""
 
-# Bridge CNI controls.
+## @param {bool} promiscMode - Enable promiscuous mode on the bridge CNI interface.
 promiscMode: false
-macspoofchk: false
-hairpinMode: false
 
-# External L2 networks always use an empty CNI IPAM configuration. Guest IP,
-# gateway and DNS are configured in the VM or supplied by external DHCP.
+## @param {bool} macspoofchk - Enable MAC spoof checking when supported by the bridge CNI.
+macspoofchk: false
+
+## @param {bool} hairpinMode - Enable bridge hairpin mode for this network.
+hairpinMode: false
