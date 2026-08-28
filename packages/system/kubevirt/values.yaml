@@ -6,13 +6,22 @@
 
 # Feature gates appended after the static defaults
 # (HotplugVolumes/ExpandDisks/LiveMigration/AutoResourceLimitsGate/CPUManager/GPU/VMExport
-# plus Snapshot/Template when vmTemplates.enabled=true).
+# plus Snapshot/Template when vmTemplates.enabled=true). VMPersistentState is
+# a static HCI default because persistent vTPM/UEFI backend state must survive
+# virt-launcher and worker-node replacement.
 # Empty by default. Filled by the platform with "HostDevices" when the
 # gpu-operator package is enabled with the passthrough variant — the
 # admission webhook rejects spec.template.spec.domain.devices.hostDevices
 # without that gate even with the GPU gate on, since current KubeVirt
 # splits them.
 extraFeatureGates: []
+
+# StorageClass used by KubeVirt for per-VM backend state PVCs (persistent vTPM
+# and, when enabled in future, persistent UEFI/NVRAM). Each VM receives its own
+# backend state; the storage is shared across the cluster through LINSTOR/DRBD,
+# not shared between different guests. This preserves VM identity while
+# allowing restart on a surviving node after host failure.
+vmStateStorageClass: replicated
 
 # Native KubeVirt VM template foundation. Cozystack v1.6 ships KubeVirt v1.8.4,
 # where template.kubevirt.io/v1alpha1 is available behind the Snapshot and
