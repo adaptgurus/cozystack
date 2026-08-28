@@ -9,7 +9,7 @@ interface LogoProps {
   text?: string
 }
 
-export function Logo({ className, title = "Cozystack", svgContent, text }: LogoProps) {
+export function Logo({ className, title = "LayerSentry Platform", svgContent, text }: LogoProps) {
   if (svgContent) {
     return (
       <img
