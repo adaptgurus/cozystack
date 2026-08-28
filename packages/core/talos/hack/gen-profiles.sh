@@ -63,7 +63,11 @@ if command -v crane >/dev/null 2>&1; then
   crane export "$CATALOG_IMAGE" | tar x -O image-digests > "$CATALOG_DIGESTS"
 else
   docker pull "$CATALOG_IMAGE" >/dev/null
-  catalog_container=$(docker create "$CATALOG_IMAGE")
+  # The Sidero extension catalog image intentionally has no default command.
+  # docker create still accepts an explicit placeholder command without starting
+  # the container, allowing us to export its rootfs and read image-digests even
+  # when the scratch-like catalog contains no executable at that path.
+  catalog_container=$(docker create "$CATALOG_IMAGE" /bin/true)
   trap 'docker rm -f "$catalog_container" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT INT TERM
   docker export "$catalog_container" | tar x -O image-digests > "$CATALOG_DIGESTS"
   docker rm "$catalog_container" >/dev/null
