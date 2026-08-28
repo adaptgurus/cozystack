@@ -1,0 +1,306 @@
+name: HCI Talos Bootstrap Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-talos-bootstrap-preflight.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  bootstrap-preflight:
+    name: Non-destructive Talos bootstrap preflight
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      HCI_TALOS_VERSION: v1.13.6
+      HCI_TALOS_IMAGE: ghcr.io/cozystack/cozystack/talos:v1.13.6
+      HCI_TALOSCTL_SHA256: 87289b89abc444e9428d067f4e4097757148f4c3283491444ef4cceb9cd58b07
+      HCI_TALM_VERSION: v0.34.0
+      HCI_TALM_ZIP_SHA256: 7b7925660c38bf51938648368d3995ce2e48b7422719e9c8d915e39dba6fc07b
+      HCI_CLUSTER_NAME: cozystack-hci-lab
+      HCI_CLUSTER_ENDPOINT: https://10.10.10.10:6443
+      HCI_VIP: 10.10.10.10
+      HCI_GATEWAY: 10.10.10.1
+      HCI_ADVERTISED_SUBNET: 10.10.10.0/24
+      HCI_TOOLS_DIR: C:\hci-tools
+      HCI_DIAG_DIR: C:\hci-diagnostics
+      HCI_ISO_PATH: C:\HyperV\Cozystack\ISO\metal-amd64.iso
+      HCI_ISO_SHA256: d925b18dde9262adbb0804a98a8161b7ebca16bf362c70a1bd40530281d519d6
+    steps:
+      - name: Verify runner context and install pinned tooling
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:HCI_TOOLS_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:HCI_DIAG_DIR | Out-Null
+
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Bootstrap preflight requires an elevated Hyper-V runner.'
+          }
+          Write-Host "Runner=$env:RUNNER_NAME User=$($identity.Name) Computer=$env:COMPUTERNAME"
+
+          $curl = (Get-Command curl.exe -ErrorAction Stop).Source
+
+          $talosctl = Join-Path $env:HCI_TOOLS_DIR 'talosctl.exe'
+          if (Test-Path $talosctl) {
+            $talosHash = (Get-FileHash -Algorithm SHA256 $talosctl).Hash.ToLowerInvariant()
+          } else {
+            $talosHash = ''
+          }
+          if ($talosHash -ne $env:HCI_TALOSCTL_SHA256) {
+            $download = "$talosctl.download"
+            Remove-Item -Force $download -ErrorAction SilentlyContinue
+            $url = "https://github.com/siderolabs/talos/releases/download/$env:HCI_TALOS_VERSION/talosctl-windows-amd64.exe"
+            & $curl --fail --location --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 --output $download $url
+            if ($LASTEXITCODE -ne 0) { throw "talosctl download failed: curl exit $LASTEXITCODE" }
+            $talosHash = (Get-FileHash -Algorithm SHA256 $download).Hash.ToLowerInvariant()
+            if ($talosHash -ne $env:HCI_TALOSCTL_SHA256) {
+              Remove-Item -Force $download -ErrorAction SilentlyContinue
+              throw "talosctl checksum mismatch: expected $env:HCI_TALOSCTL_SHA256 got $talosHash"
+            }
+            Move-Item -Force $download $talosctl
+          }
+          Write-Host "Verified talosctl SHA256=$env:HCI_TALOSCTL_SHA256"
+          & $talosctl version --client
+          if ($LASTEXITCODE -ne 0) { throw 'talosctl client version check failed' }
+
+          $talm = Join-Path $env:HCI_TOOLS_DIR 'talm.exe'
+          $talmZip = Join-Path $env:HCI_TOOLS_DIR "talm-$env:HCI_TALM_VERSION-windows-amd64.zip"
+          $needTalm = $true
+          if (Test-Path $talm) {
+            $v = (& $talm version 2>&1 | Out-String)
+            if ($LASTEXITCODE -eq 0 -and $v -match '0\.34\.0') {
+              $needTalm = $false
+              Write-Host 'Existing talm.exe reports v0.34.0.'
+            }
+          }
+
+          if ($needTalm) {
+            $zipHash = if (Test-Path $talmZip) { (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant() } else { '' }
+            if ($zipHash -ne $env:HCI_TALM_ZIP_SHA256) {
+              Remove-Item -Force $talmZip -ErrorAction SilentlyContinue
+              $url = "https://github.com/cozystack/talm/releases/download/$env:HCI_TALM_VERSION/talm-windows-amd64.zip"
+              & $curl --fail --location --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --output $talmZip $url
+              if ($LASTEXITCODE -ne 0) { throw "talm archive download failed: curl exit $LASTEXITCODE" }
+              $zipHash = (Get-FileHash -Algorithm SHA256 $talmZip).Hash.ToLowerInvariant()
+              if ($zipHash -ne $env:HCI_TALM_ZIP_SHA256) {
+                Remove-Item -Force $talmZip -ErrorAction SilentlyContinue
+                throw "talm archive checksum mismatch: expected $env:HCI_TALM_ZIP_SHA256 got $zipHash"
+              }
+            }
+
+            $extract = Join-Path $env:TEMP "talm-$env:GITHUB_RUN_ID"
+            Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force $extract | Out-Null
+            try {
+              Expand-Archive -Path $talmZip -DestinationPath $extract -Force
+              $candidate = Get-ChildItem $extract -Recurse -Filter talm.exe | Select-Object -First 1
+              if (-not $candidate) { throw 'Verified talm archive does not contain talm.exe' }
+              Copy-Item -Force $candidate.FullName $talm
+            } finally {
+              Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+            }
+          }
+
+          $talmVersion = (& $talm version 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $talmVersion -notmatch '0\.34\.0') {
+            throw "Installed talm does not report required v0.34.0: $talmVersion"
+          }
+          Write-Host ($talmVersion.Trim())
+
+          "HCI_TALOSCTL=$talosctl" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          "HCI_TALM=$talm" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - name: Verify exact ISO provenance
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path $env:HCI_ISO_PATH)) { throw "Missing Cozystack ISO: $env:HCI_ISO_PATH" }
+          $item = Get-Item $env:HCI_ISO_PATH
+          $hash = (Get-FileHash -Algorithm SHA256 $env:HCI_ISO_PATH).Hash.ToLowerInvariant()
+          if ($item.Length -ne 543502336) { throw "Unexpected Cozystack ISO size: $($item.Length)" }
+          if ($hash -ne $env:HCI_ISO_SHA256) { throw "Cozystack ISO checksum mismatch: $hash" }
+          Write-Host "Cozystack v1.6.2 ISO verified: bytes=$($item.Length) SHA256=$hash"
+
+      - name: Verify exact node hardware network and blank-cluster state
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Test-TcpPortFast {
+            param([string]$ComputerName,[int]$Port,[int]$TimeoutMs = 3000)
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($ComputerName, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+              $client.EndConnect($async)
+              return $true
+            } catch {
+              return $false
+            } finally {
+              $client.Close()
+            }
+          }
+
+          $nodes = @(
+            [pscustomobject]@{Name='sen1';IP='10.10.10.11';Link='enx00155d0a0a11';Mac='00:15:5d:0a:0a:11';OsWwid='naa.600224806f287aeacd4f9e6329e29270';DataWwid='naa.600224806dc058308dd8a3bf014a297c'},
+            [pscustomobject]@{Name='sen2';IP='10.10.10.12';Link='enx00155d0a0a12';Mac='00:15:5d:0a:0a:12';OsWwid='naa.60022480b49d2169f5708f59478f5f15';DataWwid='naa.600224807175cdc319d108c6c7383188'},
+            [pscustomobject]@{Name='sen3';IP='10.10.10.13';Link='enx00155d0a0a13';Mac='00:15:5d:0a:0a:13';OsWwid='naa.600224803650253d9f3d59ac3e984736';DataWwid='naa.6002248070d1f838aed76ca81fff39a0'}
+          )
+
+          foreach ($node in $nodes) {
+            Write-Host "==== PRECHECK $($node.Name) $($node.IP) ===="
+            if (-not (Test-TcpPortFast $node.IP 50000 3000)) { throw "$($node.Name) Talos maintenance API TCP/50000 is unreachable" }
+            if (Test-TcpPortFast $node.IP 6443 3000) { throw "$($node.Name) already exposes Kubernetes TCP/6443; refusing blank-cluster bootstrap preflight" }
+
+            $version = (& $env:HCI_TALOSCTL version --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch 'Tag:\s+v1\.13\.6') { throw "$($node.Name) is not Talos v1.13.6" }
+
+            $diskLines = & $env:HCI_TALOSCTL get disks --insecure --nodes $node.IP --endpoints $node.IP 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "$($node.Name) disk discovery failed" }
+            $osLine = ($diskLines | Where-Object { $_ -match '^sda\s' } | Out-String)
+            $dataLine = ($diskLines | Where-Object { $_ -match '^sdb\s' } | Out-String)
+            if (-not $osLine) { throw "$($node.Name) has no sda OS candidate" }
+            if (-not $dataLine) { throw "$($node.Name) has no sdb data candidate" }
+            if ($osLine -notmatch [regex]::Escape($node.OsWwid) -or $osLine -notmatch '107 GB') {
+              throw "$($node.Name) sda identity/size mismatch; refusing any install"
+            }
+            if ($dataLine -notmatch [regex]::Escape($node.DataWwid) -or $dataLine -notmatch '322 GB') {
+              throw "$($node.Name) sdb identity/size mismatch; refusing any install"
+            }
+
+            $links = (& $env:HCI_TALOSCTL get links --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "$($node.Name) link discovery failed" }
+            if ($links -notmatch [regex]::Escape($node.Link) -or $links -notmatch [regex]::Escape($node.Mac)) {
+              throw "$($node.Name) management NIC identity mismatch"
+            }
+
+            $addresses = (& $env:HCI_TALOSCTL get addresses --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "$($node.Name) address discovery failed" }
+            if ($addresses -notmatch [regex]::Escape("$($node.IP)/24")) { throw "$($node.Name) expected static address $($node.IP)/24 not found" }
+
+            $routes = (& $env:HCI_TALOSCTL get routes --insecure --nodes $node.IP --endpoints $node.IP 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "$($node.Name) route discovery failed" }
+            if ($routes -notmatch [regex]::Escape($env:HCI_GATEWAY) -or $routes -notmatch [regex]::Escape($node.Link)) {
+              throw "$($node.Name) expected gateway/link route was not found"
+            }
+            Write-Host "$($node.Name): exact OS/data WWIDs, NIC, IP, gateway and maintenance state verified."
+          }
+
+          if (Test-Connection -ComputerName $env:HCI_VIP -Count 1 -Quiet -ErrorAction SilentlyContinue) {
+            throw "VIP $env:HCI_VIP already responds to ICMP; refusing bootstrap"
+          }
+          if (Test-TcpPortFast $env:HCI_VIP 50000 2000 -or Test-TcpPortFast $env:HCI_VIP 6443 2000) {
+            throw "VIP $env:HCI_VIP already has a Talos/Kubernetes endpoint; refusing bootstrap"
+          }
+          $neighbor = Get-NetNeighbor -IPAddress $env:HCI_VIP -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($neighbor -and $neighbor.LinkLayerAddress -and $neighbor.LinkLayerAddress -notin @('00-00-00-00-00-00','00:00:00:00:00:00')) {
+            throw "VIP $env:HCI_VIP has an L2 owner $($neighbor.LinkLayerAddress); refusing bootstrap"
+          }
+          Write-Host "VIP $env:HCI_VIP is unowned and safe for first bootstrap."
+
+      - name: Render disposable Talm configs and verify install target
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "C:\hci-preflight\$env:GITHUB_RUN_ID"
+          Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $root | Out-Null
+          & icacls $root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+
+          $nodes = @(
+            [pscustomobject]@{Name='sen1';IP='10.10.10.11';Link='enx00155d0a0a11';OsWwid='naa.600224806f287aeacd4f9e6329e29270'},
+            [pscustomobject]@{Name='sen2';IP='10.10.10.12';Link='enx00155d0a0a12';OsWwid='naa.60022480b49d2169f5708f59478f5f15'},
+            [pscustomobject]@{Name='sen3';IP='10.10.10.13';Link='enx00155d0a0a13';OsWwid='naa.600224803650253d9f3d59ac3e984736'}
+          )
+
+          try {
+            $endpointList = ($nodes.IP -join ',')
+            & $env:HCI_TALM init --root $root --preset cozystack --name $env:HCI_CLUSTER_NAME --endpoints $endpointList --cluster-endpoint $env:HCI_CLUSTER_ENDPOINT --image $env:HCI_TALOS_IMAGE --talos-version $env:HCI_TALOS_VERSION --force
+            if ($LASTEXITCODE -ne 0) { throw "talm init failed with exit code $LASTEXITCODE" }
+
+            $valuesPath = Join-Path $root 'values.yaml'
+            if (-not (Test-Path $valuesPath)) { throw 'talm init did not create values.yaml' }
+            $values = Get-Content -Raw $valuesPath
+            $values = [regex]::Replace($values, '(?m)^floatingIP:\s*.*$', "floatingIP: `"$env:HCI_VIP`"")
+            $values = [regex]::Replace($values, '(?m)^advertisedSubnets:\s*\[\]\s*$', "advertisedSubnets:`r`n- $env:HCI_ADVERTISED_SUBNET")
+            Set-Content -Path $valuesPath -Value $values -Encoding UTF8
+
+            if ((Get-Content -Raw $valuesPath) -notmatch [regex]::Escape("endpoint: `"$env:HCI_CLUSTER_ENDPOINT`"")) {
+              throw 'Talm values.yaml does not contain the required cluster endpoint'
+            }
+            if ((Get-Content -Raw $valuesPath) -notmatch [regex]::Escape("image: `"$env:HCI_TALOS_IMAGE`"")) {
+              throw 'Talm values.yaml does not contain the explicitly pinned Talos v1.13.6 image'
+            }
+
+            New-Item -ItemType Directory -Force (Join-Path $root 'nodes') | Out-Null
+            Push-Location $root
+            try {
+              foreach ($node in $nodes) {
+                $nodeFile = Join-Path $root "nodes\$($node.Name).yaml"
+                $errFile = Join-Path $root "nodes\$($node.Name).stderr.txt"
+                & $env:HCI_TALM template -e $node.IP --nodes $node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $errFile
+                if ($LASTEXITCODE -ne 0) {
+                  $safeError = Get-Content -Raw $errFile -ErrorAction SilentlyContinue
+                  throw "talm template failed for $($node.Name): $safeError"
+                }
+                if (-not (Test-Path $nodeFile)) { throw "No rendered config for $($node.Name)" }
+                $render = Get-Content -Raw $nodeFile
+
+                if ($render -notmatch '(?m)^\s+disk:\s*["'']?/dev/sda["'']?\s*$') {
+                  throw "$($node.Name) rendered install disk is not /dev/sda; refusing bootstrap"
+                }
+                if ($render -match '(?m)^\s+disk:\s*["'']?/dev/sdb["'']?\s*$') {
+                  throw "$($node.Name) rendered config targets DATA disk /dev/sdb; refusing bootstrap"
+                }
+                if ($render -notmatch [regex]::Escape($node.OsWwid)) {
+                  throw "$($node.Name) rendered discovery comments do not bind /dev/sda to expected OS WWID"
+                }
+                if ($render -notmatch [regex]::Escape($env:HCI_TALOS_IMAGE)) {
+                  throw "$($node.Name) rendered config does not pin $env:HCI_TALOS_IMAGE"
+                }
+                if ($render -notmatch [regex]::Escape($env:HCI_CLUSTER_ENDPOINT)) {
+                  throw "$($node.Name) rendered config does not use cluster endpoint $env:HCI_CLUSTER_ENDPOINT"
+                }
+                if ($render -notmatch [regex]::Escape($env:HCI_VIP)) {
+                  throw "$($node.Name) rendered config does not contain VIP $env:HCI_VIP"
+                }
+                if ($render -notmatch [regex]::Escape($node.Link)) {
+                  throw "$($node.Name) rendered config does not bind networking/VIP to discovered management link $($node.Link)"
+                }
+                Write-Host "$($node.Name): rendered config PASS; /dev/sda + expected WWID + v1.13.6 image + VIP/endpoint/link verified."
+              }
+            } finally {
+              Pop-Location
+            }
+          } finally {
+            # The disposable Talm project contains generated cluster secrets. Never preserve it after preflight.
+            Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          }
+
+      - name: Write non-secret preflight evidence
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $path = Join-Path $env:HCI_DIAG_DIR "bootstrap-preflight-$env:GITHUB_RUN_ID.txt"
+          @(
+            "run_id=$env:GITHUB_RUN_ID"
+            "head_sha=$env:GITHUB_SHA"
+            "timestamp_utc=$([DateTime]::UtcNow.ToString('o'))"
+            "talos_version=$env:HCI_TALOS_VERSION"
+            "talos_image=$env:HCI_TALOS_IMAGE"
+            "talm_version=$env:HCI_TALM_VERSION"
+            "cluster_endpoint=$env:HCI_CLUSTER_ENDPOINT"
+            "vip=$env:HCI_VIP"
+            "gateway=$env:HCI_GATEWAY"
+            "iso_sha256=$env:HCI_ISO_SHA256"
+            "NOTE=This file intentionally contains no Talos/Talm secrets or rendered machine configs."
+          ) | Set-Content -Path $path -Encoding UTF8
+          Get-Item $path | Format-List FullName,Length,LastWriteTimeUtc
