@@ -1,4 +1,4 @@
-name: LayerSentry HCI Talos ISO
+name: LayerSentry HCI Talos Release
 
 on:
   workflow_dispatch:
@@ -10,15 +10,15 @@ on:
       - '.github/workflows/layersentry-talos-hci-iso.yml'
 
 concurrency:
-  group: layersentry-talos-hci-iso-${{ github.ref }}
+  group: layersentry-talos-hci-release-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-iso:
-    name: Build LayerSentry HCI Talos ISO
+  build-release:
+    name: Build, audit and publish LayerSentry HCI Talos ISO
     if: github.ref_name == 'layersentry-platform'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -45,12 +45,14 @@ jobs:
           make -C packages/core/talos talos-iso
           test -s _out/assets/metal-amd64.iso
 
-      - name: Verify LayerSentry HCI extensions
+      - name: Verify required extensions and embedded runtime configuration
         shell: bash
         run: |
           set -euo pipefail
           profile="packages/core/talos/images/talos/profiles/iso.yaml"
+          runtime_config="packages/core/talos/layersentry-hci-machine-config.yaml"
           test -s "$profile"
+          test -s "$runtime_config"
 
           required_extensions=(
             drbd
@@ -70,18 +72,27 @@ jobs:
 
           for extension in "${required_extensions[@]}"; do
             if ! grep -Fq "/${extension}:" "$profile"; then
-              echo "::error::Required Talos system extension '${extension}' is missing from ${profile}"
+              echo "::error::Required Talos extension '${extension}' is missing from ${profile}"
               exit 1
             fi
           done
 
-          # lsscsi is supplied intentionally by Sidero's trident-iscsi-tools
-          # system extension on Talos v1.13.x. Keep this assertion separate so
-          # future catalog changes cannot silently drop the deliberate lsscsi
-          # dependency from the LayerSentry image policy.
+          # trident-iscsi-tools is deliberately used as the Talos catalog source
+          # for lsscsi on v1.13.x.
           grep -Fq '/trident-iscsi-tools:' "$profile"
 
-      - name: Package ISO, manifest and checksums
+          # Multipath is not certified merely because binaries are present.
+          # Assert the embedded Talos machine config and the generated profile
+          # both carry the required runtime configuration.
+          grep -Fq 'name: dm_multipath' "$runtime_config"
+          grep -Fq 'name: dm_round-robin' "$runtime_config"
+          grep -Fq 'name: multipathd' "$runtime_config"
+          grep -Fq 'path_selector "round-robin 0"' "$runtime_config"
+          grep -Fq 'embeddedMachineConfiguration:' "$profile"
+          grep -Fq 'name: dm_multipath' "$profile"
+          grep -Fq 'name: multipathd' "$profile"
+
+      - name: Package release assets
         id: package
         shell: bash
         run: |
@@ -93,114 +104,134 @@ jobs:
           version="${talos_version#v}"
           base="layersentry-hci-talos-${version}-amd64"
           iso="_out/assets/${base}.iso"
-          manifest="_out/assets/${base}-extensions.txt"
           checksum="_out/assets/${base}.sha256"
+          manifest="_out/assets/${base}-extensions.txt"
+          profile_asset="_out/assets/${base}-profile.yaml"
+          runtime_asset="_out/assets/${base}-machine-config.yaml"
+          audit_asset="_out/assets/${base}-audit.md"
+          release_tag="layersentry-hci-talos-v${version}-r1"
 
           mv _out/assets/metal-amd64.iso "$iso"
+          cp "$profile" "$profile_asset"
+          cp packages/core/talos/layersentry-hci-machine-config.yaml "$runtime_asset"
+          cp packages/core/talos/LAYERSENTRY_HCI_IMAGE_AUDIT.md "$audit_asset"
 
           {
             echo "LayerSentry HCI Talos image"
             echo "Talos version: ${talos_version}"
+            echo "Release tag: ${release_tag}"
+            echo "Git branch: ${GITHUB_REF_NAME}"
             echo "Git commit: ${GITHUB_SHA}"
             echo
             echo "Baked Talos system extensions (digest pinned):"
             awk '/systemExtensions:/{p=1; next} p && /imageRef:/{sub(/^.*imageRef: /, ""); print "  " $0; next} p && /^output:/{exit}' "$profile"
             echo
-            echo "Native Talos/Linux kernel capabilities relied upon by LayerSentry:"
-            echo "  Linux bridge; bond/LACP; VLAN 802.1Q; nftables; conntrack"
-            echo "  Device Mapper; SR-IOV; VFIO PCI passthrough"
-            echo "  RDMA/RoCE; NVMe/TCP; NVMe/RDMA"
-            echo "  ethtool-equivalent Ethernet configuration/status through Talos APIs/resources"
+            echo "Embedded runtime configuration:"
+            echo "  dm_multipath + dm_round-robin"
+            echo "  multipathd with round-robin path selector"
             echo
             echo "Certification boundary:"
-            echo "  iSER is NOT certified/enabled by this image policy; Talos v1.13.6 stock kernel has CONFIG_INFINIBAND_ISER disabled."
-            echo "  NFS server/export lifecycle, iSCSI target, full Fibre Channel lifecycle, Ceph/RBD/CephFS and SMB/CIFS are not provided by these host extensions."
-            echo "  SR-IOV, VFIO, RDMA/RoCE, NVMe/RDMA, GPU passthrough and GPUDirect RDMA require compatible hardware, firmware, IOMMU/topology and Kubernetes device/operator configuration."
+            echo "  iSER and NVMe/FC are not enabled in the stock Talos v1.13.6 kernel."
+            echo "  FC, SR-IOV, VFIO, RDMA/RoCE, NVMe/RDMA, GPU passthrough and GPUDirect RDMA require compatible hardware and real-lab certification."
+            echo "  NFS server/export management, iSCSI target, Ceph/RBD/CephFS and SMB/CIFS are separate services and are not provided by this host image."
           } > "$manifest"
 
           (cd _out/assets && sha256sum "${base}.iso" > "${base}.sha256")
-          test -s "$iso"
-          test -s "$manifest"
-          test -s "$checksum"
 
-          echo "artifact_name=${base}" >> "$GITHUB_OUTPUT"
-          echo "iso_path=${iso}" >> "$GITHUB_OUTPUT"
-          echo "manifest_path=${manifest}" >> "$GITHUB_OUTPUT"
-          echo "checksum_path=${checksum}" >> "$GITHUB_OUTPUT"
+          for asset in "$iso" "$checksum" "$manifest" "$profile_asset" "$runtime_asset" "$audit_asset"; do
+            test -s "$asset"
+          done
+
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "talos_version=${talos_version}" >> "$GITHUB_OUTPUT"
+          echo "iso=${iso}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${checksum}" >> "$GITHUB_OUTPUT"
+          echo "manifest=${manifest}" >> "$GITHUB_OUTPUT"
+          echo "profile_asset=${profile_asset}" >> "$GITHUB_OUTPUT"
+          echo "runtime_asset=${runtime_asset}" >> "$GITHUB_OUTPUT"
+          echo "audit_asset=${audit_asset}" >> "$GITHUB_OUTPUT"
 
           cat "$checksum"
           cat "$manifest"
 
-      - name: Split ISO into connector-safe transport parts
+      - name: Publish official-style GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          TALOS_VERSION: ${{ steps.package.outputs.talos_version }}
+          ISO: ${{ steps.package.outputs.iso }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          MANIFEST: ${{ steps.package.outputs.manifest }}
+          PROFILE_ASSET: ${{ steps.package.outputs.profile_asset }}
+          RUNTIME_ASSET: ${{ steps.package.outputs.runtime_asset }}
+          AUDIT_ASSET: ${{ steps.package.outputs.audit_asset }}
         shell: bash
         run: |
           set -euo pipefail
-          base="${{ steps.package.outputs.artifact_name }}"
-          mkdir -p _out/transport
-          split -b 350M -d -a 2 "${{ steps.package.outputs.iso_path }}" "_out/transport/${base}.part-"
 
-          mapfile -t parts < <(find _out/transport -maxdepth 1 -type f -name "${base}.part-*" | sort)
-          test "${#parts[@]}" -eq 5
-          for part in "${parts[@]}"; do
-            test -s "$part"
-            size=$(stat -c '%s' "$part")
-            test "$size" -lt 536870912
-            sha256sum "$part"
+          cat > /tmp/layersentry-release-notes.md <<EOF
+          LayerSentry HCI Talos ${TALOS_VERSION} release built from the \`layersentry-platform\` branch.
+
+          **Build identity**
+          - Commit: \`${GITHUB_SHA}\`
+          - Full ISO is stored as a GitHub Release asset, not committed into Git history.
+          - Verify the ISO against the attached SHA-256 before installation.
+
+          **Release gate**
+          - Talos ISO build: required
+          - Digest-pinned extension verification: required
+          - Embedded DM-Multipath runtime configuration verification: required
+          - Package/capability audit: attached
+
+          See the attached audit and extension manifest for hardware-dependent and explicitly unsupported capabilities.
+          EOF
+
+          assets=(
+            "$ISO"
+            "$CHECKSUM"
+            "$MANIFEST"
+            "$PROFILE_ASSET"
+            "$RUNTIME_ASSET"
+            "$AUDIT_ASSET"
+          )
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+            if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::Release tag ${RELEASE_TAG} already points to ${tag_sha}, not ${GITHUB_SHA}. Increment the LayerSentry release revision before publishing a new build."
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "LayerSentry HCI Talos ${TALOS_VERSION} r1" \
+              --notes-file /tmp/layersentry-release-notes.md \
+              --latest=false \
+              "${assets[@]}"
+          fi
+
+      - name: Verify published release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          BASE: ${{ steps.package.outputs.base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,url --jq '{tag:.tagName,url:.url}'
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          for required in \
+            "${BASE}.iso" \
+            "${BASE}.sha256" \
+            "${BASE}-extensions.txt" \
+            "${BASE}-profile.yaml" \
+            "${BASE}-machine-config.yaml" \
+            "${BASE}-audit.md"; do
+            printf '%s\n' "$assets" | grep -Fxq "$required" || {
+              echo "::error::Published release is missing asset ${required}"
+              exit 1
+            }
           done
-
-      - name: Upload ISO metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-metadata
-          path: |
-            ${{ steps.package.outputs.manifest_path }}
-            ${{ steps.package.outputs.checksum_path }}
-            packages/core/talos/images/talos/profiles/iso.yaml
-          if-no-files-found: error
-          compression-level: 9
-          retention-days: 14
-
-      - name: Upload ISO part 00
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-part-00
-          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-00
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-
-      - name: Upload ISO part 01
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-part-01
-          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-01
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-
-      - name: Upload ISO part 02
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-part-02
-          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-02
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-
-      - name: Upload ISO part 03
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-part-03
-          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-03
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-
-      - name: Upload ISO part 04
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}-part-04
-          path: _out/transport/${{ steps.package.outputs.artifact_name }}.part-04
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
