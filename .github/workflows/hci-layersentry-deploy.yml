@@ -273,6 +273,18 @@ jobs:
           if ($applyMatches -ne 1) { throw "Expected exactly one guarded Talm apply point; found $applyMatches" }
           $text = $text.Replace($oldApply, $newApply)
 
+          $oldBootstrap = '        try { Invoke-External $Talm ''bootstrap'' ''-f'' (Join-Path $StateRoot ''nodes\sen1.yaml'') }'
+          $newBootstrap = '        try { Invoke-External $Talosctl ''--talosconfig'' (Join-Path $StateRoot ''talosconfig'') ''bootstrap'' ''--nodes'' $Nodes[0].IP ''--endpoints'' $Nodes[0].IP }'
+          $bootstrapMatches = ([regex]::Matches($text, [regex]::Escape($oldBootstrap))).Count
+          if ($bootstrapMatches -ne 1) { throw "Expected exactly one Talm bootstrap point; found $bootstrapMatches" }
+          $text = $text.Replace($oldBootstrap, $newBootstrap)
+
+          $oldKubeconfig = '        Invoke-External $Talm ''kubeconfig'' ''-f'' (Join-Path $StateRoot ''nodes\sen1.yaml'')'
+          $newKubeconfig = '        Invoke-External $Talosctl ''--talosconfig'' (Join-Path $StateRoot ''talosconfig'') ''kubeconfig'' (Join-Path $StateRoot ''kubeconfig'') ''--force'' ''--merge=false'' ''--nodes'' $Nodes[0].IP ''--endpoints'' $Nodes[0].IP'
+          $kubeconfigMatches = ([regex]::Matches($text, [regex]::Escape($oldKubeconfig))).Count
+          if ($kubeconfigMatches -ne 1) { throw "Expected exactly one Talm kubeconfig point; found $kubeconfigMatches" }
+          $text = $text.Replace($oldKubeconfig, $newKubeconfig)
+
           $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
           $newInstaller = 'Invoke-External $Helm ''upgrade'' ''--install'' ''cozystack'' $env:LAYERSENTRY_INSTALLER_URI ''--namespace'' ''cozy-system'' ''--create-namespace'' ''--wait'' ''--timeout'' ''10m'''
           $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
