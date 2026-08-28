@@ -104,7 +104,7 @@ jobs:
             }
           }
 
-      - name: Discover Talos block devices and stable identities
+      - name: Discover Talos block and transport capabilities
         run: |
           $ErrorActionPreference = 'Continue'
           $talos = Get-Command talosctl -ErrorAction SilentlyContinue
@@ -128,6 +128,20 @@ jobs:
             & $talosExe -n $node -e $node get blockdevices -o yaml
             Write-Host "===== TALOS NODE $node : DISCOVERED VOLUMES ====="
             & $talosExe -n $node -e $node get discoveredvolumes -o yaml
+
+            Write-Host "===== TALOS NODE $node : SYSTEM EXTENSIONS ====="
+            & $talosExe -n $node -e $node get extensions -o yaml 2>$null
+            Write-Host "===== TALOS NODE $node : STORAGE-RELATED SERVICES ====="
+            (& $talosExe -n $node -e $node get services -o yaml 2>$null) | Select-String -Pattern 'iscsi|multipath|nvme|lvm|udev' -CaseSensitive:$false
+
+            Write-Host "===== TALOS NODE $node : STABLE DEVICE LINKS ====="
+            & $talosExe -n $node -e $node ls /dev/disk/by-id 2>$null
+            Write-Host "===== TALOS NODE $node : DEVICE MAPPER ====="
+            & $talosExe -n $node -e $node ls /dev/mapper 2>$null
+            Write-Host "===== TALOS NODE $node : FC HBA HOSTS ====="
+            & $talosExe -n $node -e $node ls /sys/class/fc_host 2>$null
+            Write-Host "===== TALOS NODE $node : KERNEL STORAGE MODULES ====="
+            (& $talosExe -n $node -e $node read /proc/modules 2>$null) | Select-String -Pattern 'iscsi|scsi_transport_fc|qla2xxx|lpfc|dm_multipath|nvme' -CaseSensitive:$false
           }
 
           Write-Host 'SAFETY: this workflow contains no wipe, format, partition, mount, mkfs, zpool create, vgcreate, pvcreate, linstor storage-pool create, kubectl apply, patch, delete, or create operation.'
