@@ -40,6 +40,11 @@ spec:
             - --listen-address=:9443
             - --tls-cert-file=/tls/tls.crt
             - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: https
               containerPort: 9443
