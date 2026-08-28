@@ -16,9 +16,10 @@ defaults:
     shell: powershell
 
 env:
-  DEPLOY_SOURCE_SHA: 79d3f839c429f2483c4ba00b5132619c89486021
-  ARTIFACT_RUN_ID: '33162981192'
-  ARTIFACT_NAME: layersentry-hci-build-79d3f839c429f2483c4ba00b5132619c89486021
+  DEPLOY_SOURCE_SHA: 8fdc1a6264bb994a9747b4e2c0d74371cac62c75
+  ARTIFACT_RUN_ID: '33163440957'
+  GATE_RUN_ID: '33163440907'
+  ARTIFACT_NAME: layersentry-hci-build-8fdc1a6264bb994a9747b4e2c0d74371cac62c75
 
 jobs:
   deploy:
@@ -26,7 +27,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 120
     steps:
-      - name: Wait for exact custom artifact build
+      - name: Wait for exact custom artifact and HCI gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -36,26 +37,32 @@ jobs:
             Accept = 'application/vnd.github+json'
             'X-GitHub-Api-Version' = '2022-11-28'
           }
-          $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:ARTIFACT_RUN_ID"
-          $deadline = (Get-Date).AddMinutes(90)
-          do {
-            $run = Invoke-RestMethod -Headers $headers -Uri $url
-            Write-Host "Artifact run $($run.id): status=$($run.status) conclusion=$($run.conclusion) head=$($run.head_sha)"
-            if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) {
-              throw "Artifact run SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA"
-            }
-            if ($run.name -ne 'LayerSentry HCI Artifact Build') {
-              throw "Unexpected prerequisite workflow: $($run.name)"
-            }
-            if ($run.status -eq 'completed') {
-              if ($run.conclusion -ne 'success') { throw "Custom artifact build did not pass: $($run.conclusion)" }
-              break
-            }
-            Start-Sleep -Seconds 10
-          } while ((Get-Date) -lt $deadline)
-          if ($run.status -ne 'completed' -or $run.conclusion -ne 'success') {
-            throw 'Timed out waiting for successful custom artifact build.'
+          function Wait-WorkflowRun {
+            param(
+              [Parameter(Mandatory=$true)][string]$RunId,
+              [Parameter(Mandatory=$true)][string]$ExpectedName
+            )
+            $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$RunId"
+            $deadline = (Get-Date).AddMinutes(90)
+            do {
+              $run = Invoke-RestMethod -Headers $headers -Uri $url
+              Write-Host "$ExpectedName run $($run.id): status=$($run.status) conclusion=$($run.conclusion) head=$($run.head_sha)"
+              if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) {
+                throw "$ExpectedName SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA"
+              }
+              if ($run.name -ne $ExpectedName) {
+                throw "Unexpected prerequisite workflow: expected '$ExpectedName', got '$($run.name)'"
+              }
+              if ($run.status -eq 'completed') {
+                if ($run.conclusion -ne 'success') { throw "$ExpectedName did not pass: $($run.conclusion)" }
+                return
+              }
+              Start-Sleep -Seconds 10
+            } while ((Get-Date) -lt $deadline)
+            throw "Timed out waiting for successful $ExpectedName run $RunId"
           }
+          Wait-WorkflowRun -RunId $env:ARTIFACT_RUN_ID -ExpectedName 'LayerSentry HCI Artifact Build'
+          Wait-WorkflowRun -RunId $env:GATE_RUN_ID -ExpectedName 'HCI v1.6.2 Gate'
 
       - name: Checkout the exact artifact source revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -83,7 +90,7 @@ jobs:
           if ($m.repository -ne 'adaptgurus/cozystack') { throw "Unexpected source repository: $($m.repository)" }
           if ($m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected source branch: $($m.branch)" }
           if ($m.commit -ne $env:DEPLOY_SOURCE_SHA) { throw "Manifest commit $($m.commit) does not match $env:DEPLOY_SOURCE_SHA" }
-          if ($m.runId -ne $env:ARTIFACT_RUN_ID) { throw "Manifest run ID $($m.runId) does not match $env:ARTIFACT_RUN_ID" }
+          if ([string]$m.runId -ne $env:ARTIFACT_RUN_ID) { throw "Manifest run ID $($m.runId) does not match $env:ARTIFACT_RUN_ID" }
 
           $installerPattern = '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$'
           if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not a digest-pinned adaptgurus artifact: $($m.installerUri)" }
@@ -145,11 +152,6 @@ jobs:
           $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
           $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
           if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Runner is not elevated.' }
-          $expected = @{
-            sen1 = @('00:15:5d:0a:0a:11', 10)
-            sen2 = @('00:15:5d:0a:0a:12', 10)
-            sen3 = @('00:15:5d:0a:0a:13', 10)
-          }
           foreach ($name in 'sen1','sen2','sen3') {
             $vm = Get-VM -Name $name -ErrorAction Stop
             $cpu = (Get-VMProcessor -VMName $name).Count
