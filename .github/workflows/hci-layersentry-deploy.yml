@@ -29,21 +29,41 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 150
     steps:
-      - name: Checkout current orchestration SHA
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Verify branch and orchestration provenance
+      - name: Fetch exact current-SHA orchestration files without repository checkout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_REPOSITORY -ne 'adaptgurus/cozystack') { throw "Unexpected repository: $env:GITHUB_REPOSITORY" }
           if ($env:GITHUB_REF_NAME -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected branch: $env:GITHUB_REF_NAME" }
-          $head = (git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "Checkout $head does not equal GITHUB_SHA $env:GITHUB_SHA" }
-          Write-Host "orchestration_sha=$head runtime_source_sha=$env:RUNTIME_SOURCE_SHA"
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-f]{40}$') { throw "Invalid orchestration SHA: $env:GITHUB_SHA" }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $commit = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/$env:GITHUB_SHA"
+          if ($commit.sha -ne $env:GITHUB_SHA) { throw "GitHub commit lookup returned $($commit.sha), expected $env:GITHUB_SHA" }
+
+          $sourceDir = Join-Path $env:RUNNER_TEMP "layersentry-orchestration-$env:GITHUB_SHA"
+          Remove-Item -Recurse -Force $sourceDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
+
+          foreach ($name in 'bootstrap-production.ps1','test-bootstrap-static.ps1') {
+            $repoPath = "hack/hci-lab/$name"
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$repoPath`?ref=$env:GITHUB_SHA"
+            $file = Invoke-RestMethod -Headers $headers -Uri $uri
+            if ($file.type -ne 'file' -or -not $file.content) { throw "Exact-SHA file fetch failed for $repoPath" }
+            $bytes = [Convert]::FromBase64String(([string]$file.content -replace '\s',''))
+            $target = Join-Path $sourceDir $name
+            [IO.File]::WriteAllBytes($target,$bytes)
+            if (-not (Test-Path $target)) { throw "Failed to materialize $repoPath" }
+            Write-Host "$repoPath gitBlob=$($file.sha) sha256=$((Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant())"
+          }
+
+          "LAYERSENTRY_ORCHESTRATION_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "orchestration_sha=$env:GITHUB_SHA runtime_source_sha=$env:RUNTIME_SOURCE_SHA"
 
       - name: Wait for current-SHA HCI and bootstrap-static gates
         env:
@@ -126,10 +146,13 @@ jobs:
           }
           Write-Host 'Runtime source delta is orchestration/test-only; immutable runtime artifact may be reused.'
 
-      - name: Parse current bootstrap before any mutation
+      - name: Parse exact current bootstrap before any mutation
         run: |
           $ErrorActionPreference = 'Stop'
-          .\hack\hci-lab\test-bootstrap-static.ps1
+          $test = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'test-bootstrap-static.ps1'
+          $bootstrap = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'bootstrap-production.ps1'
+          & $test -BootstrapPath $bootstrap
+          if (-not $?) { throw 'Bootstrap static validation failed on self-hosted runner.' }
 
       - name: Download exact runtime build manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -206,13 +229,14 @@ jobs:
           Copy-Item -Force (Join-Path $extract 'windows-amd64\helm.exe') (Join-Path $tools 'helm.exe')
           $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Execute guarded current bootstrap
+      - name: Execute guarded exact current bootstrap
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') {
             throw 'Digest-pinned LayerSentry installer was not supplied.'
           }
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\hack\hci-lab\bootstrap-production.ps1
+          $bootstrap = Join-Path $env:LAYERSENTRY_ORCHESTRATION_DIR 'bootstrap-production.ps1'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $bootstrap
           if ($LASTEXITCODE -ne 0) { throw "LayerSentry bootstrap failed with exit code $LASTEXITCODE" }
 
       - name: Capture non-secret deployment evidence
