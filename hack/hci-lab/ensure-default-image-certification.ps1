@@ -172,7 +172,7 @@ kind: Package
 metadata:
   name: $PackageName
   annotations:
-    $FixtureAnnotation: "$FixtureAnnotationValue"
+    ${FixtureAnnotation}: "$FixtureAnnotationValue"
 spec:
   variant: default
   components:
