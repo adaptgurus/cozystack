@@ -28,6 +28,13 @@
 {{- $canonical := printf "%s|%s|%s|%d|%d" .Values.fabricRef .Values.fabricNetwork .Values.bridge (int .Values.vlan) (int .Values.mtu) -}}
 {{- $capabilityLabel = printf "networkfabric.cozystack.io/cap-%s" (trunc 16 (sha256sum $canonical)) -}}
 {{- end }}
+{{- $logicalNetworkName := trimPrefix "vm-network-" .Release.Name -}}
+{{- $resourceFamily := $logicalNetworkName -}}
+{{- $resourceRole := "shared-network" -}}
+{{- if regexMatch "nic[0-9]*$" $logicalNetworkName -}}
+{{- $resourceFamily = regexReplaceAll "nic[0-9]*$" $logicalNetworkName "" -}}
+{{- $resourceRole = "nic" -}}
+{{- end }}
 
 apiVersion: k8s.cni.cncf.io/v1
 kind: NetworkAttachmentDefinition
@@ -39,7 +46,10 @@ metadata:
     apps.cozystack.io/application.name: {{ .Release.Name | quote }}
     vm-network.cozystack.io/tenant-namespace: {{ .Release.Namespace | quote }}
     vm-network.cozystack.io/type: external-bridge
+    hci.cozystack.io/resource-family: {{ $resourceFamily | quote }}
+    hci.cozystack.io/resource-role: {{ $resourceRole | quote }}
   annotations:
+    hci.cozystack.io/logical-name: {{ $logicalNetworkName | quote }}
     vm-network.cozystack.io/bridge: {{ .Values.bridge | quote }}
     vm-network.cozystack.io/vlan: {{ int .Values.vlan | quote }}
     vm-network.cozystack.io/mtu: {{ int .Values.mtu | quote }}
@@ -63,6 +73,10 @@ metadata:
   labels:
     apps.cozystack.io/application.kind: VMNetwork
     apps.cozystack.io/application.name: {{ .Release.Name | quote }}
+    hci.cozystack.io/resource-family: {{ $resourceFamily | quote }}
+    hci.cozystack.io/resource-role: {{ $resourceRole | quote }}
+  annotations:
+    hci.cozystack.io/logical-name: {{ $logicalNetworkName | quote }}
 data:
   networkName: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
   bridge: {{ .Values.bridge | quote }}
