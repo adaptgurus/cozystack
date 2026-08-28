@@ -20,7 +20,7 @@ jobs:
   build-iso:
     name: Build LayerSentry HCI Talos ISO
     if: github.ref_name == 'layersentry-platform'
-    runs-on: oracle-vm-24cpu-96gb-x86-64
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
