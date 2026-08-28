@@ -1,0 +1,40 @@
+suite: vm-network resource family naming
+
+templates:
+  - templates/network-attachment-definition.yaml
+
+release:
+  name: vm-network-windows10nic
+  namespace: tenant-test
+
+set:
+  bridge: br-vlan120
+  vlan: 120
+  mtu: 1500
+
+tests:
+  - it: associates a dedicated VM network with the windows10 family
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: nic
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10nic
+
+  - it: keeps the inventory ConfigMap in the same resource family
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: nic
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10nic
