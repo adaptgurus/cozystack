@@ -169,37 +169,31 @@ jobs:
           $source = $env:LAYERSENTRY_BOOTSTRAP_PATH
           $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
           $text = Get-Content -Raw $source
-
-          $oldAuth = @'
-function Test-AuthenticatedTalos([string]$IP) {
-    $talosconfig = Join-Path $StateRoot 'talosconfig'
-    if (-not (Test-Path $talosconfig)) { return $false }
-    & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP *> $null
-    return ($LASTEXITCODE -eq 0)
-}
-'@
-          $newAuth = @'
-function Test-AuthenticatedTalos([string]$IP) {
-    $talosconfig = Join-Path $StateRoot 'talosconfig'
-    if (-not (Test-Path $talosconfig)) { return $false }
-    $savedErrorActionPreference = $ErrorActionPreference
-    $exitCode = 1
-    try {
-        $ErrorActionPreference = 'SilentlyContinue'
-        & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP 1>$null 2>$null
-        $exitCode = $LASTEXITCODE
-    } catch {
-        $exitCode = 1
-    } finally {
-        $ErrorActionPreference = $savedErrorActionPreference
-    }
-    return ($exitCode -eq 0)
-}
-'@
-          $authMatches = ([regex]::Matches($text, [regex]::Escape($oldAuth))).Count
-          if ($authMatches -ne 1) { throw "Expected exactly one Test-AuthenticatedTalos guard point; found $authMatches" }
-          $text = $text.Replace($oldAuth, $newAuth)
-
+          $authPattern = '(?ms)^function Test-AuthenticatedTalos\(\[string\]\$IP\) \{.*?^\}\r?\n\r?\nfunction Assert-HyperVSafety'
+          $authLines = @(
+            'function Test-AuthenticatedTalos([string]$IP) {'
+            "    `$talosconfig = Join-Path `$StateRoot 'talosconfig'"
+            '    if (-not (Test-Path $talosconfig)) { return $false }'
+            '    $savedErrorActionPreference = $ErrorActionPreference'
+            '    $exitCode = 1'
+            '    try {'
+            "        `$ErrorActionPreference = 'SilentlyContinue'"
+            '        & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP 1>$null 2>$null'
+            '        $exitCode = $LASTEXITCODE'
+            '    } catch {'
+            '        $exitCode = 1'
+            '    } finally {'
+            '        $ErrorActionPreference = $savedErrorActionPreference'
+            '    }'
+            '    return ($exitCode -eq 0)'
+            '}'
+            ''
+            'function Assert-HyperVSafety'
+          )
+          $newAuth = $authLines -join "`r`n"
+          $patchedText = [regex]::Replace($text, $authPattern, $newAuth, 1)
+          if ($patchedText -eq $text) { throw 'Test-AuthenticatedTalos guard point was not patched.' }
+          $text = $patchedText
           $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
           $newInstaller = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
           $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
