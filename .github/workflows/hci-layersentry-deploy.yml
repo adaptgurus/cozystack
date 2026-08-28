@@ -38,21 +38,14 @@ jobs:
             'X-GitHub-Api-Version' = '2022-11-28'
           }
           function Wait-WorkflowRun {
-            param(
-              [Parameter(Mandatory=$true)][string]$RunId,
-              [Parameter(Mandatory=$true)][string]$ExpectedName
-            )
+            param([Parameter(Mandatory=$true)][string]$RunId,[Parameter(Mandatory=$true)][string]$ExpectedName)
             $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$RunId"
             $deadline = (Get-Date).AddMinutes(90)
             do {
               $run = Invoke-RestMethod -Headers $headers -Uri $url
               Write-Host "$ExpectedName run $($run.id): status=$($run.status) conclusion=$($run.conclusion) head=$($run.head_sha)"
-              if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) {
-                throw "$ExpectedName SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA"
-              }
-              if ($run.name -ne $ExpectedName) {
-                throw "Unexpected prerequisite workflow: expected '$ExpectedName', got '$($run.name)'"
-              }
+              if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) { throw "$ExpectedName SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA" }
+              if ($run.name -ne $ExpectedName) { throw "Unexpected prerequisite workflow: expected '$ExpectedName', got '$($run.name)'" }
               if ($run.status -eq 'completed') {
                 if ($run.conclusion -ne 'success') { throw "$ExpectedName did not pass: $($run.conclusion)" }
                 return
@@ -103,7 +96,6 @@ jobs:
           if ($m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected source branch: $($m.branch)" }
           if ($m.commit -ne $env:DEPLOY_SOURCE_SHA) { throw "Manifest commit $($m.commit) does not match $env:DEPLOY_SOURCE_SHA" }
           if ([string]$m.runId -ne $env:ARTIFACT_RUN_ID) { throw "Manifest run ID $($m.runId) does not match $env:ARTIFACT_RUN_ID" }
-
           $installerPattern = '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$'
           if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not a digest-pinned adaptgurus artifact: $($m.installerUri)" }
           $imagePattern = '^ghcr\.io/adaptgurus/cozystack/[a-z0-9._/-]+:[^@]+@sha256:[0-9a-f]{64}$'
@@ -123,7 +115,6 @@ jobs:
           $tools = 'C:\hci-tools'
           New-Item -ItemType Directory -Force -Path $tools | Out-Null
           $curl = (Get-Command curl.exe -ErrorAction Stop).Source
-
           $kubectlVersion = 'v1.35.0'
           $kubectl = Join-Path $tools 'kubectl.exe'
           $kubectlTmp = "$kubectl.download"
@@ -133,7 +124,6 @@ jobs:
           $actualKubectl = (Get-FileHash -Algorithm SHA256 $kubectlTmp).Hash.ToLowerInvariant()
           if ($actualKubectl -ne $expectedKubectl) { throw "kubectl checksum mismatch: $actualKubectl" }
           Move-Item -Force $kubectlTmp $kubectl
-
           $helmVersion = 'v3.18.6'
           $helmArchive = "helm-$helmVersion-windows-amd64.zip"
           $helmZip = Join-Path $tools $helmArchive
@@ -179,11 +169,42 @@ jobs:
           $source = $env:LAYERSENTRY_BOOTSTRAP_PATH
           $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
           $text = Get-Content -Raw $source
-          $old = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
-          $new = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
-          $matches = ([regex]::Matches($text, [regex]::Escape($old))).Count
-          if ($matches -ne 1) { throw "Expected exactly one upstream installer call in guarded source; found $matches" }
-          $text = $text.Replace($old, $new)
+
+          $oldAuth = @'
+function Test-AuthenticatedTalos([string]$IP) {
+    $talosconfig = Join-Path $StateRoot 'talosconfig'
+    if (-not (Test-Path $talosconfig)) { return $false }
+    & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+'@
+          $newAuth = @'
+function Test-AuthenticatedTalos([string]$IP) {
+    $talosconfig = Join-Path $StateRoot 'talosconfig'
+    if (-not (Test-Path $talosconfig)) { return $false }
+    $savedErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+        & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP 1>$null 2>$null
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $exitCode = 1
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    return ($exitCode -eq 0)
+}
+'@
+          $authMatches = ([regex]::Matches($text, [regex]::Escape($oldAuth))).Count
+          if ($authMatches -ne 1) { throw "Expected exactly one Test-AuthenticatedTalos guard point; found $authMatches" }
+          $text = $text.Replace($oldAuth, $newAuth)
+
+          $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
+          $newInstaller = '& $Helm upgrade --install cozystack $env:LAYERSENTRY_INSTALLER_URI --namespace cozy-system --create-namespace --wait --timeout 10m'
+          $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
+          if ($installerMatches -ne 1) { throw "Expected exactly one upstream installer call in guarded source; found $installerMatches" }
+          $text = $text.Replace($oldInstaller, $newInstaller)
           if ($text -match 'oci://ghcr\.io/cozystack/cozystack/cozy-installer') { throw 'Upstream installer reference remains after guarded substitution.' }
           Set-Content -Path $patched -Value $text -Encoding UTF8
           Write-Host "Starting guarded deployment of $env:DEPLOY_SOURCE_SHA using $env:LAYERSENTRY_INSTALLER_URI"
