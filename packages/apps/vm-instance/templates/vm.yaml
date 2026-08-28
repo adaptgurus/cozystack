@@ -7,6 +7,9 @@
 {{- if and (not .Values.instanceType) (not (and .Values.resources .Values.resources.cpu .Values.resources.sockets .Values.resources.memory)) }}
 {{-   fail "Either instanceType or resources (cpu, sockets, memory) must be specified" }}
 {{- end }}
+{{- if and .Values.cloudInit .Values.cloudInitSecretRef }}
+{{-   fail "cloudInit and cloudInitSecretRef are mutually exclusive" }}
+{{- end }}
 {{- $seenDisks := dict }}
 {{- range $disk := .Values.disks }}
 {{-   if hasKey $seenDisks $disk.name }}
@@ -35,6 +38,10 @@
 {{- $cdromCount := len .Values.cdroms }}
 {{- $logicalVMName := include "virtual-machine.logicalName" . }}
 {{- $securityGroupName := include "virtual-machine.securityGroupName" . }}
+{{- $cloudInitSecretName := printf "%s-cloud-init" (include "virtual-machine.fullname" .) }}
+{{- if .Values.cloudInitSecretRef }}
+{{- $cloudInitSecretName = .Values.cloudInitSecretRef }}
+{{- end }}
 
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -96,6 +103,13 @@ spec:
             deviceName: {{ $gpu.name }}
           {{- end }}
           {{- end }}
+          {{- if .Values.tpm.enabled }}
+          # Each guest receives its own vTPM identity. With persistent=true,
+          # KubeVirt stores that state in the cluster VM-state StorageClass so
+          # the same VM can restart on another node without losing TPM state.
+          tpm:
+            persistent: {{ .Values.tpm.persistent }}
+          {{- end }}
           disks:
           {{- range $i, $cdrom := .Values.cdroms }}
           - name: cdrom-{{ $cdrom.name }}
@@ -137,7 +151,7 @@ spec:
             {{-   fail (printf "Specified disk not exists in cluster: %s" .name) }}
             {{- end }}
           {{- end }}
-          {{- if or .Values.cloudInit .Values.sshKeys }}
+          {{- if or .Values.cloudInit .Values.cloudInitSecretRef .Values.sshKeys }}
           - name: cloudinitdisk
             disk: {}
           {{- end }}
@@ -176,11 +190,11 @@ spec:
         dataVolume:
           name: vm-disk-{{ .name }}
       {{- end }}
-      {{- if or .Values.cloudInit .Values.sshKeys }}
+      {{- if or .Values.cloudInit .Values.cloudInitSecretRef .Values.sshKeys }}
       - name: cloudinitdisk
         cloudInitNoCloud:
           secretRef:
-            name: {{ include "virtual-machine.fullname" . }}-cloud-init
+            name: {{ $cloudInitSecretName }}
       {{- end }}
       networks:
       - name: default
