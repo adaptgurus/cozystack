@@ -3,17 +3,120 @@
 package vmnetworkadmission
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
 const VMNetworkProtectionFinalizer = "infrastructure.cozystack.io/vmnetwork-reference-protection"
+
+// NewProtectionAdmissionHandler prevents an unprotected VMNetwork from being
+// deleted and prevents tenants from stripping the reference-protection
+// finalizer. Only the controller service account may release the finalizer,
+// only after deletion has started, and only after references are rechecked.
+func NewProtectionAdmissionHandler(dependencies DependencyReader, finalizerRemoverUsername string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "cannot read AdmissionReview", http.StatusBadRequest)
+			return
+		}
+		_ = r.Body.Close()
+
+		var review admissionv1.AdmissionReview
+		if err := json.Unmarshal(body, &review); err != nil || review.Request == nil {
+			http.Error(w, "invalid AdmissionReview", http.StatusBadRequest)
+			return
+		}
+		req := review.Request
+		if req.Resource.Group == appsGroup && req.Resource.Resource == vmNetworkResource {
+			switch req.Operation {
+			case admissionv1.Delete:
+				oldMeta, err := decodeObjectMeta(req.OldObject.Raw)
+				if err != nil {
+					writeProtectionResponse(w, req.UID, deny(http.StatusBadRequest, metav1.StatusReasonInvalid, "cannot decode VMNetwork metadata for reference protection"))
+					return
+				}
+				if !containsString(oldMeta.Finalizers, VMNetworkProtectionFinalizer) {
+					writeProtectionResponse(w, req.UID, deny(http.StatusConflict, metav1.StatusReasonConflict, "VMNetwork is not yet covered by reference-protection finalizer; retry after the protection controller reconciles it"))
+					return
+				}
+			case admissionv1.Update:
+				oldMeta, err := decodeObjectMeta(req.OldObject.Raw)
+				if err != nil {
+					writeProtectionResponse(w, req.UID, deny(http.StatusBadRequest, metav1.StatusReasonInvalid, "cannot decode old VMNetwork metadata for reference protection"))
+					return
+				}
+				newMeta, err := decodeObjectMeta(req.Object.Raw)
+				if err != nil {
+					writeProtectionResponse(w, req.UID, deny(http.StatusBadRequest, metav1.StatusReasonInvalid, "cannot decode new VMNetwork metadata for reference protection"))
+					return
+				}
+				oldProtected := containsString(oldMeta.Finalizers, VMNetworkProtectionFinalizer)
+				newProtected := containsString(newMeta.Finalizers, VMNetworkProtectionFinalizer)
+				if oldProtected && !newProtected {
+					if oldMeta.DeletionTimestamp == nil {
+						writeProtectionResponse(w, req.UID, deny(http.StatusForbidden, metav1.StatusReasonForbidden, "VMNetwork reference-protection finalizer cannot be removed before deletion starts"))
+						return
+					}
+					if finalizerRemoverUsername == "" || req.UserInfo.Username != finalizerRemoverUsername {
+						writeProtectionResponse(w, req.UID, deny(http.StatusForbidden, metav1.StatusReasonForbidden, "only the VMNetwork protection controller may release the reference-protection finalizer"))
+						return
+					}
+					if dependencies == nil {
+						writeProtectionResponse(w, req.UID, deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, "VMNetwork dependency reader is not configured"))
+						return
+					}
+					vms, err := dependencies.ReferencingVMInstances(r.Context(), req.Namespace, req.Name)
+					if err != nil {
+						writeProtectionResponse(w, req.UID, deny(http.StatusInternalServerError, metav1.StatusReasonInternalError, fmt.Sprintf("cannot recheck VMNetwork references before finalizer release: %v", err)))
+						return
+					}
+					if len(vms) > 0 {
+						writeProtectionResponse(w, req.UID, deny(http.StatusConflict, metav1.StatusReasonConflict, fmt.Sprintf("cannot release VMNetwork reference protection while VMInstance references remain: %v", vms)))
+						return
+					}
+				}
+			}
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func decodeObjectMeta(raw []byte) (*metav1.ObjectMeta, error) {
+	var object struct {
+		Metadata metav1.ObjectMeta `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	return &object.Metadata, nil
+}
+
+func writeProtectionResponse(w http.ResponseWriter, uid types.UID, response *admissionv1.AdmissionResponse) {
+	response.UID = uid
+	review := admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{APIVersion: admissionv1.SchemeGroupVersion.String(), Kind: "AdmissionReview"},
+		Response: response,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(&review)
+}
 
 // RunProtectionController keeps the reference-protection finalizer on every
 // VMNetwork. A deleting VMNetwork remains present until all VMInstance
