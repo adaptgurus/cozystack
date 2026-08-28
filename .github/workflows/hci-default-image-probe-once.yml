@@ -1,0 +1,100 @@
+name: One-shot HCI default image read-only probe
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-default-image-probe-once.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  probe:
+    name: Probe default image contract on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Capture read-only default image inventory
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          if (-not (Test-Path $kubectl)) { throw "kubectl missing: $kubectl" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'default-image-probe'
+          Remove-Item -Recurse -Force $evidence -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          function Capture([string]$Name, [string[]]$Args, [switch]$AllowFailure) {
+            $path = Join-Path $evidence $Name
+            "# kubectl $($Args -join ' ')" | Set-Content -Path $path -Encoding utf8
+            $output = & $kubectl @Args 2>&1
+            $code = $LASTEXITCODE
+            $output | Tee-Object -FilePath $path -Append
+            "`n# exit=$code" | Add-Content -Path $path -Encoding utf8
+            if ($code -ne 0 -and -not $AllowFailure) { throw "kubectl $($Args -join ' ') failed: $code" }
+            return @($output)
+          }
+
+          Capture '00-nodes.txt' @('get','nodes','-o','wide') | Out-Null
+          Capture '01-namespaces.txt' @('get','ns','cozy-public','-o','wide') | Out-Null
+          Capture '02-public-pvc.txt' @('get','pvc','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture '03-public-dv.txt' @('get','datavolumes.cdi.kubevirt.io','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture '04-public-pods.txt' @('get','pods','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+          Capture '05-public-events.txt' @('get','events','-n','cozy-public','--sort-by=.lastTimestamp') -AllowFailure | Out-Null
+          Capture '06-helmreleases.txt' @('get','helmreleases.helm.toolkit.fluxcd.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture '07-packages.txt' @('get','packages.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture '08-packagesources.txt' @('get','packagesources.cozystack.io','-A','-o','wide') -AllowFailure | Out-Null
+          Capture '09-app-api-resources.txt' @('api-resources','--api-group=apps.cozystack.io','-o','wide') -AllowFailure | Out-Null
+          Capture '10-app-api-discovery.txt' @('get','--raw','/apis/apps.cozystack.io/v1alpha1') -AllowFailure | Out-Null
+          Capture '11-all-public.txt' @('get','all','-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+
+          $api = & $kubectl api-resources --verbs=list --namespaced=true -o name 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $candidates = @($api | Where-Object { $_ -match '(?i)(image|disk|virtualmachine|vm)' } | Sort-Object -Unique)
+            $candidatePath = Join-Path $evidence '12-image-related-api-resources.txt'
+            $candidates | Set-Content $candidatePath -Encoding utf8
+            foreach ($resource in $candidates) {
+              if ($resource -match '(?i)secret|configmap') { continue }
+              $safe = ($resource -replace '[^A-Za-z0-9_.-]','_')
+              Capture ("resource-$safe.txt") @('get',$resource,'-n','cozy-public','-o','wide') -AllowFailure | Out-Null
+            }
+          }
+
+          $hr = & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            foreach ($line in @($hr | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+              $parts = @($line -split '\s+' | Where-Object { $_ })
+              if ($parts.Count -ge 2) {
+                Capture ("helmrelease-$($parts[0])-$($parts[1]).txt") @('describe','helmrelease.helm.toolkit.fluxcd.io',$parts[1],'-n',$parts[0]) -AllowFailure | Out-Null
+              }
+            }
+          }
+
+          $pkg = & $kubectl get packages.cozystack.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' --no-headers 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            foreach ($line in @($pkg | Where-Object { $_ -match '(?i)(vm.*image|image.*vm|default.*image)' })) {
+              $parts = @($line -split '\s+' | Where-Object { $_ })
+              if ($parts.Count -ge 2) {
+                Capture ("package-$($parts[0])-$($parts[1]).txt") @('get','packages.cozystack.io',$parts[1],'-n',$parts[0],'-o','yaml') -AllowFailure | Out-Null
+              }
+            }
+          }
+
+          Write-Host "Read-only default image probe complete. Evidence=$evidence"
+
+      - name: Upload read-only probe evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: default-image-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\default-image-probe
+          if-no-files-found: warn
+          retention-days: 30
