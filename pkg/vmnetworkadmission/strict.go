@@ -14,10 +14,10 @@ import (
 
 const DefaultMaxAdmissionBodyBytes int64 = 1 << 20 // 1 MiB
 
-// NewStrictHandler wraps the VMNetwork admission handler with protocol and
-// request-shape validation. Any malformed request is rejected at HTTP level so
-// Kubernetes failurePolicy=Fail cannot accidentally turn parser ambiguity into
-// an allowed mutation.
+// NewStrictHandler wraps the VMNetwork/VMInstance admission handler with
+// protocol and request-shape validation. Any malformed request is rejected at
+// HTTP level so Kubernetes failurePolicy=Fail cannot accidentally turn parser
+// ambiguity into an allowed mutation.
 func NewStrictHandler(next http.Handler, maxBodyBytes int64) http.Handler {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = DefaultMaxAdmissionBodyBytes
@@ -52,26 +52,53 @@ func NewStrictHandler(next http.Handler, maxBodyBytes int64) http.Handler {
 			http.Error(w, "AdmissionReview request UID, namespace, and name are required", http.StatusBadRequest)
 			return
 		}
-		if req.Resource.Group != appsGroup || req.Resource.Resource != vmNetworkResource {
+		if req.Resource.Group != appsGroup {
 			http.Error(w, "unexpected admission resource", http.StatusBadRequest)
 			return
 		}
-		switch req.Operation {
-		case admissionv1.Create:
-			if len(req.Object.Raw) == 0 {
-				http.Error(w, "CREATE admission requires object", http.StatusBadRequest)
+
+		switch req.Resource.Resource {
+		case vmNetworkResource:
+			switch req.Operation {
+			case admissionv1.Create:
+				if len(req.Object.Raw) == 0 {
+					http.Error(w, "CREATE admission requires object", http.StatusBadRequest)
+					return
+				}
+			case admissionv1.Update:
+				if len(req.Object.Raw) == 0 || len(req.OldObject.Raw) == 0 {
+					http.Error(w, "UPDATE admission requires object and oldObject", http.StatusBadRequest)
+					return
+				}
+			case admissionv1.Delete:
+				// Request metadata is authoritative for dependency lookup. oldObject may
+				// be omitted depending on admission configuration and is not required.
+			default:
+				http.Error(w, "unsupported admission operation", http.StatusBadRequest)
 				return
 			}
-		case admissionv1.Update:
-			if len(req.Object.Raw) == 0 || len(req.OldObject.Raw) == 0 {
-				http.Error(w, "UPDATE admission requires object and oldObject", http.StatusBadRequest)
+		case vmInstanceResource:
+			// The webhook configuration intentionally validates VMInstance CREATE and
+			// UPDATE so VMNetwork references fail closed. VMInstances without explicit
+			// VMNetwork references are allowed by the inner validator, but they must
+			// first be admitted through this strict protocol boundary.
+			switch req.Operation {
+			case admissionv1.Create:
+				if len(req.Object.Raw) == 0 {
+					http.Error(w, "CREATE admission requires object", http.StatusBadRequest)
+					return
+				}
+			case admissionv1.Update:
+				if len(req.Object.Raw) == 0 || len(req.OldObject.Raw) == 0 {
+					http.Error(w, "UPDATE admission requires object and oldObject", http.StatusBadRequest)
+					return
+				}
+			default:
+				http.Error(w, "unsupported admission operation", http.StatusBadRequest)
 				return
 			}
-		case admissionv1.Delete:
-			// Request metadata is authoritative for dependency lookup. oldObject may
-			// be omitted depending on admission configuration and is not required.
 		default:
-			http.Error(w, "unsupported admission operation", http.StatusBadRequest)
+			http.Error(w, "unexpected admission resource", http.StatusBadRequest)
 			return
 		}
 
