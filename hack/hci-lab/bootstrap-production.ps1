@@ -649,6 +649,31 @@ function Get-LinstorText([string[]]$LinstorArgs) {
     return (Invoke-NativeText -FilePath $Kubectl -Arguments $allArgs)
 }
 
+function Get-LinstorSatellitePodForNode([string]$NodeName) {
+    $pods = Get-KubectlObject -Arguments @('get','pods','-n','cozy-linstor')
+    if (-not $pods) { throw 'LINSTOR satellite pod inventory failed' }
+
+    $matches = @($pods.items | Where-Object {
+        $podName = [string]$_.metadata.name
+        [string]$_.spec.nodeName -eq $NodeName -and
+        ($podName -eq "linstor-satellite.$NodeName" -or $podName.StartsWith("linstor-satellite.$NodeName-"))
+    })
+    if ($matches.Count -ne 1) {
+        throw "Expected exactly one LINSTOR satellite pod on $NodeName; found $($matches.Count)"
+    }
+
+    $pod = $matches[0]
+    if ([string]$pod.status.phase -ne 'Running') {
+        throw "LINSTOR satellite pod $($pod.metadata.name) on $NodeName is not Running"
+    }
+    foreach ($container in @($pod.status.containerStatuses)) {
+        if (-not [bool]$container.ready) {
+            throw "LINSTOR satellite pod $($pod.metadata.name) on $NodeName has a non-ready container $($container.name)"
+        }
+    }
+    return [string]$pod.metadata.name
+}
+
 function Configure-HCIStorage {
     Write-Section 'LINSTOR/ZFS ON VERIFIED /DEV/SDB'
     $nodeNames = @{}
@@ -698,7 +723,7 @@ function Configure-HCIStorage {
 
     foreach ($node in $Nodes) {
         $k8sName = $nodeNames[$node.Name]
-        $podName = "linstor-satellite.$k8sName"
+        $podName = Get-LinstorSatellitePodForNode -NodeName $k8sName
         Invoke-External $Kubectl 'exec' '-n' 'cozy-linstor' "pod/$podName" '--' 'zpool' 'set' 'failmode=continue' 'data'
     }
 
