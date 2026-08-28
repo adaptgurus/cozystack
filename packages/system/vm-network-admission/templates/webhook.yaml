@@ -23,3 +23,8 @@ webhooks:
         apiVersions: ["v1alpha1"]
         resources: ["vmnetworks"]
         scope: Namespaced
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["apps.cozystack.io"]
+        apiVersions: ["v1alpha1"]
+        resources: ["vminstances"]
+        scope: Namespaced
