@@ -7,12 +7,17 @@
 # Talos v1.13.6 multipath-tools requires dm_multipath plus a supported path
 # selector module. dm-service-time is not available in this Talos kernel, so the
 # image deliberately uses round-robin.
+#
+# NFSD is deliberately loaded because LayerSentry HCI exposes NFS server support
+# as a platform capability. Export definitions and lifecycle remain managed by
+# the LayerSentry storage layer rather than hard-coded into a reusable ISO.
 version: v1alpha1
 machine:
   kernel:
     modules:
       - name: dm_multipath
       - name: dm_round-robin
+      - name: nfsd
 ---
 apiVersion: v1alpha1
 kind: ExtensionServiceConfig
@@ -25,3 +30,12 @@ configFiles:
           find_multipaths yes
           path_selector "round-robin 0"
       }
+---
+# LayerSentry deliberately does not impose an OS-level ingress firewall in the
+# generic HCI image. Talos' default ingress action is accept; pin it explicitly
+# so storage traffic such as NFS, iSCSI and NVMe-oF is not blocked by the Talos
+# ingress firewall. Netfilter/nftables/iptables kernel and userspace capability
+# is retained because Kubernetes/Cilium can rely on it for datapath functions.
+apiVersion: v1alpha1
+kind: NetworkDefaultActionConfig
+ingress: accept
