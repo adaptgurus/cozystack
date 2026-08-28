@@ -248,7 +248,7 @@ spec:
         'linstor','resource','list','--resources',$volumeHandle
     )
     if ($resourceProbe.ExitCode -ne 0) {
-        throw "LINSTOR resource lookup failed for CSI volumeHandle $volumeHandle: $($resourceProbe.Text)"
+        throw "LINSTOR resource lookup failed for CSI volumeHandle ${volumeHandle}: $($resourceProbe.Text)"
     }
     $resourceText = $resourceProbe.Text
     foreach ($nodeName in $nodeNames) {
@@ -293,7 +293,7 @@ spec:
     if ($nsProbe.ExitCode -eq 0) {
         $deleteProbe = Invoke-NativeText -FilePath $KubectlPath -Arguments @('delete','namespace',$namespace,'--wait=false')
         if ($deleteProbe.ExitCode -ne 0) {
-            $cleanupError = "Failed to request deletion of e2e namespace $namespace: $($deleteProbe.Text)"
+            $cleanupError = "Failed to request deletion of e2e namespace ${namespace}: $($deleteProbe.Text)"
         } else {
             try {
                 Wait-Until -TimeoutSeconds 240 -IntervalSeconds 5 -Description "namespace $namespace deletion" -Condition {
