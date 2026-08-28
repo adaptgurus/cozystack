@@ -59,6 +59,9 @@ spec:
         - --health-requeue={{ .Values.networkFabricController.healthRequeue }}
         - --talos-try-timeout={{ .Values.networkFabricController.talosTryTimeout }}
         - --talosconfig=/var/run/secrets/talos.dev/config
+{{- if .Values.networkFabricController.orphanedNodeCleanupAllowlist }}
+        - {{ printf "--orphaned-node-cleanup-allowlist=%s" .Values.networkFabricController.orphanedNodeCleanupAllowlist | quote }}
+{{- end }}
         ports:
         - name: metrics
           containerPort: {{ trimPrefix ":" .Values.networkFabricController.metricsBindAddress }}
