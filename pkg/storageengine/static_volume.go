@@ -22,7 +22,7 @@ type StaticVolumeRequest struct {
 
 // StaticVolumePlan is a provider-neutral representation of a Kubernetes static
 // PV. A controller/API layer can render this into a PersistentVolume only after
-// ValidateConnector succeeds against current discovery evidence.
+// the connector succeeds against current discovery evidence.
 type StaticVolumePlan struct {
 	Name          string
 	CapacityBytes uint64
@@ -80,12 +80,22 @@ func BuildStaticVolumePlan(req StaticVolumeRequest, env ConnectorEnvironment) (S
 	if req.Connector.Mode == ConnectorModeCSI {
 		return StaticVolumePlan{}, fmt.Errorf("static volume %q cannot use CSI connector mode", req.Name)
 	}
-	ready, err := ValidateConnector(req.Connector, env)
-	if err != nil {
-		return StaticVolumePlan{}, fmt.Errorf("static volume %q connector preflight failed: %w", req.Name, err)
-	}
-	if !ready.Ready {
-		return StaticVolumePlan{}, fmt.Errorf("static volume %q connector is not ready", req.Name)
+
+	// Existing node-local LVs are an attach operation, not an initialization
+	// operation. A matching expected VG is therefore valid ownership here even
+	// though the same device remains protected from the initialization path.
+	if req.Connector.Transport == TransportLocal && (req.Connector.BackendType == BackendLVM || req.Connector.BackendType == BackendLVMThin) {
+		if err := validateExistingLocalLV(req, env); err != nil {
+			return StaticVolumePlan{}, fmt.Errorf("static volume %q local-LVM preflight failed: %w", req.Name, err)
+		}
+	} else {
+		ready, err := ValidateConnector(req.Connector, env)
+		if err != nil {
+			return StaticVolumePlan{}, fmt.Errorf("static volume %q connector preflight failed: %w", req.Name, err)
+		}
+		if !ready.Ready {
+			return StaticVolumePlan{}, fmt.Errorf("static volume %q connector is not ready", req.Name)
+		}
 	}
 
 	if req.VolumeMode != VolumeModeBlock && req.VolumeMode != VolumeModeFilesystem {
@@ -138,15 +148,6 @@ func BuildStaticVolumePlan(req StaticVolumeRequest, env ConnectorEnvironment) (S
 			Multipath:  req.Connector.Multipath,
 		}
 	case TransportLocal:
-		if req.Node == "" {
-			return StaticVolumePlan{}, fmt.Errorf("local static volume %q requires a node", req.Name)
-		}
-		if !containsString(connectorNodes(req.Connector, env), req.Node) {
-			return StaticVolumePlan{}, fmt.Errorf("local static volume %q node %q is outside connector scope", req.Name, req.Node)
-		}
-		if strings.TrimSpace(req.Connector.DevicePath) == "" {
-			return StaticVolumePlan{}, fmt.Errorf("local static volume %q requires an existing device/LV path", req.Name)
-		}
 		plan.Local = &LocalVolumeSource{
 			Path:        req.Connector.DevicePath,
 			VolumeGroup: req.Connector.VolumeGroup,
@@ -158,4 +159,50 @@ func BuildStaticVolumePlan(req StaticVolumeRequest, env ConnectorEnvironment) (S
 		return StaticVolumePlan{}, fmt.Errorf("transport %q cannot be rendered as a non-CSI static volume", req.Connector.Transport)
 	}
 	return plan, nil
+}
+
+func validateExistingLocalLV(req StaticVolumeRequest, env ConnectorEnvironment) error {
+	spec := req.Connector
+	if req.Node == "" {
+		return fmt.Errorf("node is required")
+	}
+	if !containsString(connectorNodes(spec, env), req.Node) {
+		return fmt.Errorf("node %q is outside connector scope", req.Node)
+	}
+	capability, ok := env.NodeCapabilities[req.Node]
+	if !ok || !capability.LVMTools {
+		return fmt.Errorf("LVM tooling has not been proven on node %q", req.Node)
+	}
+	if strings.TrimSpace(spec.VolumeGroup) == "" {
+		return fmt.Errorf("volume group is required")
+	}
+	if spec.BackendType == BackendLVMThin && strings.TrimSpace(spec.ThinPool) == "" {
+		return fmt.Errorf("thin pool is required for LVM Thin")
+	}
+	if strings.TrimSpace(spec.DevicePath) == "" {
+		return fmt.Errorf("existing LV/device path is required")
+	}
+
+	for _, device := range env.Snapshot.Devices {
+		if device.Node != req.Node || device.Path != spec.DevicePath {
+			continue
+		}
+		if spec.WWID != "" && device.WWID != spec.WWID {
+			continue
+		}
+		if device.Filesystem != "" {
+			return fmt.Errorf("device %q already contains filesystem %q", device.Path, device.Filesystem)
+		}
+		if device.ZFSPool != "" || device.LINSTORPool != "" || len(device.ExistingUsers) > 0 {
+			return fmt.Errorf("device %q is owned by another storage backend", device.Path)
+		}
+		if device.VolumeGroup != "" && device.VolumeGroup != spec.VolumeGroup {
+			return fmt.Errorf("device %q belongs to volume group %q, expected %q", device.Path, device.VolumeGroup, spec.VolumeGroup)
+		}
+		if device.VolumeGroup == "" {
+			return fmt.Errorf("device %q has not been proven to belong to expected volume group %q", device.Path, spec.VolumeGroup)
+		}
+		return nil
+	}
+	return fmt.Errorf("existing LV/device %q has not been discovered on node %q", spec.DevicePath, req.Node)
 }
