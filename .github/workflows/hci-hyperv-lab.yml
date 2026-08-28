@@ -14,7 +14,7 @@ permissions:
 
 defaults:
   run:
-    shell: pwsh
+    shell: powershell
 
 jobs:
   hyperv-bootstrap:
@@ -32,6 +32,7 @@ jobs:
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
           Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
           Get-Command Get-VM, Start-VM, Set-VMProcessor, Get-VHD | Format-Table Name, Source
           $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
           $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
@@ -69,7 +70,7 @@ jobs:
           foreach ($name in $names) {
             $vm = Get-VM -Name $name
             if ($vm.State -ne 'Off') {
-              Write-Host "$name is $($vm.State); stopping gracefully before processor change"
+              Write-Host "$name is $($vm.State); stopping before processor change"
               Stop-VM -Name $name -Shutdown -ErrorAction SilentlyContinue
               $deadline = (Get-Date).AddSeconds(45)
               while ((Get-VM -Name $name).State -ne 'Off' -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
@@ -94,7 +95,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $targets = @($env:HCI_NODE_IPS -split ',') + @($env:HCI_VIP)
           $results = foreach ($ip in $targets) {
-            $ping = Test-Connection -TargetName $ip -Count 2 -Quiet -ErrorAction SilentlyContinue
+            $ping = Test-Connection -ComputerName $ip -Count 2 -Quiet -ErrorAction SilentlyContinue
             [pscustomobject]@{ Target = $ip; ICMP = $ping }
           }
           $results | Format-Table -AutoSize
