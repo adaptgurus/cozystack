@@ -33,13 +33,19 @@
 {{- end }}
 {{- $networks := .Values.networks | default .Values.subnets }}
 {{- $cdromCount := len .Values.cdroms }}
+{{- $logicalVMName := include "virtual-machine.logicalName" . }}
+{{- $securityGroupName := include "virtual-machine.securityGroupName" . }}
 
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
   name: {{ include "virtual-machine.fullname" . }}
+  annotations:
+    hci.cozystack.io/logical-name: {{ $logicalVMName | quote }}
+    hci.cozystack.io/security-group: {{ $securityGroupName | quote }}
   labels:
     {{- include "virtual-machine.labels" . | nindent 4 }}
+    hci.cozystack.io/resource-role: "vm"
 spec:
   {{- if hasKey .Values "runStrategy" }}
   runStrategy: {{ .Values.runStrategy }}
@@ -60,6 +66,8 @@ spec:
     metadata:
       annotations:
         kubevirt.io/allow-pod-bridge-network-live-migration: "true"
+        hci.cozystack.io/logical-name: {{ $logicalVMName | quote }}
+        hci.cozystack.io/security-group: {{ $securityGroupName | quote }}
         {{- $ovnIPName := printf "%s.%s" (include "virtual-machine.fullname" .) .Release.Namespace }}
         {{- $ovnIP := lookup "kubeovn.io/v1" "IP" "" $ovnIPName }}
         {{- if $ovnIP }}
@@ -68,6 +76,7 @@ spec:
         {{- end }}
       labels:
         {{- include "virtual-machine.labels" . | nindent 8 }}
+        hci.cozystack.io/resource-role: "vm-runtime"
     spec:
       domain:
         {{- $domainRes := include "virtual-machine.domainResources" . | fromJson -}}
@@ -136,7 +145,7 @@ spec:
           - name: default
             bridge: {}
           {{- range $i, $net := $networks }}
-          - name: {{ $net.name }}
+          - name: {{ include "virtual-machine.nicName" (dict "root" $ "index" $i) }}
             bridge: {}
           {{- end }}
         machine:
@@ -177,7 +186,7 @@ spec:
       - name: default
         pod: {}
       {{- range $i, $net := $networks }}
-      - name: {{ $net.name }}
+      - name: {{ include "virtual-machine.nicName" (dict "root" $ "index" $i) }}
         multus:
           networkName: {{ $.Release.Namespace }}/{{ $net.name }}
       {{- end }}
