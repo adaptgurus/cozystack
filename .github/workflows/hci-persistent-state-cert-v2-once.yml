@@ -1,0 +1,183 @@
+name: One-shot HCI persistent VM state certification v2
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-persistent-state-cert-v2-once.yml
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: powershell
+
+env:
+  RUNTIME_SOURCE_SHA: 2b538371bc7141759c02d900f554a310cc92f864
+  RUNTIME_ARTIFACT_RUN_ID: '33182992754'
+  RUNTIME_ARTIFACT_NAME: layersentry-hci-build-2b538371bc7141759c02d900f554a310cc92f864
+
+jobs:
+  certify:
+    name: Certify ordered persistent VM state on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    steps:
+      - name: Fetch exact current orchestration and runtime test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -ne 'adaptgurus/cozystack') { throw "Unexpected repository: $env:GITHUB_REPOSITORY" }
+          if ($env:GITHUB_REF_NAME -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected branch: $env:GITHUB_REF_NAME" }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $sourceDir = Join-Path $env:RUNNER_TEMP "layersentry-pstate-v2-$env:GITHUB_SHA"
+          Remove-Item -Recurse -Force $sourceDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
+
+          function Save-RepoFile([string]$RepoPath,[string]$Ref,[string]$TargetName) {
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$RepoPath`?ref=$Ref"
+            $file = Invoke-RestMethod -Headers $headers -Uri $uri
+            if ($file.type -ne 'file' -or -not $file.content) { throw "Exact-ref fetch failed: $RepoPath@$Ref" }
+            $bytes = [Convert]::FromBase64String(([string]$file.content -replace '\s',''))
+            $target = Join-Path $sourceDir $TargetName
+            [IO.File]::WriteAllBytes($target,$bytes)
+            Write-Host "$RepoPath ref=$Ref blob=$($file.sha) sha256=$((Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant())"
+          }
+
+          Save-RepoFile 'hack/hci-lab/bootstrap-production.ps1' $env:GITHUB_SHA 'bootstrap-production.ps1'
+          Save-RepoFile 'hack/hci-lab/test-bootstrap-static.ps1' $env:GITHUB_SHA 'test-bootstrap-static.ps1'
+          Save-RepoFile 'hack/hci-lab/reconcile-network-fabric-talosconfig.ps1' $env:GITHUB_SHA 'reconcile-network-fabric-talosconfig.ps1'
+          Save-RepoFile 'hack/hci-lab/test-network-fabric-talosconfig-static.ps1' $env:GITHUB_SHA 'test-network-fabric-talosconfig-static.ps1'
+          Save-RepoFile 'hack/hci-live/test-linux-vm-product-live.ps1' $env:RUNTIME_SOURCE_SHA 'test-linux-vm-product-live.ps1'
+          "LAYERSENTRY_CERT_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify runtime artifact ancestry is orchestration-only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $run = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RUNTIME_ARTIFACT_RUN_ID"
+          if ($run.name -ne 'LayerSentry HCI Artifact Build' -or $run.head_sha -ne $env:RUNTIME_SOURCE_SHA -or $run.conclusion -ne 'success') {
+            throw 'Pinned runtime artifact provenance is invalid.'
+          }
+          $compare = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/compare/$env:RUNTIME_SOURCE_SHA...$env:GITHUB_SHA"
+          if ($compare.status -notin @('ahead','identical')) { throw "Runtime source is not ancestor: $($compare.status)" }
+          $allowed = @('^\.github/workflows/','^hack/hci-lab/')
+          $disallowed = @()
+          foreach ($f in @($compare.files)) {
+            $ok = $false
+            foreach ($p in $allowed) { if ($f.filename -match $p) { $ok = $true; break } }
+            if (-not $ok) { $disallowed += $f.filename }
+          }
+          if ($disallowed.Count -gt 0) { throw "Runtime-affecting delta after artifact source: $($disallowed -join ', ')" }
+          Write-Host "Immutable runtime artifact reuse PASS: source=$env:RUNTIME_SOURCE_SHA orchestration=$env:GITHUB_SHA"
+
+      - name: Wait for exact current-SHA HCI gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $deadline = (Get-Date).AddMinutes(45)
+          do {
+            $runs = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/hci-v1.6.2-gate.yml/runs?branch=$env:GITHUB_REF_NAME&event=push&per_page=50"
+            $match = @($runs.workflow_runs | Where-Object { $_.head_sha -eq $env:GITHUB_SHA } | Sort-Object run_number -Descending | Select-Object -First 1)
+            if ($match.Count -gt 0) {
+              Write-Host "HCI gate run=$($match[0].id) status=$($match[0].status) conclusion=$($match[0].conclusion)"
+              if ($match[0].status -eq 'completed') {
+                if ($match[0].conclusion -ne 'success') { throw "Exact-SHA HCI gate failed: $($match[0].conclusion)" }
+                break
+              }
+            }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date) -lt $deadline)
+          if ($match.Count -eq 0 -or $match[0].status -ne 'completed') { throw 'Timed out waiting for exact-SHA HCI gate.' }
+
+      - name: Parse exact orchestration before mutation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-bootstrap-static.ps1') -BootstrapPath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'bootstrap-production.ps1')
+          if (-not $?) { throw 'Bootstrap static validation failed.' }
+          & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-network-fabric-talosconfig-static.ps1') -ReconcilePath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'reconcile-network-fabric-talosconfig.ps1')
+          if (-not $?) { throw 'NetworkFabric static validation failed.' }
+
+      - name: Download exact runtime build manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.RUNTIME_ARTIFACT_NAME }}
+          path: ${{ runner.temp }}\layersentry-build
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: adaptgurus/cozystack
+          run-id: ${{ env.RUNTIME_ARTIFACT_RUN_ID }}
+
+      - name: Verify immutable manifest and local tools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifestPath = Join-Path $env:RUNNER_TEMP 'layersentry-build\build-manifest.json'
+          $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          if ($m.product -ne 'LayerSentry Platform' -or $m.repository -ne 'adaptgurus/cozystack' -or $m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw 'Manifest identity invalid.' }
+          if ($m.commit -ne $env:RUNTIME_SOURCE_SHA -or [string]$m.runId -ne $env:RUNTIME_ARTIFACT_RUN_ID) { throw 'Manifest source/run mismatch.' }
+          if ($m.installerUri -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') { throw 'Installer is not digest pinned.' }
+          "LAYERSENTRY_INSTALLER_URI=$($m.installerUri)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAYERSENTRY_RUNTIME_SOURCE_SHA=$env:RUNTIME_SOURCE_SHA" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          'C:\hci-tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          foreach ($tool in 'C:\hci-tools\kubectl.exe','C:\hci-tools\helm.exe') { if (-not (Test-Path $tool)) { throw "Required verified tool missing: $tool" } }
+          & 'C:\hci-tools\kubectl.exe' version --client
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl client check failed' }
+          & 'C:\hci-tools\helm.exe' version
+          if ($LASTEXITCODE -ne 0) { throw 'helm client check failed' }
+          Write-Host "installer=$($m.installerUri)"
+
+      - name: Capture read-only TESTSER preflight
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'persistent-state-v2-evidence'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Get-VM -Name sen1,sen2,sen3 | Select-Object Name,State,Status,ProcessorCount,MemoryAssigned | Format-Table -AutoSize | Out-String | Set-Content (Join-Path $evidence 'hyperv-preflight.txt')
+          $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          & 'C:\hci-tools\kubectl.exe' get nodes -o wide | Tee-Object -FilePath (Join-Path $evidence 'nodes-preflight.txt')
+          if ($LASTEXITCODE -ne 0) { throw 'node preflight failed' }
+          & 'C:\hci-tools\kubectl.exe' get kubevirt.kubevirt.io -n cozy-kubevirt kubevirt -o json | Out-File (Join-Path $evidence 'kubevirt-preflight.json') -Encoding utf8
+          "LAYERSENTRY_CERT_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run patched guarded bootstrap to full convergence
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'bootstrap-production.ps1')
+          if ($LASTEXITCODE -ne 0) { throw "Patched bootstrap failed with exit code $LASTEXITCODE" }
+
+      - name: Reconcile NetworkFabric credential and controller
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'reconcile-network-fabric-talosconfig.ps1')
+          if ($LASTEXITCODE -ne 0) { throw "NetworkFabric reconcile failed with exit code $LASTEXITCODE" }
+
+      - name: Run persistent TPM Linux VM lifecycle proof
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-linux-vm-product-live.ps1') -EvidenceRoot $env:LAYERSENTRY_CERT_EVIDENCE
+          if ($LASTEXITCODE -ne 0) { throw "Persistent TPM Linux lifecycle proof failed with exit code $LASTEXITCODE" }
+
+      - name: Capture post-certification state
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
+          & 'C:\hci-tools\kubectl.exe' get nodes -o wide | Out-File (Join-Path $env:LAYERSENTRY_CERT_EVIDENCE 'nodes-post.txt') -Encoding utf8
+          & 'C:\hci-tools\kubectl.exe' get kubevirt.kubevirt.io -n cozy-kubevirt kubevirt -o json | Out-File (Join-Path $env:LAYERSENTRY_CERT_EVIDENCE 'kubevirt-post.json') -Encoding utf8
+          & 'C:\hci-tools\kubectl.exe' get pvc -A -o wide | Out-File (Join-Path $env:LAYERSENTRY_CERT_EVIDENCE 'pvc-post.txt') -Encoding utf8
+          Get-VM -Name sen1,sen2,sen3 | Select-Object Name,State,Status | Format-Table -AutoSize | Out-String | Set-Content (Join-Path $env:LAYERSENTRY_CERT_EVIDENCE 'hyperv-post.txt')
+
+      - name: Upload non-secret v2 certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: persistent-vm-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\persistent-state-v2-evidence
+          if-no-files-found: warn
+          retention-days: 30
