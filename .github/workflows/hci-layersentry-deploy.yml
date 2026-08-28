@@ -194,6 +194,35 @@ jobs:
           $patchedText = [regex]::Replace($text, $authPattern, $newAuth, 1)
           if ($patchedText -eq $text) { throw 'Test-AuthenticatedTalos guard point was not patched.' }
           $text = $patchedText
+
+          $initNeedle = "    Initialize-TalmProject`r`n`r`n    foreach (`$node in `$Nodes) {"
+          if (-not $text.Contains($initNeedle)) {
+            $initNeedle = "    Initialize-TalmProject`n`n    foreach (`$node in `$Nodes) {"
+          }
+          if (-not $text.Contains($initNeedle)) { throw 'Talm project initialization guard point was not found.' }
+          $hostnameFix = @'
+    Initialize-TalmProject
+
+    $hostnameHelper = Join-Path $StateRoot 'charts\talm\templates\_helpers.tpl'
+    if (-not (Test-Path $hostnameHelper)) { throw "Talm hostname helper missing: $hostnameHelper" }
+    $hostnameTemplate = Get-Content -Raw $hostnameHelper
+    $hostnamePattern = '(?m)^kind: HostnameConfig\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$'
+    $hostnameMatches = ([regex]::Matches($hostnameTemplate, $hostnamePattern)).Count
+    if ($hostnameMatches -eq 1) {
+        $hostnameReplacement = "kind: HostnameConfig`r`nauto: off`r`nhostname: {{ include `"talm.discovered.hostname`" . | quote }}"
+        $hostnameTemplate = [regex]::Replace($hostnameTemplate, $hostnamePattern, $hostnameReplacement, 1)
+        Set-Content -Path $hostnameHelper -Value $hostnameTemplate -Encoding UTF8
+        Write-Host 'Normalized Talos v1.13 HostnameConfig to auto: off plus static hostname.'
+    } elseif ($hostnameTemplate -match '(?m)^kind: HostnameConfig\r?\nauto: off\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$') {
+        Write-Host 'Talos v1.13 HostnameConfig normalization already present.'
+    } else {
+        throw "Expected exactly one Talm HostnameConfig template; found $hostnameMatches unnormalized matches."
+    }
+
+    foreach ($node in $Nodes) {
+'@
+          $text = $text.Replace($initNeedle, $hostnameFix.TrimEnd("`r","`n"))
+
           $oldApply = '            Invoke-External $Talm ''apply'' ''-f'' $nodeFile ''-i'''
           $newApply = '            Invoke-External $Talm ''--nodes'' $node.IP ''--endpoints'' $node.IP ''apply'' ''-f'' $nodeFile ''-i'''
           $applyMatches = ([regex]::Matches($text, [regex]::Escape($oldApply))).Count
