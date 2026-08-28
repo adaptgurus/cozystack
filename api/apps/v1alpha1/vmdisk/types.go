@@ -29,6 +29,7 @@ type ConfigSpec struct {
 	DisplayName string `json:"displayName"`
 	// Optional optical-media category: installer, drivers, rescue, appliance, or custom.
 	// +kubebuilder:default:=""
+	// +kubebuilder:validation:Pattern="^$|^(installer|drivers|rescue|appliance|custom)$"
 	MediaCategory string `json:"mediaCategory"`
 	// Optional operating-system family metadata, for example Linux or Windows.
 	// +kubebuilder:default:=""

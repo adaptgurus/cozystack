@@ -90,7 +90,8 @@
     "mediaCategory": {
       "description": "Optional optical-media category: installer, drivers, rescue, appliance, or custom.",
       "type": "string",
-      "default": ""
+      "default": "",
+      "pattern": "^$|^(installer|drivers|rescue|appliance|custom)$"
     },
     "osFamily": {
       "description": "Optional operating-system family metadata, for example Linux or Windows.",
