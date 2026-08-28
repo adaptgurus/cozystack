@@ -4,37 +4,48 @@ set -eu
 OUT_DIR=${1:-../../../_out/extensions}
 ALPINE_IMAGE=${ALPINE_IMAGE:-alpine:3.22}
 NFS_UTILS_VERSION=${NFS_UTILS_VERSION:-2.6.4-r4}
-EXTENSION_VERSION=${EXTENSION_VERSION:-2.6.4-r4-layersentry.1}
+EXTENSION_VERSION=${EXTENSION_VERSION:-2.6.4-r4-layersentry.2}
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 
-PKG_ROOT="$TMPDIR/pkg-root"
 EXT_ROOT="$TMPDIR/extension"
 SERVICE_ROOT="$EXT_ROOT/rootfs/usr/local/lib/containers/layersentry-nfs-server"
 SERVICE_DEFS="$EXT_ROOT/rootfs/usr/local/etc/containers"
+PACKAGE_TAR="$TMPDIR/nfs-server-rootfs.tar"
 
-mkdir -p "$PKG_ROOT" "$SERVICE_ROOT" "$SERVICE_DEFS" "$OUT_DIR"
+mkdir -p "$SERVICE_ROOT" "$SERVICE_DEFS" "$OUT_DIR"
 
-# Build a self-contained NFS userspace underneath the extension-service rootfs.
-# This keeps Alpine's libraries and configuration isolated from the immutable
-# Talos host while still using the Talos-version-matched nfsd kernel module.
+# Build the complete NFS userspace *inside* the signed Alpine container. Seed
+# the alternate root with Alpine's trusted keys before package resolution, then
+# export a normal tar so the runner never receives root-owned working files.
 docker run --rm \
   -e NFS_UTILS_VERSION="$NFS_UTILS_VERSION" \
   -v "$TMPDIR:/work" \
   "$ALPINE_IMAGE" \
   sh -euc '
+    mkdir -p /pkg-root/etc/apk/keys
+    cp -a /etc/apk/keys/. /pkg-root/etc/apk/keys/
+
     apk add \
-      --root /work/pkg-root \
+      --root /pkg-root \
       --initdb \
       --no-cache \
       --no-scripts \
       --repositories-file /etc/apk/repositories \
       busybox \
       "nfs-utils=${NFS_UTILS_VERSION}"
+
+    # Alternate-root initialization can create device nodes/cache that Talos
+    # extensions neither need nor permit. Strip them and remove world-write bits.
+    rm -rf /pkg-root/dev /pkg-root/proc /pkg-root/sys /pkg-root/run \
+           /pkg-root/tmp /pkg-root/var/tmp /pkg-root/var/cache/apk
+    find /pkg-root -xdev -perm -0002 -exec chmod o-w {} +
+
+    tar -C /pkg-root -cf /work/nfs-server-rootfs.tar .
   '
 
-cp -a "$PKG_ROOT"/. "$SERVICE_ROOT"/
+tar -C "$SERVICE_ROOT" -xf "$PACKAGE_TAR"
 mkdir -p "$SERVICE_ROOT/usr/local/sbin" "$SERVICE_ROOT/etc"
 
 # The exports file is deliberately controller-owned. The ISO starts the NFS
@@ -47,6 +58,7 @@ ln -s /run/layersentry-nfs/exports "$SERVICE_ROOT/etc/exports"
 cat > "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server" <<'EOF'
 #!/bin/sh
 set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 mkdir -p /run/layersentry-nfs /var/lib/nfs /var/lib/nfs/rpc_pipefs /proc/fs/nfsd
 touch /run/layersentry-nfs/exports
@@ -65,9 +77,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Fixed rpcbind/statd/mountd ports keep NFSv3 operation predictable. NFSv4 uses
-# TCP/2049 directly. Host ingress filtering is explicitly set to accept in the
-# LayerSentry machine configuration; external fabric ACLs remain site policy.
+# Fixed statd/mountd ports keep NFSv3 operation predictable. NFSv4 uses
+# TCP/2049 directly. Host ingress filtering is explicitly accept in the
+# LayerSentry machine config; external fabric ACLs remain site policy.
 rpcbind -f -w &
 RPCBIND_PID=$!
 rpc.statd -F -p 662 -o 2020 &
@@ -76,9 +88,9 @@ STATD_PID=$!
 rpc.nfsd 16 --port 2049
 exportfs -ra
 
-# Keep the service supervised by foreground mountd. Re-applying exports is done
-# with exportfs -ra by the LayerSentry storage controller after updating the
-# controller-owned exports file.
+# Foreground mountd is the supervised process. After the LayerSentry controller
+# updates the controller-owned exports file, it can apply policy with exportfs
+# -ra inside ext-layersentry-nfs-server.
 exec rpc.mountd -F -p 20048
 EOF
 chmod 0755 "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
@@ -139,7 +151,7 @@ metadata:
       version: ">= v1.13.0"
 EOF
 
-# Release-blocking assertions for the complete server userspace.
+# Release-blocking assertions for complete NFS server userspace.
 for binary in \
   usr/sbin/exportfs \
   usr/sbin/rpc.nfsd \
@@ -151,6 +163,16 @@ done
 test -x "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
 test -s "$SERVICE_DEFS/layersentry-nfs-server.yaml"
 test -s "$EXT_ROOT/manifest.yaml"
+
+# Validate the same basic rootfs restrictions before Talos Imager sees it.
+if find "$EXT_ROOT/rootfs" \( -type b -o -type c -o -type p -o -type s \) -print | grep -q .; then
+  echo "ERROR: special file found in LayerSentry NFS server extension" >&2
+  exit 1
+fi
+if find "$EXT_ROOT/rootfs" -perm -0002 -print | grep -q .; then
+  echo "ERROR: world-writable path found in LayerSentry NFS server extension" >&2
+  exit 1
+fi
 
 OUT="$OUT_DIR/layersentry-nfs-server.tar"
 tar \
