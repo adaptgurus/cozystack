@@ -1,0 +1,30 @@
+name: HCI Bootstrap Static Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - hack/hci-lab/bootstrap-production.ps1
+      - hack/hci-lab/test-bootstrap-static.ps1
+      - .github/workflows/hci-bootstrap-static.yml
+      - .github/workflows/hci-layersentry-deploy.yml
+
+permissions:
+  contents: read
+
+jobs:
+  parse-and-safety:
+    name: Parse and enforce bootstrap safety invariants
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Parse PowerShell and validate destructive-path guards
+        shell: powershell
+        run: |
+          .\hack\hci-lab\test-bootstrap-static.ps1

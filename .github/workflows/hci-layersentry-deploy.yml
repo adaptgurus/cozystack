@@ -1,11 +1,14 @@
 name: LayerSentry HCI Deploy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feat/hci-virtualization-v1.6.2-test
     paths:
       - .github/workflows/hci-layersentry-deploy.yml
+      - hack/hci-lab/bootstrap-production.ps1
+      - hack/hci-lab/test-bootstrap-static.ps1
 
 permissions:
   contents: read
@@ -16,18 +19,33 @@ defaults:
     shell: powershell
 
 env:
-  DEPLOY_SOURCE_SHA: 8fdc1a6264bb994a9747b4e2c0d74371cac62c75
-  ARTIFACT_RUN_ID: '33163440957'
-  GATE_RUN_ID: '33163440907'
-  ARTIFACT_NAME: layersentry-hci-build-8fdc1a6264bb994a9747b4e2c0d74371cac62c75
+  RUNTIME_SOURCE_SHA: 4f7067142d9d84040f09148fd26150df98c47789
+  RUNTIME_ARTIFACT_RUN_ID: '33167986706'
+  RUNTIME_ARTIFACT_NAME: layersentry-hci-build-4f7067142d9d84040f09148fd26150df98c47789
 
 jobs:
   deploy:
-    name: Guarded deployment to Hyper-V lab
+    name: Guarded current-orchestration deployment to Hyper-V lab
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
-      - name: Wait for exact custom artifact and HCI gates
+      - name: Checkout current orchestration SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify branch and orchestration provenance
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -ne 'adaptgurus/cozystack') { throw "Unexpected repository: $env:GITHUB_REPOSITORY" }
+          if ($env:GITHUB_REF_NAME -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected branch: $env:GITHUB_REF_NAME" }
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:GITHUB_SHA) { throw "Checkout $head does not equal GITHUB_SHA $env:GITHUB_SHA" }
+          Write-Host "orchestration_sha=$head runtime_source_sha=$env:RUNTIME_SOURCE_SHA"
+
+      - name: Wait for current-SHA HCI and bootstrap-static gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -37,85 +55,133 @@ jobs:
             Accept = 'application/vnd.github+json'
             'X-GitHub-Api-Version' = '2022-11-28'
           }
-          function Wait-WorkflowRun {
-            param([Parameter(Mandatory=$true)][string]$RunId,[Parameter(Mandatory=$true)][string]$ExpectedName)
-            $url = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$RunId"
-            $deadline = (Get-Date).AddMinutes(90)
+
+          function Wait-WorkflowForSha {
+            param(
+              [Parameter(Mandatory=$true)][string]$WorkflowFile,
+              [Parameter(Mandatory=$true)][string]$ExpectedName
+            )
+            $deadline = (Get-Date).AddMinutes(45)
             do {
-              $run = Invoke-RestMethod -Headers $headers -Uri $url
-              Write-Host "$ExpectedName run $($run.id): status=$($run.status) conclusion=$($run.conclusion) head=$($run.head_sha)"
-              if ($run.head_sha -ne $env:DEPLOY_SOURCE_SHA) { throw "$ExpectedName SHA $($run.head_sha) does not match deployment SHA $env:DEPLOY_SOURCE_SHA" }
-              if ($run.name -ne $ExpectedName) { throw "Unexpected prerequisite workflow: expected '$ExpectedName', got '$($run.name)'" }
-              if ($run.status -eq 'completed') {
-                if ($run.conclusion -ne 'success') { throw "$ExpectedName did not pass: $($run.conclusion)" }
-                return
+              $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/$WorkflowFile/runs?branch=$env:GITHUB_REF_NAME&event=push&per_page=50"
+              $runs = Invoke-RestMethod -Headers $headers -Uri $uri
+              $run = @($runs.workflow_runs | Where-Object { $_.head_sha -eq $env:GITHUB_SHA } | Sort-Object run_number -Descending | Select-Object -First 1)
+              if ($run.Count -gt 0) {
+                $r = $run[0]
+                Write-Host "$ExpectedName current-SHA run=$($r.id) status=$($r.status) conclusion=$($r.conclusion)"
+                if ($r.name -ne $ExpectedName) { throw "Unexpected workflow name '$($r.name)'" }
+                if ($r.status -eq 'completed') {
+                  if ($r.conclusion -ne 'success') { throw "$ExpectedName failed for current SHA: $($r.conclusion)" }
+                  return
+                }
+              } else {
+                Write-Host "Waiting for $ExpectedName run to appear for $env:GITHUB_SHA"
               }
               Start-Sleep -Seconds 10
             } while ((Get-Date) -lt $deadline)
-            throw "Timed out waiting for successful $ExpectedName run $RunId"
+            throw "Timed out waiting for $ExpectedName on current SHA $env:GITHUB_SHA"
           }
-          Wait-WorkflowRun -RunId $env:ARTIFACT_RUN_ID -ExpectedName 'LayerSentry HCI Artifact Build'
-          Wait-WorkflowRun -RunId $env:GATE_RUN_ID -ExpectedName 'HCI v1.6.2 Gate'
 
-      - name: Fetch exact guarded bootstrap source
+          Wait-WorkflowForSha -WorkflowFile 'hci-v1.6.2-gate.yml' -ExpectedName 'HCI v1.6.2 Gate'
+          Wait-WorkflowForSha -WorkflowFile 'hci-bootstrap-static.yml' -ExpectedName 'HCI Bootstrap Static Safety'
+
+      - name: Verify runtime artifact source is an allowed ancestor delta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          $curl = (Get-Command curl.exe -ErrorAction Stop).Source
-          $sourceDir = Join-Path $env:RUNNER_TEMP 'layersentry-source'
-          New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
-          $source = Join-Path $sourceDir 'bootstrap-production.ps1'
-          $url = "https://raw.githubusercontent.com/adaptgurus/cozystack/$env:DEPLOY_SOURCE_SHA/hack/hci-lab/bootstrap-production.ps1"
-          & $curl --fail --location --connect-timeout 10 --max-time 120 --retry 2 --output $source $url
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $source)) { throw 'Exact-SHA bootstrap source download failed.' }
-          $text = Get-Content -Raw $source
-          if ($text -notmatch "\$TalosVersion = 'v1\.13\.6'") { throw 'Downloaded bootstrap is not pinned to Talos v1.13.6.' }
-          if ($text -notmatch "\$IsoSha256 = 'd925b18dde9262adbb0804a98a8161b7ebca16bf362c70a1bd40530281d519d6'") { throw 'Downloaded bootstrap has unexpected ISO checksum contract.' }
-          $installerMatches = ([regex]::Matches($text, [regex]::Escape('oci://ghcr.io/cozystack/cozystack/cozy-installer'))).Count
-          if ($installerMatches -ne 1) { throw "Expected one guarded upstream installer substitution point; found $installerMatches" }
-          "LAYERSENTRY_BOOTSTRAP_PATH=$source" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Fetched exact bootstrap from commit $env:DEPLOY_SOURCE_SHA sha256=$((Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant())"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
 
-      - name: Download exact LayerSentry build manifest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          $runUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RUNTIME_ARTIFACT_RUN_ID"
+          $artifactRun = Invoke-RestMethod -Headers $headers -Uri $runUri
+          if ($artifactRun.name -ne 'LayerSentry HCI Artifact Build') { throw "Unexpected runtime build workflow: $($artifactRun.name)" }
+          if ($artifactRun.head_sha -ne $env:RUNTIME_SOURCE_SHA) { throw "Artifact run SHA mismatch: $($artifactRun.head_sha)" }
+          if ($artifactRun.status -ne 'completed' -or $artifactRun.conclusion -ne 'success') {
+            throw "Runtime artifact run is not successful: $($artifactRun.status)/$($artifactRun.conclusion)"
+          }
+
+          $compareUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/compare/$env:RUNTIME_SOURCE_SHA...$env:GITHUB_SHA"
+          $compare = Invoke-RestMethod -Headers $headers -Uri $compareUri
+          if ($compare.status -notin @('ahead','identical')) { throw "Current orchestration is not an allowed descendant of runtime source: $($compare.status)" }
+
+          $allowed = @(
+            '^hack/hci-lab/',
+            '^hack/test-hci-v1\.6\.2\.sh$',
+            '^\.github/workflows/'
+          )
+          $disallowed = @()
+          foreach ($file in @($compare.files)) {
+            $ok = $false
+            foreach ($pattern in $allowed) {
+              if ($file.filename -match $pattern) { $ok = $true; break }
+            }
+            if (-not $ok) { $disallowed += $file.filename }
+          }
+          if ($disallowed.Count -gt 0) {
+            throw "Runtime-affecting files changed after artifact source and require a new artifact build: $($disallowed -join ', ')"
+          }
+          Write-Host 'Runtime source delta is orchestration/test-only; immutable runtime artifact may be reused.'
+
+      - name: Parse current bootstrap before any mutation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\hack\hci-lab\test-bootstrap-static.ps1
+
+      - name: Download exact runtime build manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ env.RUNTIME_ARTIFACT_NAME }}
           path: ${{ runner.temp }}\layersentry-build
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: adaptgurus/cozystack
-          run-id: ${{ env.ARTIFACT_RUN_ID }}
+          run-id: ${{ env.RUNTIME_ARTIFACT_RUN_ID }}
 
-      - name: Verify immutable deployment provenance
+      - name: Verify immutable custom artifact manifest
         run: |
           $ErrorActionPreference = 'Stop'
           $manifestPath = Join-Path $env:RUNNER_TEMP 'layersentry-build\build-manifest.json'
           if (-not (Test-Path $manifestPath)) { throw "Build manifest missing: $manifestPath" }
           $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+
           if ($m.product -ne 'LayerSentry Platform') { throw "Unexpected product identity: $($m.product)" }
-          if ($m.repository -ne 'adaptgurus/cozystack') { throw "Unexpected source repository: $($m.repository)" }
-          if ($m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected source branch: $($m.branch)" }
-          if ($m.commit -ne $env:DEPLOY_SOURCE_SHA) { throw "Manifest commit $($m.commit) does not match $env:DEPLOY_SOURCE_SHA" }
-          if ([string]$m.runId -ne $env:ARTIFACT_RUN_ID) { throw "Manifest run ID $($m.runId) does not match $env:ARTIFACT_RUN_ID" }
+          if ($m.repository -ne 'adaptgurus/cozystack') { throw "Unexpected repository: $($m.repository)" }
+          if ($m.branch -ne 'feat/hci-virtualization-v1.6.2-test') { throw "Unexpected branch: $($m.branch)" }
+          if ($m.commit -ne $env:RUNTIME_SOURCE_SHA) { throw "Manifest runtime source mismatch: $($m.commit)" }
+          if ([string]$m.runId -ne $env:RUNTIME_ARTIFACT_RUN_ID) { throw "Manifest run ID mismatch: $($m.runId)" }
+
           $installerPattern = '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$'
-          if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not a digest-pinned adaptgurus artifact: $($m.installerUri)" }
+          if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not digest-pinned custom artifact: $($m.installerUri)" }
+
           $imagePattern = '^ghcr\.io/adaptgurus/cozystack/[a-z0-9._/-]+:[^@]+@sha256:[0-9a-f]{64}$'
           foreach ($field in 'operatorImage','apiImage','uiImage','networkFabricControllerImage','vmNetworkAdmissionImage','vmTemplateControllerImage') {
             $value = [string]$m.$field
             if ($value -notmatch $imagePattern) { throw "$field is not a digest-pinned adaptgurus image: $value" }
           }
-          if ([string]$m.platformSourceUrl -ne 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages') { throw "Unexpected platform source: $($m.platformSourceUrl)" }
-          if ([string]$m.platformSourceRef -notmatch '^digest=sha256:[0-9a-f]{64}$') { throw "Platform source is not digest-pinned: $($m.platformSourceRef)" }
-          "LAYERSENTRY_INSTALLER_URI=$($m.installerUri)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Verified LayerSentry commit $($m.commit) and immutable installer $($m.installerUri)"
 
-      - name: Install verified kubectl and Helm into C:\hci-tools
+          if ([string]$m.platformSourceUrl -ne 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages') {
+            throw "Unexpected platform source URL: $($m.platformSourceUrl)"
+          }
+          if ([string]$m.platformSourceRef -notmatch '^digest=sha256:[0-9a-f]{64}$') {
+            throw "Platform source is not digest-pinned: $($m.platformSourceRef)"
+          }
+
+          "LAYERSENTRY_INSTALLER_URI=$($m.installerUri)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAYERSENTRY_RUNTIME_SOURCE_SHA=$env:RUNTIME_SOURCE_SHA" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Verified runtime source $($m.commit) installer $($m.installerUri)"
+
+      - name: Install verified kubectl and Helm
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
           $tools = 'C:\hci-tools'
           New-Item -ItemType Directory -Force -Path $tools | Out-Null
           $curl = (Get-Command curl.exe -ErrorAction Stop).Source
-          $kubectlVersion = 'v1.35.0'
+
+          $kubectlVersion = 'v1.34.3'
           $kubectl = Join-Path $tools 'kubectl.exe'
           $kubectlTmp = "$kubectl.download"
           & $curl --fail --location --connect-timeout 10 --max-time 300 --retry 2 --output $kubectlTmp "https://dl.k8s.io/release/$kubectlVersion/bin/windows/amd64/kubectl.exe"
@@ -124,13 +190,14 @@ jobs:
           $actualKubectl = (Get-FileHash -Algorithm SHA256 $kubectlTmp).Hash.ToLowerInvariant()
           if ($actualKubectl -ne $expectedKubectl) { throw "kubectl checksum mismatch: $actualKubectl" }
           Move-Item -Force $kubectlTmp $kubectl
+
           $helmVersion = 'v3.18.6'
-          $helmArchive = "helm-$helmVersion-windows-amd64.zip"
-          $helmZip = Join-Path $tools $helmArchive
-          & $curl --fail --location --connect-timeout 10 --max-time 300 --retry 2 --output $helmZip "https://get.helm.sh/$helmArchive"
+          $archive = "helm-$helmVersion-windows-amd64.zip"
+          $helmZip = Join-Path $tools $archive
+          & $curl --fail --location --connect-timeout 10 --max-time 300 --retry 2 --output $helmZip "https://get.helm.sh/$archive"
           if ($LASTEXITCODE -ne 0) { throw 'Helm download failed' }
-          $checksumLine = (Invoke-RestMethod "https://get.helm.sh/$helmArchive.sha256sum").Trim()
-          $expectedHelm = ($checksumLine -split '\s+')[0].ToLowerInvariant()
+          $checksum = (Invoke-RestMethod "https://get.helm.sh/$archive.sha256sum").Trim()
+          $expectedHelm = ($checksum -split '\s+')[0].ToLowerInvariant()
           $actualHelm = (Get-FileHash -Algorithm SHA256 $helmZip).Hash.ToLowerInvariant()
           if ($actualHelm -ne $expectedHelm) { throw "Helm checksum mismatch: $actualHelm" }
           $extract = Join-Path $env:RUNNER_TEMP 'helm-extract'
@@ -138,172 +205,54 @@ jobs:
           Expand-Archive -Path $helmZip -DestinationPath $extract -Force
           Copy-Item -Force (Join-Path $extract 'windows-amd64\helm.exe') (Join-Path $tools 'helm.exe')
           $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $kubectl version --client
-          & (Join-Path $tools 'helm.exe') version
 
-      - name: Validate Hyper-V inventory before any disk write
+      - name: Execute guarded current bootstrap
         run: |
           $ErrorActionPreference = 'Stop'
-          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-          if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Runner is not elevated.' }
-          foreach ($name in 'sen1','sen2','sen3') {
-            $vm = Get-VM -Name $name -ErrorAction Stop
-            $cpu = (Get-VMProcessor -VMName $name).Count
-            $ram = (Get-VMMemory -VMName $name).Startup
-            $disks = @(Get-VMHardDiskDrive -VMName $name)
-            if ($cpu -lt 10) { throw "$name has only $cpu vCPU" }
-            if ($ram -lt 30GB) { throw "$name has less than 30 GiB RAM" }
-            if ($disks.Count -ne 2) { throw "$name has $($disks.Count) VHDs; expected exactly 2" }
-            $sizes = @($disks | ForEach-Object { (Get-VHD -Path $_.Path).Size })
-            if (-not ($sizes | Where-Object { $_ -ge 95GB -and $_ -le 110GB })) { throw "$name 100-GB OS VHD not found" }
-            if (-not ($sizes | Where-Object { $_ -ge 290GB -and $_ -le 310GB })) { throw "$name 300-GB data VHD not found" }
-            Write-Host "$name state=$($vm.State) cpu=$cpu ramGiB=$([math]::Round($ram/1GB,1)) disks=$($sizes.Count)"
+          if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') {
+            throw 'Digest-pinned LayerSentry installer was not supplied.'
           }
-
-      - name: Execute guarded LayerSentry bootstrap
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') { throw 'Digest-pinned LayerSentry installer was not provided.' }
-          if (-not $env:LAYERSENTRY_BOOTSTRAP_PATH -or -not (Test-Path $env:LAYERSENTRY_BOOTSTRAP_PATH)) { throw 'Exact-SHA bootstrap source is missing.' }
-          $source = $env:LAYERSENTRY_BOOTSTRAP_PATH
-          $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
-          $text = Get-Content -Raw $source
-
-          $invokePattern = '(?ms)^function Invoke-External \{.*?^\}\r?\n\r?\nfunction Install-PinnedTools'
-          $invokeLines = @(
-            'function Invoke-External {'
-            '    param([Parameter(Mandatory=$true)][string]$FilePath,[Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments)'
-            '    $savedErrorActionPreference = $ErrorActionPreference'
-            '    $exitCode = 1'
-            '    try {'
-            "        `$ErrorActionPreference = 'Continue'"
-            '        & $FilePath @Arguments'
-            '        $exitCode = $LASTEXITCODE'
-            '    } finally {'
-            '        $ErrorActionPreference = $savedErrorActionPreference'
-            '    }'
-            '    if ($exitCode -ne 0) { throw "$FilePath failed with exit code $exitCode" }'
-            '}'
-            ''
-            'function Install-PinnedTools'
-          )
-          $newInvoke = $invokeLines -join "`r`n"
-          $patchedText = [regex]::Replace($text, $invokePattern, $newInvoke, 1)
-          if ($patchedText -eq $text) { throw 'Invoke-External native stderr guard point was not patched.' }
-          $text = $patchedText
-
-          $authPattern = '(?ms)^function Test-AuthenticatedTalos\(\[string\]\$IP\) \{.*?^\}\r?\n\r?\nfunction Assert-HyperVSafety'
-          $authLines = @(
-            'function Test-AuthenticatedTalos([string]$IP) {'
-            "    `$talosconfig = Join-Path `$StateRoot 'talosconfig'"
-            '    if (-not (Test-Path $talosconfig)) { return $false }'
-            '    $savedErrorActionPreference = $ErrorActionPreference'
-            '    $exitCode = 1'
-            '    try {'
-            "        `$ErrorActionPreference = 'SilentlyContinue'"
-            '        & $Talosctl --talosconfig $talosconfig version --nodes $IP --endpoints $IP 1>$null 2>$null'
-            '        $exitCode = $LASTEXITCODE'
-            '    } catch {'
-            '        $exitCode = 1'
-            '    } finally {'
-            '        $ErrorActionPreference = $savedErrorActionPreference'
-            '    }'
-            '    return ($exitCode -eq 0)'
-            '}'
-            ''
-            'function Assert-HyperVSafety'
-          )
-          $newAuth = $authLines -join "`r`n"
-          $patchedText = [regex]::Replace($text, $authPattern, $newAuth, 1)
-          if ($patchedText -eq $text) { throw 'Test-AuthenticatedTalos guard point was not patched.' }
-          $text = $patchedText
-
-          $templateNeedle = @(
-            '        & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr'
-            '        if ($LASTEXITCODE -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }'
-          ) -join "`r`n"
-          if (-not $text.Contains($templateNeedle)) {
-            $templateNeedle = $templateNeedle.Replace("`r`n","`n")
-          }
-          if (-not $text.Contains($templateNeedle)) { throw 'Direct talm template guard point was not found.' }
-          $templateLines = @(
-            '        $savedTemplateErrorActionPreference = $ErrorActionPreference'
-            '        $templateExitCode = 1'
-            '        try {'
-            "            `$ErrorActionPreference = 'Continue'"
-            '            & $Talm template -e $Node.IP --nodes $Node.IP -t templates/controlplane.yaml -i 1> $nodeFile 2> $stderr'
-            '            $templateExitCode = $LASTEXITCODE'
-            '        } finally {'
-            '            $ErrorActionPreference = $savedTemplateErrorActionPreference'
-            '        }'
-            '        if ($templateExitCode -ne 0) { $safe = Get-Content -Raw $stderr -ErrorAction SilentlyContinue; throw "talm template failed for $($Node.Name): $safe" }'
-          )
-          $text = $text.Replace($templateNeedle, ($templateLines -join "`r`n"))
-
-          $initNeedle = "    Initialize-TalmProject`r`n`r`n    foreach (`$node in `$Nodes) {"
-          if (-not $text.Contains($initNeedle)) { $initNeedle = "    Initialize-TalmProject`n`n    foreach (`$node in `$Nodes) {" }
-          if (-not $text.Contains($initNeedle)) { throw 'Talm project initialization guard point was not found.' }
-          $hostnameFixLines = @(
-            '    Initialize-TalmProject'
-            ''
-            "    `$hostnameHelper = Join-Path `$StateRoot 'charts\talm\templates\_helpers.tpl'"
-            '    if (-not (Test-Path $hostnameHelper)) { throw "Talm hostname helper missing: $hostnameHelper" }'
-            '    $hostnameTemplate = Get-Content -Raw $hostnameHelper'
-            '    $hostnamePattern = ''(?m)^kind: HostnameConfig\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$'''
-            '    $hostnameMatches = ([regex]::Matches($hostnameTemplate, $hostnamePattern)).Count'
-            '    if ($hostnameMatches -eq 1) {'
-            '        $hostnameReplacement = "kind: HostnameConfig`r`nauto: off`r`nhostname: {{ include `"talm.discovered.hostname`" . | quote }}"'
-            '        $hostnameTemplate = [regex]::Replace($hostnameTemplate, $hostnamePattern, $hostnameReplacement, 1)'
-            '        Set-Content -Path $hostnameHelper -Value $hostnameTemplate -Encoding UTF8'
-            "        Write-Host 'Normalized Talos v1.13 HostnameConfig to auto: off plus static hostname.'"
-            '    } elseif ($hostnameTemplate -match ''(?m)^kind: HostnameConfig\r?\nauto: off\r?\nhostname: \{\{ include "talm\.discovered\.hostname" \. \| quote \}\}$'') {'
-            "        Write-Host 'Talos v1.13 HostnameConfig normalization already present.'"
-            '    } else {'
-            '        throw "Expected exactly one Talm HostnameConfig template; found $hostnameMatches unnormalized matches."'
-            '    }'
-            ''
-            '    foreach ($node in $Nodes) {'
-          )
-          $text = $text.Replace($initNeedle, ($hostnameFixLines -join "`r`n"))
-
-          $oldApply = '            Invoke-External $Talm ''apply'' ''-f'' $nodeFile ''-i'''
-          $newApply = '            Invoke-External $Talm ''--nodes'' $node.IP ''--endpoints'' $node.IP ''apply'' ''-f'' $nodeFile ''-i'''
-          $applyMatches = ([regex]::Matches($text, [regex]::Escape($oldApply))).Count
-          if ($applyMatches -ne 1) { throw "Expected exactly one guarded Talm apply point; found $applyMatches" }
-          $text = $text.Replace($oldApply, $newApply)
-
-          $oldBootstrap = '        try { Invoke-External $Talm ''bootstrap'' ''-f'' (Join-Path $StateRoot ''nodes\sen1.yaml'') }'
-          $newBootstrap = '        try { Invoke-External $Talosctl ''--talosconfig'' (Join-Path $StateRoot ''talosconfig'') ''bootstrap'' ''--nodes'' $Nodes[0].IP ''--endpoints'' $Nodes[0].IP }'
-          $bootstrapMatches = ([regex]::Matches($text, [regex]::Escape($oldBootstrap))).Count
-          if ($bootstrapMatches -ne 1) { throw "Expected exactly one Talm bootstrap point; found $bootstrapMatches" }
-          $text = $text.Replace($oldBootstrap, $newBootstrap)
-
-          $oldKubeconfig = '        Invoke-External $Talm ''kubeconfig'' ''-f'' (Join-Path $StateRoot ''nodes\sen1.yaml'')'
-          $newKubeconfig = '        Invoke-External $Talosctl ''--talosconfig'' (Join-Path $StateRoot ''talosconfig'') ''kubeconfig'' (Join-Path $StateRoot ''kubeconfig'') ''--force'' ''--merge=false'' ''--nodes'' $Nodes[0].IP ''--endpoints'' $Nodes[0].IP'
-          $kubeconfigMatches = ([regex]::Matches($text, [regex]::Escape($oldKubeconfig))).Count
-          if ($kubeconfigMatches -ne 1) { throw "Expected exactly one Talm kubeconfig point; found $kubeconfigMatches" }
-          $text = $text.Replace($oldKubeconfig, $newKubeconfig)
-
-          $oldInstaller = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
-          $newInstaller = 'Invoke-External $Helm ''upgrade'' ''--install'' ''cozystack'' $env:LAYERSENTRY_INSTALLER_URI ''--namespace'' ''cozy-system'' ''--create-namespace'' ''--wait'' ''--timeout'' ''10m'''
-          $installerMatches = ([regex]::Matches($text, [regex]::Escape($oldInstaller))).Count
-          if ($installerMatches -ne 1) { throw "Expected exactly one upstream installer call in guarded source; found $installerMatches" }
-          $text = $text.Replace($oldInstaller, $newInstaller)
-          if ($text -match 'oci://ghcr\.io/cozystack/cozystack/cozy-installer') { throw 'Upstream installer reference remains after guarded substitution.' }
-          Set-Content -Path $patched -Value $text -Encoding UTF8
-          Write-Host "Starting guarded deployment of $env:DEPLOY_SOURCE_SHA using $env:LAYERSENTRY_INSTALLER_URI"
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $patched
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\hack\hci-lab\bootstrap-production.ps1
           if ($LASTEXITCODE -ne 0) { throw "LayerSentry bootstrap failed with exit code $LASTEXITCODE" }
 
-      - name: Capture deployment state
+      - name: Capture non-secret deployment evidence
         if: always()
         run: |
           $ErrorActionPreference = 'Continue'
-          Get-VM -Name sen1,sen2,sen3 | Format-Table Name,State,Status,CPUUsage,MemoryAssigned,Uptime -AutoSize
+          $out = Join-Path $env:RUNNER_TEMP 'layersentry-deploy-evidence'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          "orchestration_sha=$env:GITHUB_SHA`nruntime_source_sha=$env:RUNTIME_SOURCE_SHA`nrun_id=$env:GITHUB_RUN_ID" |
+            Set-Content -Path (Join-Path $out 'provenance.txt') -Encoding UTF8
+
+          Get-VM -Name sen1,sen2,sen3 |
+            Format-List Name,State,Status,ProcessorCount,MemoryStartup,Uptime |
+            Out-String | Set-Content -Path (Join-Path $out 'hyperv.txt') -Encoding UTF8
+
           if (Test-Path 'C:\hci-state\cozystack-hci-lab\kubeconfig') {
             $env:KUBECONFIG = 'C:\hci-state\cozystack-hci-lab\kubeconfig'
-            & 'C:\hci-tools\kubectl.exe' get nodes -o wide
-            & 'C:\hci-tools\kubectl.exe' get hr -A
-            & 'C:\hci-tools\kubectl.exe' get pods -A
+            & 'C:\hci-tools\kubectl.exe' get nodes -o wide 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'nodes.txt') -Encoding UTF8
+            & 'C:\hci-tools\kubectl.exe' get hr -A 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'helmreleases.txt') -Encoding UTF8
+            & 'C:\hci-tools\kubectl.exe' get pods -A -o wide 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'pods.txt') -Encoding UTF8
+            & 'C:\hci-tools\kubectl.exe' get storageclass,pv,pvc -A 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'storage.txt') -Encoding UTF8
+            & 'C:\hci-tools\kubectl.exe' exec -n cozy-linstor deploy/linstor-controller -- linstor storage-pool list 2>&1 |
+              Out-String | Set-Content -Path (Join-Path $out 'linstor-pools.txt') -Encoding UTF8
           }
+
+          Get-ChildItem 'C:\hci-diagnostics\production-bootstrap-*.txt' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 3 |
+            Copy-Item -Destination $out -Force -ErrorAction SilentlyContinue
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hci-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-deploy-evidence
+          if-no-files-found: error
+          retention-days: 30
