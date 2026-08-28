@@ -39,6 +39,8 @@ function Test-ThreeNodeLinstorResource {
     # the production requirement strict (all expected nodes + UpToDate on every
     # replica), but give LINSTOR a bounded convergence window and persist every
     # raw observation so a genuine storage fault remains diagnosable.
+    # LINSTOR emits ANSI SGR color escapes around state values. Normalize those
+    # before matching so "UpToDate" is evaluated as state text, not terminal UI.
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastProbe = $null
     $lastMissingNodes = @()
@@ -62,12 +64,13 @@ function Test-ThreeNodeLinstorResource {
             ) | Add-Content -Path $historyPath -Encoding UTF8
         }
 
-        if ($probe.ExitCode -eq 0 -and $probe.Text -match [regex]::Escape($VolumeHandle)) {
+        $normalizedText = $probe.Text -replace "$([char]27)\[[0-9;]*m",''
+        if ($probe.ExitCode -eq 0 -and $normalizedText -match [regex]::Escape($VolumeHandle)) {
             $missingNodes = New-Object System.Collections.Generic.List[string]
             foreach ($nodeName in $NodeNames) {
-                if ($probe.Text -notmatch [regex]::Escape($nodeName)) { $missingNodes.Add($nodeName) }
+                if ($normalizedText -notmatch [regex]::Escape($nodeName)) { $missingNodes.Add($nodeName) }
             }
-            $upToDateMatches = [regex]::Matches($probe.Text,'(?im)\bUpToDate\b')
+            $upToDateMatches = [regex]::Matches($normalizedText,'(?im)\bUpToDate\b')
             $lastMissingNodes = @($missingNodes)
             $lastUpToDateCount = $upToDateMatches.Count
             if ($missingNodes.Count -eq 0 -and $upToDateMatches.Count -ge $NodeNames.Count) {
@@ -79,10 +82,11 @@ function Test-ThreeNodeLinstorResource {
     } while ((Get-Date) -lt $deadline)
 
     if ($null -eq $lastProbe) { throw "LINSTOR resource lookup produced no observation for $VolumeHandle" }
+    $lastNormalizedText = $lastProbe.Text -replace "$([char]27)\[[0-9;]*m",''
     if ($lastProbe.ExitCode -ne 0) {
         throw "LINSTOR resource lookup failed to converge for ${VolumeHandle}: $($lastProbe.Text)"
     }
-    if ($lastProbe.Text -notmatch [regex]::Escape($VolumeHandle)) {
+    if ($lastNormalizedText -notmatch [regex]::Escape($VolumeHandle)) {
         throw "LINSTOR output never identified expected resource $VolumeHandle within ${TimeoutSeconds}s"
     }
     if ($lastMissingNodes.Count -gt 0) {
@@ -99,8 +103,8 @@ if ($patched -eq $source) { throw 'Runtime Linux VM test was not patched' }
 if ([regex]::Matches($patched,'function Test-ThreeNodeLinstorResource \{').Count -ne 1) {
     throw 'Patched runtime Linux VM test does not contain exactly one LINSTOR validation function'
 }
-if ($patched -notmatch 'TimeoutSeconds=600' -or $patched -notmatch 'historyPath' -or $patched -notmatch '\\bUpToDate\\b') {
-    throw 'Patched runtime Linux VM test is missing bounded convergence/evidence guards'
+if ($patched -notmatch 'TimeoutSeconds=600' -or $patched -notmatch 'historyPath' -or $patched -notmatch 'normalizedText' -or $patched -notmatch '\\bUpToDate\\b') {
+    throw 'Patched runtime Linux VM test is missing bounded convergence/ANSI normalization/evidence guards'
 }
 
 $tokens = $null
