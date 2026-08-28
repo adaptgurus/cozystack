@@ -64,12 +64,24 @@ jobs:
           Wait-WorkflowRun -RunId $env:ARTIFACT_RUN_ID -ExpectedName 'LayerSentry HCI Artifact Build'
           Wait-WorkflowRun -RunId $env:GATE_RUN_ID -ExpectedName 'HCI v1.6.2 Gate'
 
-      - name: Checkout the exact artifact source revision
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ env.DEPLOY_SOURCE_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Fetch exact guarded bootstrap source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $curl = (Get-Command curl.exe -ErrorAction Stop).Source
+          $sourceDir = Join-Path $env:RUNNER_TEMP 'layersentry-source'
+          New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
+          $source = Join-Path $sourceDir 'bootstrap-production.ps1'
+          $url = "https://raw.githubusercontent.com/adaptgurus/cozystack/$env:DEPLOY_SOURCE_SHA/hack/hci-lab/bootstrap-production.ps1"
+          & $curl --fail --location --connect-timeout 10 --max-time 120 --retry 2 --output $source $url
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $source)) { throw 'Exact-SHA bootstrap source download failed.' }
+          $text = Get-Content -Raw $source
+          if ($text -notmatch "\$TalosVersion = 'v1\.13\.6'") { throw 'Downloaded bootstrap is not pinned to Talos v1.13.6.' }
+          if ($text -notmatch "\$IsoSha256 = 'd925b18dde9262adbb0804a98a8161b7ebca16bf362c70a1bd40530281d519d6'") { throw 'Downloaded bootstrap has unexpected ISO checksum contract.' }
+          $installerMatches = ([regex]::Matches($text, [regex]::Escape('oci://ghcr.io/cozystack/cozystack/cozy-installer'))).Count
+          if ($installerMatches -ne 1) { throw "Expected one guarded upstream installer substitution point; found $installerMatches" }
+          "LAYERSENTRY_BOOTSTRAP_PATH=$source" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Fetched exact bootstrap from commit $env:DEPLOY_SOURCE_SHA sha256=$((Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant())"
 
       - name: Download exact LayerSentry build manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -94,19 +106,13 @@ jobs:
 
           $installerPattern = '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$'
           if ($m.installerUri -notmatch $installerPattern) { throw "Installer is not a digest-pinned adaptgurus artifact: $($m.installerUri)" }
-
           $imagePattern = '^ghcr\.io/adaptgurus/cozystack/[a-z0-9._/-]+:[^@]+@sha256:[0-9a-f]{64}$'
           foreach ($field in 'operatorImage','apiImage','uiImage','networkFabricControllerImage','vmNetworkAdmissionImage','vmTemplateControllerImage') {
             $value = [string]$m.$field
             if ($value -notmatch $imagePattern) { throw "$field is not a digest-pinned adaptgurus image: $value" }
           }
-          if ([string]$m.platformSourceUrl -ne 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages') {
-            throw "Unexpected platform source: $($m.platformSourceUrl)"
-          }
-          if ([string]$m.platformSourceRef -notmatch '^digest=sha256:[0-9a-f]{64}$') {
-            throw "Platform source is not digest-pinned: $($m.platformSourceRef)"
-          }
-
+          if ([string]$m.platformSourceUrl -ne 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages') { throw "Unexpected platform source: $($m.platformSourceUrl)" }
+          if ([string]$m.platformSourceRef -notmatch '^digest=sha256:[0-9a-f]{64}$') { throw "Platform source is not digest-pinned: $($m.platformSourceRef)" }
           "LAYERSENTRY_INSTALLER_URI=$($m.installerUri)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Verified LayerSentry commit $($m.commit) and immutable installer $($m.installerUri)"
 
@@ -141,7 +147,6 @@ jobs:
           Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
           Expand-Archive -Path $helmZip -DestinationPath $extract -Force
           Copy-Item -Force (Join-Path $extract 'windows-amd64\helm.exe') (Join-Path $tools 'helm.exe')
-
           $tools | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           & $kubectl version --client
           & (Join-Path $tools 'helm.exe') version
@@ -169,10 +174,9 @@ jobs:
       - name: Execute guarded LayerSentry bootstrap
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') {
-            throw 'Digest-pinned LayerSentry installer was not provided.'
-          }
-          $source = Join-Path $env:GITHUB_WORKSPACE 'hack\hci-lab\bootstrap-production.ps1'
+          if ($env:LAYERSENTRY_INSTALLER_URI -notmatch '^oci://ghcr\.io/adaptgurus/cozystack/cozy-installer@sha256:[0-9a-f]{64}$') { throw 'Digest-pinned LayerSentry installer was not provided.' }
+          if (-not $env:LAYERSENTRY_BOOTSTRAP_PATH -or -not (Test-Path $env:LAYERSENTRY_BOOTSTRAP_PATH)) { throw 'Exact-SHA bootstrap source is missing.' }
+          $source = $env:LAYERSENTRY_BOOTSTRAP_PATH
           $patched = Join-Path $env:RUNNER_TEMP 'bootstrap-layersentry-production.ps1'
           $text = Get-Content -Raw $source
           $old = '& $Helm upgrade --install cozystack oci://ghcr.io/cozystack/cozystack/cozy-installer --version $CozystackVersion --namespace cozy-system --create-namespace --wait --timeout 10m'
