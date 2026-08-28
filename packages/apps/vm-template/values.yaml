@@ -1,14 +1,23 @@
-# User-visible Cozystack VMInstance name in this tenant namespace.
+##
+## @section VM template capture
+##
+
+## @enum {string} VMTemplateMode - Template capture transaction mode.
+## @value Copy - Keep the source VMInstance after a verified reusable template is Ready.
+## @value Convert - Retire the source VMInstance only after capture, sanitation and source identity revalidation succeed.
+
+## @param {string} sourceVM - Tenant-local Cozystack VMInstance to capture. The source must be halted and have no active VMI.
+## @minLength 1
+## @maxLength 63
+## @x-cozystack-options {source: vminstance}
 sourceVM: ""
 
-# Copy keeps the source VMInstance; Convert retires it only after the template
-# is verified Ready and the source VMInstance UID/generation are unchanged.
+## @param {VMTemplateMode} mode - Copy keeps the source VMInstance. Convert retires it only after the sanitized template is verified Ready and the source UID/generation still match preflight.
 mode: Copy
 
-# Installer/VirtIO/rescue optical media should not become part of a reusable VM
-# template. The controller records and removes optical volumes from the captured
-# template when this is true.
+## @param {bool} excludeOpticalMedia - Exclude installer, VirtIO-driver, rescue and other optical VMDisk attachments from the reusable template. Production template capture requires this to remain enabled.
 excludeOpticalMedia: true
 
-# Optional catalog description.
+## @param {string} description - Optional human-readable template description.
+## @maxLength 512
 description: ""
