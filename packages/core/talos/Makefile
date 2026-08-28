@@ -8,6 +8,13 @@ include ../../../hack/common-envs.mk
 update:
 	hack/gen-profiles.sh
 
+# Resolve the exact digest-pinned extension set for the Talos version already
+# carried by this branch before producing a boot asset. This keeps the generated
+# profiles reproducible while making the LayerSentry HCI extension policy in
+# gen-profiles.sh authoritative for every fresh build, not only manual updates.
+refresh-profiles:
+	hack/gen-profiles.sh $(TALOS_VERSION)
+
 image: image-matchbox image-talos
 
 image-talos:
@@ -50,7 +57,7 @@ talos-nocloud:
 talos-metal:
 	test -f ../../../_out/assets/metal-amd64.raw.xz || $(MAKE) build-talos-metal
 
-build-talos-initramfs build-talos-kernel build-talos-installer build-talos-iso build-talos-nocloud build-talos-metal:
+build-talos-initramfs build-talos-kernel build-talos-installer build-talos-iso build-talos-nocloud build-talos-metal: refresh-profiles
 	mkdir -p ../../../_out/assets
 	cat images/talos/profiles/$(subst build-talos-,,$@).yaml | \
 		docker run --rm -i -v /dev:/dev --privileged "ghcr.io/siderolabs/imager:$(TALOS_VERSION)" --tar-to-stdout - | \
