@@ -1,0 +1,227 @@
+name: LayerSentry HCI Artifact Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-layersentry-artifacts.yml
+      - hack/common-envs.mk
+      - api/apps/v1alpha1/**
+      - cmd/network-fabric-controller/**
+      - cmd/vm-network-admission/**
+      - cmd/vm-template-controller/**
+      - pkg/networkfabric/**
+      - pkg/networkfabriccontroller/**
+      - pkg/registry/**
+      - pkg/tenantresolver/**
+      - pkg/virtualizationnaming/**
+      - pkg/vmnetworkadmission/**
+      - pkg/vmtemplate/**
+      - pkg/vmtemplatecontroller/**
+      - packages/apps/vm-disk/**
+      - packages/apps/vm-instance/**
+      - packages/apps/vm-network/**
+      - packages/apps/vm-template/**
+      - packages/core/installer/**
+      - packages/core/platform/**
+      - packages/system/cozystack-api/**
+      - packages/system/dashboard/**
+      - packages/system/kubevirt/**
+      - packages/system/network-fabric-*/**
+      - packages/system/vm-default-images/**
+      - packages/system/vm-disk-rd/**
+      - packages/system/vm-instance-rd/**
+      - packages/system/vm-network-*/**
+      - packages/system/vm-template-*/**
+
+concurrency:
+  group: layersentry-hci-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/cozystack
+  SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+  IMAGE_TAG: layersentry-hci-${{ github.sha }}
+  PUBLISH_VERSIONED: '0'
+  PUBLISH_FLOATING: '0'
+  WRITE_CACHE: '0'
+
+jobs:
+  build:
+    name: Build and verify custom LayerSentry artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact branch revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "adaptgurus/cozystack"
+          test "${GITHUB_REF_NAME}" = "feat/hci-virtualization-v1.6.2-test"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "${SOURCE_REPOSITORY}" = "https://github.com/adaptgurus/cozystack"
+
+      - name: Set up Helm
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.18.6
+
+      - name: Set up Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+
+      - name: Install pinned yq and Flux CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          YQ_VERSION=v4.45.4
+          YQ_SHA256=26f3f1d61f7b74f5184bdc572e3b38d21449c2bd3fc61a354313f9b48b15f0fe
+          curl -fsSLo /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+
+          FLUX_VERSION=v2.6.4
+          curl -fsSLo /tmp/flux.tar.gz "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo /tmp/flux-checksums.txt "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_checksums.txt"
+          grep " flux_${FLUX_VERSION#v}_linux_amd64.tar.gz$" /tmp/flux-checksums.txt | sed 's#  flux_#  /tmp/flux_#' > /tmp/flux.expected
+          cp /tmp/flux.tar.gz "/tmp/flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          sha256sum -c /tmp/flux.expected
+          tar -xzf /tmp/flux.tar.gz -C /tmp flux
+          sudo install -m 0755 /tmp/flux /usr/local/bin/flux
+
+          yq --version
+          flux version --client
+          helm version
+
+      - name: Login to GHCR for publishing
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build fork-modified first-party images
+        shell: bash
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          make -C packages/system/cozystack-api image
+          make -C packages/system/dashboard image-console
+          make -C packages/system/network-fabric-controller image
+          make -C packages/system/vm-network-admission image
+          make -C packages/system/vm-template-controller image
+
+      - name: Build fork operator and exact platform source artifact
+        shell: bash
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          make -C packages/core/installer image-operator
+          make -C packages/core/installer image-packages
+          make -C packages/core/installer chart
+
+      - name: Verify generated package references and installer digest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(git describe --tags --match 'v*' | sed 's/^v//')"
+          mkdir -p _out/layersentry
+
+          for file in \
+            packages/system/cozystack-api/values.yaml \
+            packages/system/dashboard/values.yaml \
+            packages/system/network-fabric-controller/values.yaml \
+            packages/system/vm-network-admission/values.yaml \
+            packages/system/vm-template-controller/values.yaml \
+            packages/core/installer/values.yaml; do
+            grep -q "ghcr.io/${GITHUB_REPOSITORY_OWNER}/cozystack/" "$file"
+            grep -q "@sha256:" "$file"
+          done
+
+          PULL_OUTPUT="$(helm pull "oci://${REGISTRY}/cozy-installer" --version "${VERSION}" --destination /tmp 2>&1)"
+          printf '%s\n' "$PULL_OUTPUT"
+          INSTALLER_DIGEST="$(printf '%s\n' "$PULL_OUTPUT" | awk '/Digest:/ {print $2}' | tail -1)"
+          test -n "$INSTALLER_DIGEST"
+          test "${INSTALLER_DIGEST}" != "sha256:"
+          INSTALLER_URI="oci://${REGISTRY}/cozy-installer@${INSTALLER_DIGEST}"
+
+          OPERATOR_IMAGE="$(yq -r '.cozystackOperator.image' packages/core/installer/values.yaml)"
+          PLATFORM_URL="$(yq -r '.cozystackOperator.platformSourceUrl' packages/core/installer/values.yaml)"
+          PLATFORM_REF="$(yq -r '.cozystackOperator.platformSourceRef' packages/core/installer/values.yaml)"
+          API_IMAGE="$(yq -r '.cozystackAPI.image' packages/system/cozystack-api/values.yaml)"
+          UI_IMAGE="$(yq -r '.console.image' packages/system/dashboard/values.yaml)"
+          FABRIC_IMAGE="$(yq -r '.networkFabricController.image' packages/system/network-fabric-controller/values.yaml)"
+          NETWORK_ADMISSION_IMAGE="$(yq -r '.vmNetworkAdmission.image' packages/system/vm-network-admission/values.yaml)"
+          TEMPLATE_CONTROLLER_IMAGE="$(yq -r '.vmTemplateController.image' packages/system/vm-template-controller/values.yaml)"
+
+          jq -n \
+            --arg product "LayerSentry Platform" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg branch "${GITHUB_REF_NAME}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg imageTag "${IMAGE_TAG}" \
+            --arg installerUri "${INSTALLER_URI}" \
+            --arg operatorImage "${OPERATOR_IMAGE}" \
+            --arg platformSourceUrl "${PLATFORM_URL}" \
+            --arg platformSourceRef "${PLATFORM_REF}" \
+            --arg apiImage "${API_IMAGE}" \
+            --arg uiImage "${UI_IMAGE}" \
+            --arg networkFabricControllerImage "${FABRIC_IMAGE}" \
+            --arg vmNetworkAdmissionImage "${NETWORK_ADMISSION_IMAGE}" \
+            --arg vmTemplateControllerImage "${TEMPLATE_CONTROLLER_IMAGE}" \
+            --arg runId "${GITHUB_RUN_ID}" \
+            '{product:$product,repository:$repository,branch:$branch,commit:$commit,imageTag:$imageTag,installerUri:$installerUri,operatorImage:$operatorImage,platformSourceUrl:$platformSourceUrl,platformSourceRef:$platformSourceRef,apiImage:$apiImage,uiImage:$uiImage,networkFabricControllerImage:$networkFabricControllerImage,vmNetworkAdmissionImage:$vmNetworkAdmissionImage,vmTemplateControllerImage:$vmTemplateControllerImage,runId:$runId}' \
+            > _out/layersentry/build-manifest.json
+
+          cat _out/layersentry/build-manifest.json
+          echo "installer_uri=${INSTALLER_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload non-secret build manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b5404495a51ac0efb8f3294b # v4
+        with:
+          name: layersentry-hci-build-${{ github.sha }}
+          path: _out/layersentry/build-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Anonymous pull durability gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          helm registry logout ghcr.io || true
+          rm -f "${HOME}/.docker/config.json"
+          HELM_REGISTRY_CONFIG="${RUNNER_TEMP}/helm-registry-anonymous.json" \
+            helm show chart "${{ steps.manifest.outputs.installer_uri }}" >/tmp/installer-chart.txt
+          grep -q '^name: cozy-installer$' /tmp/installer-chart.txt
+
+          # The installer is only deployable without ephemeral CI credentials if
+          # its custom images are independently pullable as well.
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
+            docker buildx imagetools inspect "${REGISTRY}/cozystack-api:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
+            docker buildx imagetools inspect "${REGISTRY}/cozystack-ui:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
+            docker buildx imagetools inspect "${REGISTRY}/network-fabric-controller:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
+            docker buildx imagetools inspect "${REGISTRY}/vm-network-admission:${IMAGE_TAG}" >/dev/null
+          DOCKER_CONFIG="${RUNNER_TEMP}/docker-anonymous" \
+            docker buildx imagetools inspect "${REGISTRY}/vm-template-controller:${IMAGE_TAG}" >/dev/null
