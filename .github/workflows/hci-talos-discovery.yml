@@ -1,0 +1,106 @@
+name: HCI Talos Discovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/hci-talos-discovery.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  talos-discovery:
+    name: Talos maintenance discovery
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      HCI_TALOS_VERSION: v1.13.6
+      HCI_TALOSCTL_SHA256: 87289b89abc444e9428d067f4e4097757148f4c3283491444ef4cceb9cd58b07
+      HCI_TOOLS_DIR: C:\hci-tools
+      HCI_ISO_PATH: C:\HyperV\Cozystack\ISO\metal-amd64.iso
+    steps:
+      - name: Install and verify pinned talosctl
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:HCI_TOOLS_DIR | Out-Null
+          $talosctl = Join-Path $env:HCI_TOOLS_DIR 'talosctl.exe'
+          $url = "https://github.com/siderolabs/talos/releases/download/$env:HCI_TALOS_VERSION/talosctl-windows-amd64.exe"
+          $download = $true
+          if (Test-Path $talosctl) {
+            $existing = (Get-FileHash -Algorithm SHA256 -Path $talosctl).Hash.ToLowerInvariant()
+            if ($existing -eq $env:HCI_TALOSCTL_SHA256) { $download = $false }
+          }
+          if ($download) {
+            Write-Host "Downloading pinned talosctl $env:HCI_TALOS_VERSION"
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$talosctl.download"
+            $actual = (Get-FileHash -Algorithm SHA256 -Path "$talosctl.download").Hash.ToLowerInvariant()
+            if ($actual -ne $env:HCI_TALOSCTL_SHA256) {
+              Remove-Item -Force "$talosctl.download" -ErrorAction SilentlyContinue
+              throw "talosctl checksum mismatch: expected $env:HCI_TALOSCTL_SHA256 got $actual"
+            }
+            Move-Item -Force "$talosctl.download" $talosctl
+          }
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $talosctl).Hash.ToLowerInvariant()
+          if ($actual -ne $env:HCI_TALOSCTL_SHA256) { throw "Installed talosctl checksum mismatch" }
+          & $talosctl version --client
+          "HCI_TALOSCTL=$talosctl" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
+      - name: Record mounted Talos ISO fingerprint
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path $env:HCI_ISO_PATH)) { throw "Talos ISO not found: $env:HCI_ISO_PATH" }
+          Get-Item $env:HCI_ISO_PATH | Format-List FullName,Length,CreationTimeUtc,LastWriteTimeUtc
+          Get-FileHash -Algorithm SHA256 -Path $env:HCI_ISO_PATH | Format-List Algorithm,Hash,Path
+
+      - name: Verify node Talos versions in maintenance mode
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nodes = $env:HCI_NODE_IPS -split ','
+          foreach ($node in $nodes) {
+            Write-Host "==== Talos version $node ===="
+            $output = & $env:HCI_TALOSCTL version --insecure --nodes $node --endpoints $node 2>&1
+            $output | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) { throw "Unable to query Talos API on $node" }
+            $text = ($output | Out-String)
+            if ($text -notmatch [regex]::Escape($env:HCI_TALOS_VERSION.TrimStart('v'))) {
+              throw "$node is not reporting expected Talos $env:HCI_TALOS_VERSION"
+            }
+          }
+
+      - name: Discover disks links addresses and routes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nodes = $env:HCI_NODE_IPS -split ','
+          foreach ($node in $nodes) {
+            Write-Host "==== DISKS $node ===="
+            & $env:HCI_TALOSCTL get disks --insecure --nodes $node --endpoints $node
+            if ($LASTEXITCODE -ne 0) { throw "Disk discovery failed on $node" }
+            Write-Host "==== LINKS $node ===="
+            & $env:HCI_TALOSCTL get links --insecure --nodes $node --endpoints $node
+            if ($LASTEXITCODE -ne 0) { throw "Link discovery failed on $node" }
+            Write-Host "==== ADDRESSES $node ===="
+            & $env:HCI_TALOSCTL get addresses --insecure --nodes $node --endpoints $node
+            if ($LASTEXITCODE -ne 0) { throw "Address discovery failed on $node" }
+            Write-Host "==== ROUTES $node ===="
+            & $env:HCI_TALOSCTL get routes --insecure --nodes $node --endpoints $node
+            if ($LASTEXITCODE -ne 0) { throw "Route discovery failed on $node" }
+          }
+
+      - name: Confirm cluster is not already bootstrapped
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            $kube = Test-NetConnection -ComputerName $node -Port 6443 -WarningAction SilentlyContinue
+            if ($kube.TcpTestSucceeded) {
+              throw "Kubernetes API is already reachable on $node; refusing discovery workflow to classify this as a blank cluster"
+            }
+          }
+          Write-Host 'No Kubernetes API detected. Nodes remain safe for planned bootstrap.'
