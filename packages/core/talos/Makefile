@@ -13,8 +13,8 @@ update:
 # do not depend on publishing intermediate extension images to another registry.
 layersentry-storage-server-extensions:
 	mkdir -p ../../../_out/extensions
-	hack/build-layersentry-iscsi-target-extension.sh ../../../_out/extensions
-	hack/build-layersentry-nfs-server-extension.sh ../../../_out/extensions
+	sh hack/build-layersentry-iscsi-target-extension.sh ../../../_out/extensions
+	sh hack/build-layersentry-nfs-server-extension.sh ../../../_out/extensions
 	test -s ../../../_out/extensions/layersentry-iscsi-target.tar
 	test -s ../../../_out/extensions/layersentry-nfs-server.tar
 
