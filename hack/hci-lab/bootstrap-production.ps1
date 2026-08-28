@@ -106,7 +106,7 @@ function Wait-Until {
             if ($result.Count -gt 0 -and [bool]$result[-1]) { return }
         } catch {
             $lastTransientError = $_.Exception.Message
-            Write-Host "Transient error while waiting for $Description: $lastTransientError"
+            Write-Host "Transient error while waiting for ${Description}: $lastTransientError"
         }
         if ((Get-Date) -ge $deadline) { break }
         Write-Host "Waiting for $Description ..."
