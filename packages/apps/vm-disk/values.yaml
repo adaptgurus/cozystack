@@ -36,6 +36,7 @@ optical: false
 displayName: ""
 
 ## @param {string} mediaCategory - Optional optical-media category: installer, drivers, rescue, appliance, or custom.
+## @pattern ^$|^(installer|drivers|rescue|appliance|custom)$
 mediaCategory: ""
 
 ## @param {string} osFamily - Optional operating-system family metadata, for example Linux or Windows.
