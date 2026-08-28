@@ -38,6 +38,15 @@ jobs:
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
+      - name: Test canonical VM resource family naming
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./pkg/virtualizationnaming
+          helm unittest packages/apps/vm-instance
+          helm unittest packages/apps/vm-disk
+          helm unittest packages/apps/vm-network
+
       - name: Install Cozystack values generator
         run: |
           curl -sSL https://github.com/cozystack/cozyvalues-gen/releases/download/v1.6.0/cozyvalues-gen-linux-amd64.tar.gz | tar -xzvf- -C /usr/local/bin/ cozyvalues-gen
