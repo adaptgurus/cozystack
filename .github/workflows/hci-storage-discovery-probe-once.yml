@@ -75,6 +75,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'kubectl get csidriver failed' }
           Write-Host '===== CSI NODES ====='
           & $kubectl get csinode -o yaml
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl get csinode failed' }
+
+          # Everything below is optional inventory. An empty resource list must
+          # not stop the probe before host capability discovery can run.
+          $ErrorActionPreference = 'Continue'
 
           Write-Host '===== PERSISTENT VOLUMES ====='
           & $kubectl get pv -o custom-columns='NAME:.metadata.name,CAPACITY:.spec.capacity.storage,SC:.spec.storageClassName,STATUS:.status.phase,DRIVER:.spec.csi.driver,VOLUME_HANDLE:.spec.csi.volumeHandle,CLAIM_NS:.spec.claimRef.namespace,CLAIM:.spec.claimRef.name'
@@ -103,6 +108,7 @@ jobs:
               & $kubectl get $resource -A -o wide 2>$null
             }
           }
+          Write-Host 'Kubernetes optional inventory complete.'
 
       - name: Discover Talos block and transport capabilities
         run: |
