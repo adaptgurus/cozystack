@@ -8,6 +8,8 @@ on:
     paths:
       - hack/hci-lab/bootstrap-production.ps1
       - hack/hci-lab/test-bootstrap-static.ps1
+      - hack/hci-lab/reconcile-network-fabric-talosconfig.ps1
+      - hack/hci-lab/test-network-fabric-talosconfig-static.ps1
       - .github/workflows/hci-bootstrap-static.yml
       - .github/workflows/hci-layersentry-deploy.yml
 
@@ -28,3 +30,4 @@ jobs:
         shell: powershell
         run: |
           .\hack\hci-lab\test-bootstrap-static.ps1
+          .\hack\hci-lab\test-network-fabric-talosconfig-static.ps1
