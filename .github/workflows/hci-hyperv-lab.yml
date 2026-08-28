@@ -38,9 +38,22 @@ jobs:
           $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
           $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
           Write-Host "Elevated administrator: $isAdmin"
+          if (-not $isAdmin) { throw 'The self-hosted runner must have elevated Hyper-V administration rights.' }
           Get-VMHost | Format-List ComputerName,LogicalProcessorCount,VirtualMachineMigrationEnabled,VirtualMachineMigrationAuthenticationType
 
-      - name: Inventory VM configuration
+      - name: Inventory host networking
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '==== Hyper-V switches ===='
+          Get-VMSwitch | Format-Table Name,SwitchType,NetAdapterInterfaceDescription,AllowManagementOS -AutoSize
+          Write-Host '==== NATs ===='
+          Get-NetNat -ErrorAction SilentlyContinue | Format-Table Name,InternalIPInterfaceAddressPrefix,Active -AutoSize
+          Write-Host '==== Host IPv4 addresses ===='
+          Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Sort-Object InterfaceAlias,IPAddress |
+            Format-Table InterfaceAlias,IPAddress,PrefixLength,AddressState -AutoSize
+
+      - name: Inventory VM configuration and boot media
         run: |
           $ErrorActionPreference = 'Stop'
           $names = $env:HCI_VM_NAMES -split ','
@@ -52,6 +65,10 @@ jobs:
             $vm | Format-List Name,State,Status,Generation,ProcessorCount,MemoryStartup,DynamicMemoryEnabled,AutomaticStartAction,AutomaticStopAction
             Get-VMProcessor -VMName $name | Format-List Count,ExposeVirtualizationExtensions,CompatibilityForMigrationEnabled
             Get-VMNetworkAdapter -VMName $name | Format-List Name,SwitchName,MacAddress,MacAddressSpoofing,DhcpGuard,RouterGuard,IPAddresses
+            Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue | Format-List ControllerNumber,ControllerLocation,Path
+            if ($vm.Generation -eq 2) {
+              Get-VMFirmware -VMName $name | Format-List SecureBoot,SecureBootTemplate,BootOrder
+            }
             Get-VMHardDiskDrive -VMName $name | ForEach-Object {
               Write-Host "Disk Controller=$($_.ControllerType) $($_.ControllerNumber):$($_.ControllerLocation) Path=$($_.Path)"
               if ($_.Path) {
@@ -63,25 +80,24 @@ jobs:
             throw "Required Hyper-V VMs not found: $($missing -join ', ')"
           }
 
-      - name: Enable nested virtualization and start lab VMs
+      - name: Ensure nested virtualization and start lab VMs
         run: |
           $ErrorActionPreference = 'Stop'
           $names = $env:HCI_VM_NAMES -split ','
           foreach ($name in $names) {
             $vm = Get-VM -Name $name
-            if ($vm.State -ne 'Off') {
-              Write-Host "$name is $($vm.State); stopping before processor change"
-              Stop-VM -Name $name -Shutdown -ErrorAction SilentlyContinue
-              $deadline = (Get-Date).AddSeconds(45)
-              while ((Get-VM -Name $name).State -ne 'Off' -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-              if ((Get-VM -Name $name).State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
+            $processor = Get-VMProcessor -VMName $name
+            if (-not $processor.ExposeVirtualizationExtensions) {
+              if ($vm.State -ne 'Off') {
+                throw "$name is running without nested virtualization enabled. Refusing to force-power-off a live node; shut it down cleanly before changing CPU virtualization settings."
+              }
+              Set-VMProcessor -VMName $name -ExposeVirtualizationExtensions $true
             }
-            Set-VMProcessor -VMName $name -ExposeVirtualizationExtensions $true
             $cpu = (Get-VMProcessor -VMName $name).Count
             $mem = (Get-VMMemory -VMName $name).Startup
             if ($cpu -lt 10) { throw "$name has only $cpu vCPU; expected at least 10" }
             if ($mem -lt 30GB) { throw "$name startup RAM is $([math]::Round($mem/1GB,2)) GiB; expected at least 30 GiB" }
-            Start-VM -Name $name
+            if ((Get-VM -Name $name).State -eq 'Off') { Start-VM -Name $name }
           }
           Start-Sleep -Seconds 10
           Get-VM -Name $names | Format-Table Name,State,Status,CPUUsage,MemoryAssigned,Uptime
@@ -93,7 +109,19 @@ jobs:
       - name: Validate node and VIP reachability
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @($env:HCI_NODE_IPS -split ',') + @($env:HCI_VIP)
+          $nodeIPs = $env:HCI_NODE_IPS -split ','
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            $pending = @()
+            foreach ($ip in $nodeIPs) {
+              if (-not (Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue)) { $pending += $ip }
+            }
+            if ($pending.Count -eq 0) { break }
+            Write-Host "Waiting for node reachability: $($pending -join ', ')"
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+
+          $targets = @($nodeIPs) + @($env:HCI_VIP)
           $results = foreach ($ip in $targets) {
             $ping = Test-Connection -ComputerName $ip -Count 2 -Quiet -ErrorAction SilentlyContinue
             [pscustomobject]@{ Target = $ip; ICMP = $ping }
@@ -101,13 +129,28 @@ jobs:
           $results | Format-Table -AutoSize
           $nodeFailures = $results | Where-Object { $_.Target -ne $env:HCI_VIP -and -not $_.ICMP }
           if ($nodeFailures) {
-            throw "One or more Talos/Cozystack node IPs are not reachable after VM startup: $($nodeFailures.Target -join ', ')"
+            throw "One or more Talos/Cozystack node IPs are not reachable after startup grace period: $($nodeFailures.Target -join ', ')"
           }
           if (-not (($results | Where-Object Target -eq $env:HCI_VIP).ICMP)) {
             Write-Warning "VIP $env:HCI_VIP is not reachable yet. This is acceptable before the control plane/VIP service is bootstrapped and will be a hard gate later."
           }
 
+      - name: Endpoint diagnostics
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $targets = @($env:HCI_NODE_IPS -split ',') + @($env:HCI_VIP)
+          foreach ($ip in $targets) {
+            Write-Host "==== Endpoint $ip ===="
+            foreach ($port in 50000,6443) {
+              $r = Test-NetConnection -ComputerName $ip -Port $port -WarningAction SilentlyContinue
+              Write-Host "TCP $port = $($r.TcpTestSucceeded)"
+            }
+            Get-NetNeighbor -IPAddress $ip -ErrorAction SilentlyContinue | Format-Table ifIndex,IPAddress,LinkLayerAddress,State -AutoSize
+          }
+
       - name: Tooling inventory
+        if: always()
         run: |
           $tools = 'git','talosctl','talm','kubectl','helm','jq','yq','curl','go'
           foreach ($tool in $tools) {
