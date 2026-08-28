@@ -32,11 +32,11 @@ jobs:
           cache: true
       - name: Run storage engine tests
         run: go test ./pkg/storageengine
-      - name: Reject destructive primitives in discovery-domain code
+      - name: Reject command execution in discovery-domain code
         shell: bash
         run: |
           set -euo pipefail
-          if grep -RniE '\b(mkfs|wipefs|sgdisk|parted|pvcreate|vgcreate|lvcreate|zpool[[:space:]]+create|linstor[[:space:]]+storage-pool[[:space:]]+create)\b' pkg/storageengine; then
-            echo '::error::Storage discovery/domain code must remain side-effect free.'
+          if grep -RniE '"os/exec"|exec\.Command(Context)?|syscall\.Exec|/bin/(sh|bash)|powershell(\.exe)?|pwsh(\.exe)?' pkg/storageengine --include='*.go'; then
+            echo '::error::Storage discovery/domain code must remain side-effect free and must not execute host commands.'
             exit 1
           fi
