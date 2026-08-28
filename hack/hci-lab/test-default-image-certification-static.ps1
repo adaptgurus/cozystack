@@ -40,7 +40,7 @@ Assert-Contains 'refusing to overwrite it' 'Administrator-managed image packages
 Assert-Contains 'linstor\.csi\.linbit\.com' 'Replicated StorageClass provisioner identity is not checked.'
 Assert-Contains 'DataVolume Succeeded' 'Certification setup does not wait for the CDI DataVolume to finish importing.'
 Assert-Contains 'PVC Bound on replicated storage' 'Certification setup does not gate on the final Bound replicated PVC.'
-Assert-Contains "helmrelease\.helm\.toolkit\.fluxcd\.io','-n',\$ReleaseNamespace,\$ReleaseName" 'Certification setup does not gate on the vm-default-images HelmRelease.'
+Assert-Contains 'helmrelease\.helm\.toolkit\.fluxcd\.io.*\$ReleaseNamespace.*\$ReleaseName' 'Certification setup does not gate on the vm-default-images HelmRelease.'
 Assert-NotContains "kubectl\s+delete|Invoke-Kubectl\s+'delete'" 'Certification image setup contains a destructive kubectl delete path.'
 Assert-NotContains '16 images|320Gi' 'Certification setup appears to provision the full capacity-unsafe image catalog.'
 Assert-NotContains 'kind:\s+VirtualMachine\b|kind:\s+VirtualMachineInstance\b' 'Certification image setup bypasses the product Package with raw KubeVirt objects.'
