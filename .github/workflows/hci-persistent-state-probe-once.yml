@@ -30,17 +30,53 @@ jobs:
 
           Write-Host '=== NODES ==='
           & $kubectl get nodes -o wide
-          Write-Host '=== PLATFORM HELMRELEASE ==='
-          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-system cozystack-platform -o yaml
-          Write-Host '=== PLATFORM PACKAGE ==='
-          & $kubectl get package.cozystack.io cozystack.cozystack-platform -o yaml
-          Write-Host '=== KUBEVIRT PACKAGE ==='
-          & $kubectl get package.cozystack.io cozystack.kubevirt -o yaml
-          Write-Host '=== KUBEVIRT HELMRELEASE ==='
-          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-kubevirt kubevirt -o yaml
+          if ($LASTEXITCODE -ne 0) { throw 'node probe failed' }
+
+          Write-Host '=== PLATFORM HELMRELEASE SUMMARY ==='
+          $platformRaw = & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-system cozystack-platform -o json
+          if ($LASTEXITCODE -ne 0) { throw 'platform HelmRelease probe failed' }
+          $platform = $platformRaw | ConvertFrom-Json
+          $platform.status.conditions | Select-Object type,status,reason,message,lastTransitionTime | Format-Table -Wrap
+          Write-Host "platform.lastAttemptedRevision=$($platform.status.lastAttemptedRevision)"
+          Write-Host "platform.lastAttemptedRevisionDigest=$($platform.status.lastAttemptedRevisionDigest)"
+          if ($platform.status.history) {
+            Write-Host "platform.latestHistoryChart=$($platform.status.history[0].chartVersion)"
+            Write-Host "platform.latestHistoryDigest=$($platform.status.history[0].ociDigest)"
+          }
+
+          Write-Host '=== KUBEVIRT PACKAGE SUMMARY ==='
+          $pkgRaw = & $kubectl get package.cozystack.io cozystack.kubevirt -o json
+          if ($LASTEXITCODE -ne 0) { throw 'KubeVirt Package probe failed' }
+          $pkg = $pkgRaw | ConvertFrom-Json
+          $pkg.status.conditions | Select-Object type,status,reason,message,lastTransitionTime | Format-Table -Wrap
+          Write-Host "kubevirt.package.generation=$($pkg.metadata.generation) resourceVersion=$($pkg.metadata.resourceVersion)"
+          Write-Host "kubevirt.package.values=$($pkg.spec.components.kubevirt.values | ConvertTo-Json -Compress -Depth 10)"
+
+          Write-Host '=== KUBEVIRT HELMRELEASE SUMMARY ==='
+          $hrRaw = & $kubectl get helmrelease.helm.toolkit.fluxcd.io -n cozy-kubevirt kubevirt -o json
+          if ($LASTEXITCODE -ne 0) { throw 'KubeVirt HelmRelease probe failed' }
+          $hr = $hrRaw | ConvertFrom-Json
+          $hr.status.conditions | Select-Object type,status,reason,message,lastTransitionTime | Format-Table -Wrap
+          Write-Host "kubevirt.hr.generation=$($hr.metadata.generation)"
+          Write-Host "kubevirt.hr.lastAttemptedRevision=$($hr.status.lastAttemptedRevision)"
+          if ($hr.status.history) {
+            Write-Host "kubevirt.hr.latestHistoryChart=$($hr.status.history[0].chartVersion)"
+            Write-Host "kubevirt.hr.latestHistoryDigest=$($hr.status.history[0].ociDigest)"
+          }
+
           Write-Host '=== EFFECTIVE KUBEVIRT CONFIG ==='
-          & $kubectl get kubevirt.kubevirt.io -n cozy-kubevirt kubevirt -o jsonpath='{.status.phase}{"`n"}{.spec.configuration}{"`n"}'
+          $kvRaw = & $kubectl get kubevirt.kubevirt.io -n cozy-kubevirt kubevirt -o json
+          if ($LASTEXITCODE -ne 0) { throw 'KubeVirt CR probe failed' }
+          $kv = $kvRaw | ConvertFrom-Json
+          $gates = @($kv.spec.configuration.developerConfiguration.featureGates | ForEach-Object { [string]$_ })
+          Write-Host "kubevirt.phase=$($kv.status.phase)"
+          Write-Host "kubevirt.featureGates=$($gates -join ',')"
+          Write-Host "kubevirt.vmStateStorageClass=$($kv.spec.configuration.vmStateStorageClass)"
+          Write-Host "persistentStateGatePresent=$($gates -contains 'VMPersistentState')"
+          Write-Host "replicatedStateClassPresent=$([string]$kv.spec.configuration.vmStateStorageClass -eq 'replicated')"
+
           Write-Host '=== OPERATOR IMAGE ==='
-          & $kubectl get deployment -n cozy-system cozystack-operator -o jsonpath='{.spec.template.spec.containers[*].image}{"`n"}'
-          Write-Host '=== ALL PLATFORM/KUBEVIRT RELEASE STATUS ==='
-          & $kubectl get helmrelease.helm.toolkit.fluxcd.io -A | Select-String 'cozystack-platform|kubevirt'
+          $operatorRaw = & $kubectl get deployment -n cozy-system cozystack-operator -o json
+          if ($LASTEXITCODE -ne 0) { throw 'operator deployment probe failed' }
+          $operator = $operatorRaw | ConvertFrom-Json
+          Write-Host (($operator.spec.template.spec.containers | ForEach-Object { $_.image }) -join ',')
