@@ -1,0 +1,145 @@
+name: LayerSentry HCI Talos ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - 'packages/core/talos/**'
+      - '.github/workflows/layersentry-talos-hci-iso.yml'
+
+concurrency:
+  group: layersentry-talos-hci-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-iso:
+    name: Build LayerSentry HCI Talos ISO
+    if: github.ref_name == 'layersentry-platform'
+    runs-on: oracle-vm-24cpu-96gb-x86-64
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout layersentry-platform
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert branch and clean output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "layersentry-platform"
+          rm -rf _out/assets
+          mkdir -p _out/assets
+
+      - name: Build LayerSentry HCI Talos ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C packages/core/talos talos-iso
+          test -s _out/assets/metal-amd64.iso
+
+      - name: Verify LayerSentry HCI extensions
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile="packages/core/talos/images/talos/profiles/iso.yaml"
+          test -s "$profile"
+
+          required_extensions=(
+            drbd
+            zfs
+            iscsi-tools
+            multipath-tools
+            nfs-utils
+            nfsrahead
+            nvme-cli
+            lldpd
+            trident-iscsi-tools
+            util-linux-tools
+            nvidia-open-gpu-kernel-modules-production
+            nvidia-container-toolkit-production
+            nvidia-gdrdrv-device
+          )
+
+          for extension in "${required_extensions[@]}"; do
+            if ! grep -Fq "/${extension}:" "$profile"; then
+              echo "::error::Required Talos system extension '${extension}' is missing from ${profile}"
+              exit 1
+            fi
+          done
+
+          # lsscsi is supplied intentionally by Sidero's trident-iscsi-tools
+          # system extension on Talos v1.13.x. Keep this assertion separate so
+          # future catalog changes cannot silently drop the deliberate lsscsi
+          # dependency from the LayerSentry image policy.
+          grep -Fq '/trident-iscsi-tools:' "$profile"
+
+      - name: Package ISO, manifest and checksums
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile="packages/core/talos/images/talos/profiles/iso.yaml"
+          talos_version="$(awk '/^version:/ {print $2; exit}' "$profile")"
+          test -n "$talos_version"
+
+          version="${talos_version#v}"
+          base="layersentry-hci-talos-${version}-amd64"
+          iso="_out/assets/${base}.iso"
+          manifest="_out/assets/${base}-extensions.txt"
+          checksum="_out/assets/${base}.sha256"
+
+          mv _out/assets/metal-amd64.iso "$iso"
+
+          {
+            echo "LayerSentry HCI Talos image"
+            echo "Talos version: ${talos_version}"
+            echo "Git commit: ${GITHUB_SHA}"
+            echo
+            echo "Baked Talos system extensions (digest pinned):"
+            awk '/systemExtensions:/{p=1; next} p && /imageRef:/{sub(/^.*imageRef: /, ""); print "  " $0; next} p && /^output:/{exit}' "$profile"
+            echo
+            echo "Native Talos/Linux kernel capabilities relied upon by LayerSentry:"
+            echo "  Linux bridge; bond/LACP; VLAN 802.1Q; nftables; conntrack"
+            echo "  Device Mapper; SR-IOV; VFIO PCI passthrough"
+            echo "  RDMA/RoCE; NVMe/TCP; NVMe/RDMA"
+            echo "  ethtool-equivalent Ethernet configuration/status through Talos APIs/resources"
+            echo
+            echo "Certification boundary:"
+            echo "  iSER is NOT certified/enabled by this image policy; Talos v1.13.6 stock kernel has CONFIG_INFINIBAND_ISER disabled."
+            echo "  NFS server/export lifecycle, iSCSI target, full Fibre Channel lifecycle, Ceph/RBD/CephFS and SMB/CIFS are not provided by these host extensions."
+            echo "  SR-IOV, VFIO, RDMA/RoCE, NVMe/RDMA, GPU passthrough and GPUDirect RDMA require compatible hardware, firmware, IOMMU/topology and Kubernetes device/operator configuration."
+          } > "$manifest"
+
+          (cd _out/assets && sha256sum "${base}.iso" > "${base}.sha256")
+          test -s "$iso"
+          test -s "$manifest"
+          test -s "$checksum"
+
+          echo "artifact_name=${base}" >> "$GITHUB_OUTPUT"
+          echo "iso_path=${iso}" >> "$GITHUB_OUTPUT"
+          echo "manifest_path=${manifest}" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=${checksum}" >> "$GITHUB_OUTPUT"
+
+          cat "$checksum"
+          cat "$manifest"
+
+      - name: Upload LayerSentry HCI ISO
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.iso_path }}
+            ${{ steps.package.outputs.manifest_path }}
+            ${{ steps.package.outputs.checksum_path }}
+            packages/core/talos/images/talos/profiles/iso.yaml
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
