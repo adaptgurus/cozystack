@@ -26,12 +26,6 @@ jobs:
       HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
       HCI_VIP: 10.10.10.10
     steps:
-      - name: Checkout branch
-        uses: actions/checkout@v4
-        with:
-          ref: feat/hci-virtualization-v1.6.2-test
-          fetch-depth: 0
-
       - name: Validate runner and Hyper-V permissions
         run: |
           $ErrorActionPreference = 'Stop'
