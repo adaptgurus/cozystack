@@ -7,6 +7,7 @@ on:
       - feat/hci-virtualization-v1.6.2-test
     paths:
       - .github/workflows/hci-talos-discovery.yml
+      - HCI_HYPERV_LAB_NEXT_SESSION_SUPER_CONTEXT.md
 
 permissions:
   contents: read
@@ -19,38 +20,122 @@ jobs:
   talos-discovery:
     name: Talos maintenance discovery
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
       HCI_TALOS_VERSION: v1.13.6
+      # Verified against the immutable Sidero Labs Talos v1.13.6 GitHub release asset digest.
       HCI_TALOSCTL_SHA256: 87289b89abc444e9428d067f4e4097757148f4c3283491444ef4cceb9cd58b07
       HCI_TOOLS_DIR: C:\hci-tools
+      HCI_DIAG_DIR: C:\hci-diagnostics
       HCI_ISO_PATH: C:\HyperV\Cozystack\ISO\metal-amd64.iso
     steps:
-      - name: Install and verify pinned talosctl
+      - name: Diagnose runner identity proxy DNS and HTTPS
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path $env:HCI_DIAG_DIR | Out-Null
+          $log = Join-Path $env:HCI_DIAG_DIR "egress-$env:GITHUB_RUN_ID.txt"
+
+          & {
+            Write-Host '==== identity ===='
+            whoami
+            Write-Host "Computer: $env:COMPUTERNAME"
+            Write-Host "Runner: $env:RUNNER_NAME"
+            Write-Host "PowerShell: $($PSVersionTable.PSVersion)"
+
+            Write-Host '==== PATH ===='
+            $env:PATH -split ';' | ForEach-Object { Write-Host $_ }
+
+            Write-Host '==== WinHTTP proxy ===='
+            netsh winhttp show proxy
+
+            Write-Host '==== proxy environment ===='
+            Get-ChildItem Env: | Where-Object Name -Match 'proxy' | Format-Table Name,Value -AutoSize
+
+            Write-Host '==== DNS ===='
+            foreach ($hostName in 'github.com','api.github.com','objects.githubusercontent.com','release-assets.githubusercontent.com') {
+              Write-Host "-- $hostName"
+              Resolve-DnsName $hostName -ErrorAction Continue | Select-Object Name,Type,IPAddress | Format-Table -AutoSize
+            }
+
+            Write-Host '==== TCP 443 ===='
+            foreach ($hostName in 'github.com','api.github.com','objects.githubusercontent.com','release-assets.githubusercontent.com') {
+              $r = Test-NetConnection $hostName -Port 443 -WarningAction SilentlyContinue
+              Write-Host "$hostName TCP/443 = $($r.TcpTestSucceeded) RemoteAddress=$($r.RemoteAddress)"
+            }
+
+            Write-Host '==== curl.exe ===='
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ($curl) {
+              Write-Host "curl.exe: $($curl.Source)"
+              & $curl.Source --version
+              & $curl.Source -I -L --connect-timeout 10 --max-time 30 https://github.com/siderolabs/talos/releases/tag/v1.13.6
+              Write-Host "curl HEAD exit code: $LASTEXITCODE"
+            } else {
+              Write-Warning 'curl.exe is not available'
+            }
+
+            Write-Host '==== existing HCI tools ===='
+            Get-ChildItem $env:HCI_TOOLS_DIR -Force -ErrorAction SilentlyContinue | Format-Table Name,Length,LastWriteTimeUtc -AutoSize
+          } *>&1 | Tee-Object -FilePath $log
+
+      - name: Install and verify pinned talosctl with bounded download
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:HCI_TOOLS_DIR | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:HCI_DIAG_DIR | Out-Null
+
           $talosctl = Join-Path $env:HCI_TOOLS_DIR 'talosctl.exe'
+          $downloadPath = "$talosctl.download"
           $url = "https://github.com/siderolabs/talos/releases/download/$env:HCI_TALOS_VERSION/talosctl-windows-amd64.exe"
           $download = $true
+
           if (Test-Path $talosctl) {
             $existing = (Get-FileHash -Algorithm SHA256 -Path $talosctl).Hash.ToLowerInvariant()
-            if ($existing -eq $env:HCI_TALOSCTL_SHA256) { $download = $false }
+            Write-Host "Existing talosctl SHA256: $existing"
+            if ($existing -eq $env:HCI_TALOSCTL_SHA256) {
+              $download = $false
+              Write-Host 'Existing talosctl matches pinned digest; download is not required.'
+            } else {
+              Write-Warning 'Existing talosctl digest does not match the pinned release; it will be replaced.'
+            }
           }
+
           if ($download) {
-            Write-Host "Downloading pinned talosctl $env:HCI_TALOS_VERSION"
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$talosctl.download"
-            $actual = (Get-FileHash -Algorithm SHA256 -Path "$talosctl.download").Hash.ToLowerInvariant()
+            Remove-Item -Force $downloadPath -ErrorAction SilentlyContinue
+            Write-Host "Downloading pinned talosctl $env:HCI_TALOS_VERSION from $url"
+
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if ($curl) {
+              & $curl.Source --fail --location --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 2 --output $downloadPath $url
+              if ($LASTEXITCODE -ne 0) {
+                throw "curl.exe failed to download talosctl; exit code $LASTEXITCODE"
+              }
+            } else {
+              Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri $url -OutFile $downloadPath
+            }
+
+            if (-not (Test-Path $downloadPath)) { throw 'talosctl download did not produce an output file' }
+            $item = Get-Item $downloadPath
+            Write-Host "Downloaded bytes: $($item.Length)"
+            if ($item.Length -lt 50MB) { throw "talosctl download is unexpectedly small: $($item.Length) bytes" }
+
+            $actual = (Get-FileHash -Algorithm SHA256 -Path $downloadPath).Hash.ToLowerInvariant()
+            Write-Host "Downloaded talosctl SHA256: $actual"
             if ($actual -ne $env:HCI_TALOSCTL_SHA256) {
-              Remove-Item -Force "$talosctl.download" -ErrorAction SilentlyContinue
+              Remove-Item -Force $downloadPath -ErrorAction SilentlyContinue
               throw "talosctl checksum mismatch: expected $env:HCI_TALOSCTL_SHA256 got $actual"
             }
-            Move-Item -Force "$talosctl.download" $talosctl
+
+            Move-Item -Force $downloadPath $talosctl
           }
+
           $actual = (Get-FileHash -Algorithm SHA256 -Path $talosctl).Hash.ToLowerInvariant()
-          if ($actual -ne $env:HCI_TALOSCTL_SHA256) { throw "Installed talosctl checksum mismatch" }
+          if ($actual -ne $env:HCI_TALOSCTL_SHA256) { throw 'Installed talosctl checksum mismatch' }
+
           & $talosctl version --client
+          if ($LASTEXITCODE -ne 0) { throw "talosctl --client version failed with exit code $LASTEXITCODE" }
+
           "HCI_TALOSCTL=$talosctl" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
 
       - name: Record mounted Talos ISO fingerprint
@@ -83,12 +168,15 @@ jobs:
             Write-Host "==== DISKS $node ===="
             & $env:HCI_TALOSCTL get disks --insecure --nodes $node --endpoints $node
             if ($LASTEXITCODE -ne 0) { throw "Disk discovery failed on $node" }
+
             Write-Host "==== LINKS $node ===="
             & $env:HCI_TALOSCTL get links --insecure --nodes $node --endpoints $node
             if ($LASTEXITCODE -ne 0) { throw "Link discovery failed on $node" }
+
             Write-Host "==== ADDRESSES $node ===="
             & $env:HCI_TALOSCTL get addresses --insecure --nodes $node --endpoints $node
             if ($LASTEXITCODE -ne 0) { throw "Address discovery failed on $node" }
+
             Write-Host "==== ROUTES $node ===="
             & $env:HCI_TALOSCTL get routes --insecure --nodes $node --endpoints $node
             if ($LASTEXITCODE -ne 0) { throw "Route discovery failed on $node" }
@@ -104,3 +192,22 @@ jobs:
             }
           }
           Write-Host 'No Kubernetes API detected. Nodes remain safe for planned bootstrap.'
+
+      - name: Final failure diagnostics
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '==== persistent diagnostic files ===='
+          Get-ChildItem $env:HCI_DIAG_DIR -Force -ErrorAction SilentlyContinue | Format-Table FullName,Length,LastWriteTimeUtc -AutoSize
+
+          Write-Host '==== VM runtime state ===='
+          Get-VM -Name sen1,sen2,sen3 -ErrorAction SilentlyContinue | Format-Table Name,State,Status,CPUUsage,MemoryAssigned,Uptime -AutoSize
+
+          Write-Host '==== node endpoint state ===='
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            $icmp = Test-Connection -ComputerName $node -Count 1 -Quiet -ErrorAction SilentlyContinue
+            $talos = Test-NetConnection -ComputerName $node -Port 50000 -WarningAction SilentlyContinue
+            $kube = Test-NetConnection -ComputerName $node -Port 6443 -WarningAction SilentlyContinue
+            Write-Host "$node ICMP=$icmp TCP50000=$($talos.TcpTestSucceeded) TCP6443=$($kube.TcpTestSucceeded)"
+            Get-NetNeighbor -IPAddress $node -ErrorAction SilentlyContinue | Format-Table ifIndex,IPAddress,LinkLayerAddress,State -AutoSize
+          }
