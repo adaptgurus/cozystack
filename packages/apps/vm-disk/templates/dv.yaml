@@ -1,10 +1,21 @@
 {{- $existingDV := lookup "cdi.kubevirt.io/v1beta1" "DataVolume" .Release.Namespace .Release.Name }}
 {{- $platformISO := hasKey .Values.source "iso" }}
 {{- $isOptical := or .Values.optical $platformISO }}
+{{- $logicalDiskName := trimPrefix "vm-disk-" .Release.Name }}
+{{- $resourceFamily := $logicalDiskName }}
+{{- $resourceRole := "standalone-disk" }}
+{{- if hasSuffix "osdisk" $logicalDiskName }}
+{{- $resourceFamily = trimSuffix "osdisk" $logicalDiskName }}
+{{- $resourceRole = "osdisk" }}
+{{- else if regexMatch "datadisk[0-9]*$" $logicalDiskName }}
+{{- $resourceFamily = regexReplaceAll "datadisk[0-9]*$" $logicalDiskName "" }}
+{{- $resourceRole = "datadisk" }}
+{{- end }}
 apiVersion: cdi.kubevirt.io/v1beta1
 kind: DataVolume
 metadata:
   annotations:
+    hci.cozystack.io/logical-name: {{ $logicalDiskName | quote }}
     {{- if hasKey .Values.source "upload" }}
     cdi.kubevirt.io/storage.bind.immediate.requested: ""
     {{- end }}
@@ -35,6 +46,8 @@ metadata:
     {{- end }}
   labels:
     app.kubernetes.io/instance: {{ .Release.Name }}
+    hci.cozystack.io/resource-family: {{ $resourceFamily | quote }}
+    hci.cozystack.io/resource-role: {{ $resourceRole | quote }}
   name: {{ .Release.Name }}
 spec:
   {{- if $existingDV }}
