@@ -9,6 +9,12 @@ spec:
   configuration:
     commonInstancetypesDeployment:
       enabled: false
+    {{- with .Values.vmStateStorageClass }}
+    # Persistent vTPM/UEFI state belongs to an individual VM, but its backend
+    # PVC must be reachable from every virtualization node. The HCI default is
+    # the 3-way LINSTOR/DRBD replicated StorageClass.
+    vmStateStorageClass: {{ . | quote }}
+    {{- end }}
     {{- if .Values.vmTemplates.enabled }}
     # KubeVirt v1.8.x ships the native VirtualMachineTemplate API behind the
     # Snapshot + Template feature gates. Keep the virt-template deployment
@@ -31,6 +37,7 @@ spec:
       - CPUManager
       - GPU
       - VMExport
+      - VMPersistentState
       {{- if .Values.vmTemplates.enabled }}
       - Snapshot
       - Template
