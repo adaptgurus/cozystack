@@ -1,0 +1,46 @@
+suite: vm-instance security family naming
+
+templates:
+  - templates/secret.yaml
+
+release:
+  name: vm-instance-windows10
+  namespace: tenant-test
+
+set:
+  sshKeys:
+    - ssh-ed25519 AAAATEST
+  cloudInit: "#cloud-config\nhostname: windows10"
+
+tests:
+  - it: groups SSH credentials under windows10sec
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: security
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10sec
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/security-component"]
+          value: ssh-keys
+
+  - it: groups cloud-init credentials under windows10sec
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: security
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10sec
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/security-component"]
+          value: cloud-init
