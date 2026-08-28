@@ -6,6 +6,7 @@ else
 endif
 
 REGISTRY ?= ghcr.io/cozystack/cozystack
+SOURCE_REPOSITORY ?= https://github.com/adaptgurus/cozystack
 
 # CACHE_REGISTRY: registry holding the `:buildcache` mode=max cache images that
 # `--cache-from`/`--cache-to` read and write (see the cache-args macro below).
@@ -50,7 +51,7 @@ COZYSTACK_VERSION = $(patsubst v%,%,$(shell git describe --tags --match 'v*'))
 SBOM ?= 0
 
 BUILDX_ARGS := --provenance=false --push=$(PUSH) --load=$(LOAD) \
-  --label org.opencontainers.image.source=https://github.com/cozystack/cozystack \
+  --label org.opencontainers.image.source=$(SOURCE_REPOSITORY) \
   $(if $(filter 1,$(SBOM)),--sbom=true) \
   $(if $(strip $(BUILDER)),--builder=$(BUILDER)) \
   $(if $(strip $(PLATFORM)),--platform=$(PLATFORM)) \
@@ -59,7 +60,7 @@ BUILDX_ARGS := --provenance=false --push=$(PUSH) --load=$(LOAD) \
 # image-tags <repo> <versioned-tag>
 # Expands to one or more `--tag` flags for `docker buildx build`:
 #   - always:                 :$(IMAGE_TAG)        (build-unique handle)
-#   - if PUBLISH_VERSIONED=1: :<versioned-tag>     (skipped when arg2 is empty
+#   - if PUBLISH_VERSIONED=1: :<component-version> (skipped when arg2 is empty
 #                                                  or equals IMAGE_TAG)
 #   - if PUBLISH_FLOATING=1:  :latest
 # Consumers reference images by digest, so the build-unique tag is enough
