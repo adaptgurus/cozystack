@@ -1,0 +1,25 @@
+suite: vm-disk data resource family naming
+
+templates:
+  - templates/dv.yaml
+
+release:
+  name: vm-disk-windows10datadisk2
+  namespace: tenant-test
+
+set:
+  storage: 64Gi
+  storageClass: replicated
+
+tests:
+  - it: identifies numbered data disks without changing the windows10 family
+    asserts:
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-family"]
+          value: windows10
+      - equal:
+          path: metadata.labels["hci.cozystack.io/resource-role"]
+          value: datadisk
+      - equal:
+          path: metadata.annotations["hci.cozystack.io/logical-name"]
+          value: windows10datadisk2
