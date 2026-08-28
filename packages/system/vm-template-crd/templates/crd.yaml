@@ -48,7 +48,6 @@ spec:
               type: object
             spec:
               type: object
-              additionalProperties: false
               required:
                 - sourceVM
                 - templateName
@@ -102,7 +101,6 @@ spec:
                   description: Production template capture is offline-only until application-consistent online capture is separately certified.
             status:
               type: object
-              additionalProperties: false
               properties:
                 observedGeneration:
                   type: integer
