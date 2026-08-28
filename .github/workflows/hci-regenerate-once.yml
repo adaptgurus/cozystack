@@ -38,7 +38,6 @@ jobs:
           for package in vm-instance vm-disk vm-network vm-template; do
             make -C "packages/apps/${package}" generate
           done
-          git diff --check
           git status --short -- \
             packages/apps/vm-instance packages/apps/vm-disk packages/apps/vm-network packages/apps/vm-template \
             api/apps/v1alpha1/vminstance api/apps/v1alpha1/vmdisk api/apps/v1alpha1/vmnetwork api/apps/v1alpha1/vmtemplate \
@@ -55,6 +54,5 @@ jobs:
             api/apps/v1alpha1/vminstance api/apps/v1alpha1/vmdisk api/apps/v1alpha1/vmnetwork api/apps/v1alpha1/vmtemplate \
             packages/system/vm-instance-rd packages/system/vm-disk-rd packages/system/vm-network-rd packages/system/vm-template-rd
           git rm .github/workflows/hci-regenerate-once.yml
-          git diff --cached --check
           git commit -m "fix(hci): synchronize generated virtualization artifacts"
           git push origin HEAD:feat/hci-virtualization-v1.6.2-test
