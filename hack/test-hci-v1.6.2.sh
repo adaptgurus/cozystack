@@ -17,11 +17,12 @@ fi
 
 rendered="$(mktemp)"
 crd_rendered="$(mktemp)"
+vmtemplate_crd_rendered="$(mktemp)"
 controller_rendered="$(mktemp)"
 admission_rendered="$(mktemp)"
 kubevirt_rendered="$(mktemp)"
 schema_error="$(mktemp)"
-trap 'rm -f "$rendered" "$crd_rendered" "$controller_rendered" "$admission_rendered" "$kubevirt_rendered" "$schema_error"' EXIT
+trap 'rm -f "$rendered" "$crd_rendered" "$vmtemplate_crd_rendered" "$controller_rendered" "$admission_rendered" "$kubevirt_rendered" "$schema_error"' EXIT
 
 expect_vmnetwork_schema_failure() {
   local expected="$1"
@@ -52,7 +53,7 @@ printf '\n[3/12] Running tenant-scoped API option-provider tests...\n'
 go test ./pkg/registry/core/option
 
 printf '\n[4/12] Running HCI controller/admission/transaction Go tests...\n'
-go test ./pkg/vmnetworkadmission ./pkg/networkfabric ./pkg/networkfabriccontroller ./cmd/vm-network-admission ./cmd/network-fabric-controller
+go test ./pkg/vmnetworkadmission ./pkg/networkfabric ./pkg/networkfabriccontroller ./pkg/vmtemplate ./pkg/vmtemplatecontroller ./cmd/vm-network-admission ./cmd/network-fabric-controller ./cmd/vm-template-controller
 
 printf '\n[5/12] Linting standalone HCI charts...\n'
 # vm-instance and vm-disk are Cozystack application charts whose Chart.yaml uses
@@ -186,13 +187,15 @@ PY
 printf '\n[8/12] Linting HCI system charts...\n'
 helm lint packages/system/vm-network-admission --set image=example.invalid/vm-network-admission:test
 helm lint packages/system/network-fabric-crd
+helm lint packages/system/vm-template-crd
 helm lint packages/system/network-fabric-controller \
   --set networkFabricController.image=example.invalid/network-fabric-controller:test
 helm lint packages/system/kubevirt \
   --set-string _cluster.root-host=example.test
 
-printf '\n[9/12] Rendering NetworkFabric CRD/controller and KubeVirt migration packages...\n'
+printf '\n[9/12] Rendering NetworkFabric/VMTemplate CRDs, controller and KubeVirt migration packages...\n'
 helm template network-fabric-crd packages/system/network-fabric-crd > "$crd_rendered"
+helm template vm-template-crd packages/system/vm-template-crd > "$vmtemplate_crd_rendered"
 helm template network-fabric-controller packages/system/network-fabric-controller \
   --namespace cozy-network-fabric-controller \
   --set networkFabricController.image=example.invalid/network-fabric-controller:test > "$controller_rendered"
@@ -209,6 +212,16 @@ grep -q 'unavailableNodes:' "$crd_rendered"
 grep -q 'appliedNetworks:' "$crd_rendered"
 grep -q 'lastVerifiedAt:' "$crd_rendered"
 grep -q 'rollbackState:' "$crd_rendered"
+grep -q 'x-kubernetes-list-type: set' "$crd_rendered"
+if grep -q 'uniqueItems: true' "$crd_rendered"; then
+  echo 'FAIL: NetworkFabric CRD uses uniqueItems=true, rejected by the Kubernetes 1.34 API server for runtime-cost reasons.' >&2
+  exit 1
+fi
+grep -q 'name: vmtemplateoperations.virtualization.cozystack.io' "$vmtemplate_crd_rendered"
+if grep -q 'additionalProperties: false' "$vmtemplate_crd_rendered"; then
+  echo 'FAIL: VMTemplate CRD uses additionalProperties=false with declared properties, rejected by the Kubernetes 1.34 API server.' >&2
+  exit 1
+fi
 grep -q 'kind: Deployment' "$controller_rendered"
 grep -q 'name: network-fabric-controller' "$controller_rendered"
 grep -q 'example.invalid/network-fabric-controller:test' "$controller_rendered"
@@ -241,6 +254,7 @@ printf '\n[11/12] Running repo-native Helm unit/render tests for all changed HCI
 helm unittest packages/apps/vm-instance
 helm unittest packages/apps/vm-disk
 helm unittest packages/apps/vm-network
+helm unittest packages/apps/vm-template
 helm unittest packages/system/vm-default-images
 helm unittest packages/system/kubevirt
 
