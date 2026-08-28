@@ -1,11 +1,18 @@
 name: One-shot HCI persistent VM state certification v2
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feat/hci-virtualization-v1.6.2-test
     paths:
       - .github/workflows/hci-persistent-state-cert-v2-once.yml
+      - hack/hci-lab/bootstrap-production.ps1
+      - hack/hci-lab/test-bootstrap-static.ps1
+      - hack/hci-lab/reconcile-network-fabric-talosconfig.ps1
+      - hack/hci-lab/test-network-fabric-talosconfig-static.ps1
+      - hack/hci-lab/ensure-default-image-certification.ps1
+      - hack/hci-lab/test-default-image-certification-static.ps1
 
 permissions:
   contents: read
