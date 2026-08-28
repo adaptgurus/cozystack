@@ -821,7 +821,16 @@ spec:
         return ($probe.ExitCode -eq 0)
     }
 
-    Invoke-Kubectl 'patch' '-n' 'tenant-root' 'tenants.apps.cozystack.io' 'root' '--type=merge' '-p' '{"spec":{"ingress":true,"monitoring":true,"etcd":true}}'
+    $tenantPatch = @'
+{"spec":{"ingress":true,"monitoring":true,"etcd":true}}
+'@
+    $patchFile = Join-Path $env:TEMP "tenant-root-$([guid]::NewGuid().ToString('N')).json"
+    try {
+        Set-Content -Path $patchFile -Value $tenantPatch -Encoding ASCII
+        Invoke-Kubectl 'patch' '-n' 'tenant-root' 'tenants.apps.cozystack.io' 'root' '--type=merge' '--patch-file' $patchFile
+    } finally {
+        Remove-Item -Force $patchFile -ErrorAction SilentlyContinue
+    }
 }
 
 function Final-ProductionLikeGates {
