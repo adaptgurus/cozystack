@@ -8,6 +8,7 @@ trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 PROFILES="initramfs kernel iso installer nocloud metal"
 EMBEDDED_CONFIG="layersentry-hci-machine-config.yaml"
 LOCAL_ISCSI_TARGET_TARBALL="/extensions/layersentry-iscsi-target.tar"
+LOCAL_NFS_SERVER_TARBALL="/extensions/layersentry-nfs-server.tar"
 
 # Firmware already carried by the Cozystack Talos image. Keep this list broad
 # enough for the common bare-metal NIC/GPU/storage platforms we support.
@@ -23,9 +24,8 @@ FIRMWARES="amd-ucode amdgpu bnx2-bnx2x i915 intel-ice-firmware intel-ucode qlogi
 # publishes one.
 #
 # nfsd is the Sidero extension that supplies the Talos-version-matched NFSD
-# kernel module. nfs-utils supplies rpcbind/rpc.statd for NFS client/NFSv3
-# support; LayerSentry's managed NFS export lifecycle is provided by the
-# platform storage layer rather than hard-coded exports in the ISO.
+# kernel module. nfs-utils supplies client/NFSv3 helper components. The complete
+# server userspace is carried in the LayerSentry nfs-server extension below.
 #
 # trident-iscsi-tools is intentionally included even when NetApp Trident is not
 # installed: Sidero's extension is the supported catalog image that provides
@@ -139,10 +139,11 @@ for profile in $PROFILES; do
   esac
 
   extension_yaml=$(sed 's/^/    - imageRef: /' "$IMAGE_REFS")
-  # The custom LayerSentry iSCSI target is built locally as a validated Talos
-  # extension tarball and mounted into imager at /extensions.
+  # LayerSentry-specific server extensions are built locally as validated Talos
+  # extension tarballs and mounted into imager at /extensions.
   extension_yaml="${extension_yaml}
-    - tarballPath: ${LOCAL_ISCSI_TARGET_TARBALL}"
+    - tarballPath: ${LOCAL_ISCSI_TARGET_TARBALL}
+    - tarballPath: ${LOCAL_NFS_SERVER_TARBALL}"
 
   # Embedded configuration is a virtual system extension. Include it in every
   # boot/install asset that carries an initramfs so multipath and NFSD kernel
