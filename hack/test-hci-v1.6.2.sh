@@ -130,6 +130,7 @@ pairs = [
     ("packages/apps/vm-instance/values.schema.json", "packages/system/vm-instance-rd/cozyrds/vm-instance.yaml"),
     ("packages/apps/vm-disk/values.schema.json", "packages/system/vm-disk-rd/cozyrds/vm-disk.yaml"),
     ("packages/apps/vm-network/values.schema.json", "packages/system/vm-network-rd/cozyrds/vm-network.yaml"),
+    ("packages/apps/vm-template/values.schema.json", "packages/system/vm-template-rd/cozyrds/vm-template.yaml"),
 ]
 
 schemas = {}
@@ -152,6 +153,30 @@ if not any(rule.get("rule") == "self == oldSelf" for rule in source_rules):
 storage_rules = disk["properties"]["storageClass"].get("x-kubernetes-validations", [])
 if not any(rule.get("rule") == "self == oldSelf" for rule in storage_rules):
     raise SystemExit("FAIL: VMDisk storageClass is not immutable")
+media_category = disk["properties"]["mediaCategory"]
+if media_category.get("pattern") != "^$|^(installer|drivers|rescue|appliance|custom)$":
+    raise SystemExit("FAIL: VMDisk mediaCategory allowed-value validation is missing")
+
+network = schemas["packages/apps/vm-network/values.schema.json"]
+if network["properties"]["bridge"].get("minLength") != 1:
+    raise SystemExit("FAIL: VMNetwork bridge is not constrained to a non-empty value")
+mtu_rules = network["properties"]["mtu"].get("x-kubernetes-validations", [])
+if not any(rule.get("rule") == "self == 0 || self >= 576" for rule in mtu_rules):
+    raise SystemExit("FAIL: VMNetwork MTU does not enforce 0 or 576-9216")
+fabric_rules = network.get("x-kubernetes-validations", [])
+if not any("fabricRef" in rule.get("rule", "") and "fabricNetwork" in rule.get("rule", "") for rule in fabric_rules):
+    raise SystemExit("FAIL: VMNetwork fabricRef/fabricNetwork pairing validation is missing")
+
+template = schemas["packages/apps/vm-template/values.schema.json"]
+source_vm = template["properties"]["sourceVM"]
+if source_vm.get("minLength") != 1 or source_vm.get("maxLength") != 63:
+    raise SystemExit("FAIL: VMTemplate sourceVM name constraints are missing")
+if source_vm.get("x-cozystack-options", {}).get("source") != "vminstance":
+    raise SystemExit("FAIL: VMTemplate sourceVM is not tenant VMInstance-backed")
+if template["properties"]["mode"].get("enum") != ["Copy", "Convert"]:
+    raise SystemExit("FAIL: VMTemplate mode is not restricted to Copy/Convert")
+if template["properties"]["excludeOpticalMedia"].get("enum") != [True]:
+    raise SystemExit("FAIL: VMTemplate can disable mandatory optical-media exclusion")
 PY
 
 printf '\n[8/12] Linting HCI system charts...\n'
