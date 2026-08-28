@@ -18,29 +18,123 @@ jobs:
   diagnose:
     name: Read-only live cluster diagnostics
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Inspect Talos and Kubernetes state
+      - name: Inspect Hyper-V, Talos, Kubernetes and LayerSentry state
         run: |
           $ErrorActionPreference = 'Continue'
           $kubectl = 'C:\hci-tools\kubectl.exe'
           $talosctl = 'C:\hci-tools\talosctl.exe'
           $state = 'C:\hci-state\cozystack-hci-lab'
+          $talosconfig = Join-Path $state 'talosconfig'
           $env:KUBECONFIG = Join-Path $state 'kubeconfig'
-          Write-Host '=== TALOS VERSIONS ==='
-          foreach ($ip in '10.10.10.11','10.10.10.12','10.10.10.13') {
-            & $talosctl --talosconfig (Join-Path $state 'talosconfig') version --nodes $ip --endpoints $ip
+          $report = Join-Path $env:RUNNER_TEMP "layersentry-hci-diagnose-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.txt"
+          $env:LAYERSENTRY_DIAG_REPORT = $report
+
+          function Section([string]$Name) {
+            Write-Host "`n================ $Name ================"
           }
-          Write-Host '=== NODES ==='
-          & $kubectl get nodes -o wide
-          & $kubectl describe nodes
-          Write-Host '=== CRDS ==='
-          & $kubectl get crd
-          Write-Host '=== PODS ==='
-          & $kubectl get pods -A -o wide
-          Write-Host '=== COZYSTACK OPERATOR ==='
-          & $kubectl describe pod -n cozy-system -l app.kubernetes.io/name=cozystack-operator
-          Write-Host '=== COREDNS ==='
-          & $kubectl describe pod -n kube-system -l k8s-app=kube-dns
-          Write-Host '=== EVENTS ==='
-          & $kubectl get events -A --sort-by=.lastTimestamp
+          function Run-Native([scriptblock]$Command) {
+            & $Command 2>&1 | Out-Host
+            Write-Host "exit_code=$LASTEXITCODE"
+          }
+
+          Start-Transcript -Path $report -Force | Out-Null
+          try {
+            Section 'PROVENANCE'
+            Write-Host "workflow_sha=$env:GITHUB_SHA"
+            Write-Host "run_id=$env:GITHUB_RUN_ID"
+            Write-Host "run_attempt=$env:GITHUB_RUN_ATTEMPT"
+            Write-Host "runner=$env:RUNNER_NAME"
+            Write-Host "timestamp_utc=$([DateTime]::UtcNow.ToString('o'))"
+
+            Section 'HYPER-V VMS'
+            Get-VM -Name sen1,sen2,sen3 | Select-Object Name,State,ProcessorCount,MemoryStartup,DynamicMemoryEnabled | Format-Table -AutoSize | Out-Host
+            foreach ($vm in 'sen1','sen2','sen3') {
+              Write-Host "--- $vm processor/network/disks ---"
+              Get-VMProcessor -VMName $vm | Select-Object VMName,Count,ExposeVirtualizationExtensions | Format-List | Out-Host
+              Get-VMNetworkAdapter -VMName $vm | Select-Object VMName,SwitchName,MacAddress,MacAddressSpoofing,Status,IPAddresses | Format-List | Out-Host
+              Get-VMHardDiskDrive -VMName $vm | ForEach-Object {
+                Get-VHD -Path $_.Path | Select-Object Path,VhdType,FileSize,Size | Format-List | Out-Host
+              }
+            }
+
+            Section 'TALOS VERSIONS AND IMMUTABLE DISK EVIDENCE'
+            foreach ($ip in '10.10.10.11','10.10.10.12','10.10.10.13') {
+              Write-Host "--- Talos node $ip ---"
+              Run-Native { & $talosctl --talosconfig $talosconfig version --nodes $ip --endpoints $ip }
+              Write-Host "--- disks $ip ---"
+              Run-Native { & $talosctl --talosconfig $talosconfig get disks --nodes $ip --endpoints $ip }
+              Write-Host "--- discovered volumes $ip ---"
+              Run-Native { & $talosctl --talosconfig $talosconfig get discoveredvolumes --nodes $ip --endpoints $ip -o yaml }
+              Write-Host "--- mounts $ip ---"
+              Run-Native { & $talosctl --talosconfig $talosconfig get mounts --nodes $ip --endpoints $ip }
+            }
+
+            Section 'KUBERNETES NODES'
+            Run-Native { & $kubectl get nodes -o wide }
+            Run-Native { & $kubectl get nodes -o json }
+            Run-Native { & $kubectl describe nodes }
+
+            Section 'FLUX HELMRELEASES'
+            Run-Native { & $kubectl get hr -A }
+            Run-Native { & $kubectl get hr -A -o yaml }
+
+            Section 'CUSTOM PACKAGE PROVENANCE'
+            Run-Native { & $kubectl get packages.cozystack.io -A -o yaml }
+            Run-Native { & $kubectl get packagesources.cozystack.io -A -o yaml }
+            Run-Native { & $kubectl get ocirepositories.source.toolkit.fluxcd.io -A -o yaml }
+            Run-Native { & $kubectl get deployment -n cozy-system cozystack-operator -o yaml }
+            Run-Native { & $kubectl get pods -n cozy-system -o wide }
+
+            Section 'GATEWAY API AND CILIUM'
+            Run-Native { & $kubectl get crd | Select-String 'gateway.networking.k8s.io|cilium.io' }
+            Run-Native { & $kubectl get all -n cozy-cilium -o wide }
+            Run-Native { & $kubectl get ds -A -o wide | Select-String 'cilium|multus' }
+            Run-Native { & $kubectl get pods -A -o wide | Select-String 'cilium|gateway' }
+
+            Section 'LINSTOR PIRAEUS ZFS DRBD'
+            Run-Native { & $kubectl get namespace cozy-linstor -o yaml }
+            Run-Native { & $kubectl get all -n cozy-linstor -o wide }
+            Run-Native { & $kubectl get hr -n cozy-linstor -o yaml }
+            Run-Native { & $kubectl get crd | Select-String 'linstor|piraeus' }
+
+            Section 'KUBEVIRT CDI MULTUS'
+            Run-Native { & $kubectl get kubevirt -A -o yaml }
+            Run-Native { & $kubectl get cdi -A -o yaml }
+            Run-Native { & $kubectl get pods -A -o wide | Select-String 'kubevirt|virt-|cdi|multus' }
+            Run-Native { & $kubectl get crd | Select-String 'kubevirt.io|cdi.kubevirt.io|k8s.cni.cncf.io' }
+
+            Section 'STORAGE'
+            Run-Native { & $kubectl get storageclass -o wide }
+            Run-Native { & $kubectl get pv -o wide }
+            Run-Native { & $kubectl get pvc -A -o wide }
+            Run-Native { & $kubectl get volumesnapshotclass -o wide }
+
+            Section 'NETWORKFABRIC AND VMNETWORK'
+            Run-Native { & $kubectl get networkfabrics.infrastructure.cozystack.io -o yaml }
+            Run-Native { & $kubectl get vmnetworks.apps.cozystack.io -A -o yaml }
+            Run-Native { & $kubectl get network-attachment-definitions.k8s.cni.cncf.io -A -o yaml }
+
+            Section 'ALL PODS'
+            Run-Native { & $kubectl get pods -A -o wide }
+
+            Section 'CRDS'
+            Run-Native { & $kubectl get crd }
+
+            Section 'RECENT EVENTS'
+            Run-Native { & $kubectl get events -A --sort-by=.lastTimestamp }
+          }
+          finally {
+            Stop-Transcript | Out-Null
+            Write-Host "Diagnostic report: $report"
+          }
+
+      - name: Upload read-only diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: layersentry-hci-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-hci-diagnose-${{ github.run_id }}-${{ github.run_attempt }}.txt
+          if-no-files-found: error
+          retention-days: 14
