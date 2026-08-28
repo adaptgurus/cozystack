@@ -1,0 +1,56 @@
+name: One-shot repoint HCI runtime
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/repoint-hci-runtime-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repoint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Guarded runtime repoint and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "adaptgurus/cozystack"
+          test "$GITHUB_REF_NAME" = "feat/hci-virtualization-v1.6.2-test"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/hci-layersentry-deploy.yml')
+          s = p.read_text()
+          old = """  RUNTIME_SOURCE_SHA: 4f7067142d9d84040f09148fd26150df98c47789\n  RUNTIME_ARTIFACT_RUN_ID: '33167986706'\n  RUNTIME_ARTIFACT_NAME: layersentry-hci-build-4f7067142d9d84040f09148fd26150df98c47789"""
+          new = """  RUNTIME_SOURCE_SHA: 2b538371bc7141759c02d900f554a310cc92f864\n  RUNTIME_ARTIFACT_RUN_ID: '33182992754'\n  RUNTIME_ARTIFACT_NAME: layersentry-hci-build-2b538371bc7141759c02d900f554a310cc92f864"""
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one old runtime block, found {s.count(old)}')
+          p.write_text(s.replace(old, new))
+          PY
+
+          rm .github/workflows/repoint-hci-runtime-once.yml
+
+          mapfile -t changed < <(git status --short | awk '{print $2}' | sort)
+          printf 'changed=%s\n' "${changed[*]}"
+          test "${#changed[@]}" -eq 2
+          test "${changed[0]}" = ".github/workflows/hci-layersentry-deploy.yml"
+          test "${changed[1]}" = ".github/workflows/repoint-hci-runtime-once.yml"
+
+          grep -q "RUNTIME_SOURCE_SHA: 2b538371bc7141759c02d900f554a310cc92f864" .github/workflows/hci-layersentry-deploy.yml
+          grep -q "RUNTIME_ARTIFACT_RUN_ID: '33182992754'" .github/workflows/hci-layersentry-deploy.yml
+          grep -q "RUNTIME_ARTIFACT_NAME: layersentry-hci-build-2b538371bc7141759c02d900f554a310cc92f864" .github/workflows/hci-layersentry-deploy.yml
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A .github/workflows/hci-layersentry-deploy.yml .github/workflows/repoint-hci-runtime-once.yml
+          git commit -m "ci(hci): deploy persistent VM state runtime"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
