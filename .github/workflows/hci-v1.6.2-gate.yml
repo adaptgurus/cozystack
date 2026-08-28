@@ -38,6 +38,24 @@ jobs:
       - name: Install helm-unittest
         run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
 
+      - name: Install Cozystack values generator
+        run: |
+          curl -sSL https://github.com/cozystack/cozyvalues-gen/releases/download/v1.6.0/cozyvalues-gen-linux-amd64.tar.gz | tar -xzvf- -C /usr/local/bin/ cozyvalues-gen
+
+      - name: Verify generated HCI application artifacts are clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in vm-instance vm-disk vm-network vm-template; do
+            make -C "packages/apps/${package}" generate
+          done
+          if [ -n "$(git status --porcelain -- packages/apps/vm-instance packages/apps/vm-disk packages/apps/vm-network packages/apps/vm-template api/apps/v1alpha1/vminstance api/apps/v1alpha1/vmdisk api/apps/v1alpha1/vmnetwork api/apps/v1alpha1/vmtemplate packages/system/vm-instance-rd packages/system/vm-disk-rd packages/system/vm-network-rd packages/system/vm-template-rd)" ]; then
+            echo "::error::HCI application generation produced drift. Run make generate in each changed virtualization package and commit the result."
+            git status --short -- packages/apps/vm-instance packages/apps/vm-disk packages/apps/vm-network packages/apps/vm-template api/apps/v1alpha1/vminstance api/apps/v1alpha1/vmdisk api/apps/v1alpha1/vmnetwork api/apps/v1alpha1/vmtemplate packages/system/vm-instance-rd packages/system/vm-disk-rd packages/system/vm-network-rd packages/system/vm-template-rd
+            git diff -- packages/apps/vm-instance packages/apps/vm-disk packages/apps/vm-network packages/apps/vm-template api/apps/v1alpha1/vminstance api/apps/v1alpha1/vmdisk api/apps/v1alpha1/vmnetwork api/apps/v1alpha1/vmtemplate packages/system/vm-instance-rd packages/system/vm-disk-rd packages/system/vm-network-rd packages/system/vm-template-rd
+            exit 1
+          fi
+
       - name: Test VM template safety backend and transaction controller
         run: go test ./pkg/vmtemplate ./pkg/vmtemplatecontroller
 
