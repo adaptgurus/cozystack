@@ -13,6 +13,8 @@ on:
       - hack/hci-lab/test-network-fabric-talosconfig-static.ps1
       - hack/hci-lab/ensure-default-image-certification.ps1
       - hack/hci-lab/test-default-image-certification-static.ps1
+      - hack/hci-lab/prepare-linux-vm-persistent-state-cert.ps1
+      - hack/hci-lab/test-linux-vm-persistent-state-cert-static.ps1
 
 permissions:
   contents: read
@@ -61,6 +63,8 @@ jobs:
           Save-RepoFile 'hack/hci-lab/test-network-fabric-talosconfig-static.ps1' $env:GITHUB_SHA 'test-network-fabric-talosconfig-static.ps1'
           Save-RepoFile 'hack/hci-lab/ensure-default-image-certification.ps1' $env:GITHUB_SHA 'ensure-default-image-certification.ps1'
           Save-RepoFile 'hack/hci-lab/test-default-image-certification-static.ps1' $env:GITHUB_SHA 'test-default-image-certification-static.ps1'
+          Save-RepoFile 'hack/hci-lab/prepare-linux-vm-persistent-state-cert.ps1' $env:GITHUB_SHA 'prepare-linux-vm-persistent-state-cert.ps1'
+          Save-RepoFile 'hack/hci-lab/test-linux-vm-persistent-state-cert-static.ps1' $env:GITHUB_SHA 'test-linux-vm-persistent-state-cert-static.ps1'
           Save-RepoFile 'hack/hci-live/test-linux-vm-product-live.ps1' $env:RUNTIME_SOURCE_SHA 'test-linux-vm-product-live.ps1'
           "LAYERSENTRY_CERT_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -116,6 +120,8 @@ jobs:
           if (-not $?) { throw 'NetworkFabric static validation failed.' }
           & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-default-image-certification-static.ps1') -ScriptPath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'ensure-default-image-certification.ps1')
           if (-not $?) { throw 'Default image certification static validation failed.' }
+          & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-linux-vm-persistent-state-cert-static.ps1') -PatcherPath (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'prepare-linux-vm-persistent-state-cert.ps1')
+          if (-not $?) { throw 'Persistent-state LINSTOR convergence static validation failed.' }
 
       - name: Download exact runtime build manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -177,7 +183,11 @@ jobs:
       - name: Run persistent TPM Linux VM lifecycle proof
         run: |
           $ErrorActionPreference = 'Stop'
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-linux-vm-product-live.ps1') -EvidenceRoot $env:LAYERSENTRY_CERT_EVIDENCE
+          $runtimeTest = Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-linux-vm-product-live.ps1'
+          $preparedTest = Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'test-linux-vm-product-live-prepared.ps1'
+          & (Join-Path $env:LAYERSENTRY_CERT_SOURCE_DIR 'prepare-linux-vm-persistent-state-cert.ps1') -RuntimeTestPath $runtimeTest -OutputPath $preparedTest
+          if (-not $?) { throw 'Failed to prepare bounded persistent-state Linux VM certification test.' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File $preparedTest -EvidenceRoot $env:LAYERSENTRY_CERT_EVIDENCE
           if ($LASTEXITCODE -ne 0) { throw "Persistent TPM Linux lifecycle proof failed with exit code $LASTEXITCODE" }
 
       - name: Capture post-certification state
