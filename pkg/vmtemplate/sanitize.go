@@ -185,6 +185,7 @@ func StripOpticalVolumes(tpl *unstructured.Unstructured, excluded []string) (San
 				if _, forbidden := excludedSet[name]; forbidden {
 					return SanitizeResult{}, fmt.Errorf("optical volume %q remained after template sanitation", name)
 				}
+			}
 		}
 	}
 
