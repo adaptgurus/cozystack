@@ -52,6 +52,38 @@ func TestStrictHandlerAllowsWellFormedVMNetworkAdmission(t *testing.T) {
 	}
 }
 
+func TestStrictHandlerAllowsWellFormedVMInstanceAdmission(t *testing.T) {
+	validObject := []byte(`{"spec":{"runStrategy":"Always"}}`)
+	validObject = bytes.ReplaceAll(validObject, []byte(`\"`), []byte(`"`))
+	tests := []struct {
+		name      string
+		op        admissionv1.Operation
+		oldObject []byte
+	}{
+		{name: "create", op: admissionv1.Create},
+		{name: "update", op: admissionv1.Update, oldObject: validObject},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			h := NewStrictHandler(next, DefaultMaxAdmissionBodyBytes)
+			body := strictAdmissionBody(t, tt.op, appsGroup, vmInstanceResource, "tenant-a", "vm-a", "uid-vm-1", validObject, tt.oldObject)
+			req := httptest.NewRequest(http.MethodPost, "/validate-vmnetwork", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			h.ServeHTTP(resp, req)
+			if resp.Code != http.StatusNoContent || !called {
+				t.Fatalf("code=%d called=%v, want 204/true; body=%q", resp.Code, called, resp.Body.String())
+			}
+		})
+	}
+}
+
 func TestStrictHandlerFailsClosedOnMalformedRequests(t *testing.T) {
 	validObject := []byte(`{"spec":{}}`)
 	validObject = bytes.ReplaceAll(validObject, []byte(`\"`), []byte(`"`))
@@ -109,6 +141,20 @@ func TestStrictHandlerFailsClosedOnMalformedRequests(t *testing.T) {
 			method:      http.MethodPost,
 			contentType: "application/json",
 			body:        strictAdmissionBody(t, admissionv1.Update, appsGroup, vmNetworkResource, "tenant-a", "net-a", "uid-1", validObject, nil),
+			wantCode:    http.StatusBadRequest,
+		},
+		{
+			name:        "vminstance update missing old object",
+			method:      http.MethodPost,
+			contentType: "application/json",
+			body:        strictAdmissionBody(t, admissionv1.Update, appsGroup, vmInstanceResource, "tenant-a", "vm-a", "uid-vm-2", validObject, nil),
+			wantCode:    http.StatusBadRequest,
+		},
+		{
+			name:        "vminstance delete is outside webhook contract",
+			method:      http.MethodPost,
+			contentType: "application/json",
+			body:        strictAdmissionBody(t, admissionv1.Delete, appsGroup, vmInstanceResource, "tenant-a", "vm-a", "uid-vm-3", nil, validObject),
 			wantCode:    http.StatusBadRequest,
 		},
 	}
