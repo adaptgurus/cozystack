@@ -155,6 +155,11 @@ $startVmiUid = $null
 $selectedImage = $null
 $selectedProfile = $null
 $selectedInstanceType = $null
+$tpmPvcName = $null
+$tpmPvName = $null
+$tpmVolumeHandle = $null
+$tpmPvcUid = $null
+$cloudInitSecretName = $null
 
 try {
     # Fail closed unless this is the already-proven root tenant namespace and all three nodes are Ready.
@@ -169,9 +174,26 @@ try {
         if ($ready.Count -ne 1 -or $ready[0].status -ne 'True') { throw "Node $($node.metadata.name) is not Ready" }
     }
 
-    # Product APIs must exist before any test resource is created.
-    Invoke-KubectlText 'get' 'customresourcedefinition' 'vmdisks.apps.cozystack.io' '-o' 'name' | Out-Null
-    Invoke-KubectlText 'get' 'customresourcedefinition' 'vminstances.apps.cozystack.io' '-o' 'name' | Out-Null
+    # Cozystack application resources are served through an aggregated APIService,
+    # not conventional CRDs. Prove the live API discovery shape before mutation.
+    $apiService = (Invoke-KubectlText 'get' 'apiservice.apiregistration.k8s.io' 'v1alpha1.apps.cozystack.io' '-o' 'json' | ConvertFrom-Json)
+    $apiAvailable = @($apiService.status.conditions | Where-Object { $_.type -eq 'Available' })
+    if ($apiAvailable.Count -lt 1 -or $apiAvailable[0].status -ne 'True') {
+        throw 'Aggregated APIService v1alpha1.apps.cozystack.io is not Available'
+    }
+    $discovery = (Invoke-KubectlText 'get' '--raw=/apis/apps.cozystack.io/v1alpha1' | ConvertFrom-Json)
+    $resourceNames = @($discovery.resources | ForEach-Object { [string]$_.name })
+    if ($resourceNames -notcontains 'vmdisks') { throw 'Aggregated apps.cozystack.io API does not advertise vmdisks' }
+    if ($resourceNames -notcontains 'vminstances') { throw 'Aggregated apps.cozystack.io API does not advertise vminstances' }
+
+    # Persistent vTPM backend state must already be enabled on shared replicated storage.
+    $kubeVirt = (Invoke-KubectlText 'get' 'kubevirt.kubevirt.io' '-n' 'cozy-kubevirt' 'kubevirt' '-o' 'json' | ConvertFrom-Json)
+    if ([string]$kubeVirt.status.phase -ne 'Deployed') { throw "KubeVirt phase is $($kubeVirt.status.phase), expected Deployed" }
+    $featureGates = @($kubeVirt.spec.configuration.developerConfiguration.featureGates)
+    if ($featureGates -notcontains 'VMPersistentState') { throw 'KubeVirt VMPersistentState feature gate is not enabled' }
+    if ([string]$kubeVirt.spec.configuration.vmStateStorageClass -ne 'replicated') {
+        throw "KubeVirt vmStateStorageClass is '$($kubeVirt.spec.configuration.vmStateStorageClass)', expected replicated"
+    }
 
     # Refuse to reuse any logical or generated runtime resource with our unique names.
     $collisionChecks = @(
@@ -285,6 +307,9 @@ spec:
   instanceProfile: $selectedProfile
   disks:
     - name: $diskLogicalName
+  tpm:
+    enabled: true
+    persistent: true
   cloudInit: |
 $cloudInitIndented
   cloudInitSeed: "$runId-$attempt"
@@ -310,6 +335,37 @@ $cloudInitIndented
     $initialVmi = Get-VMI $vmRuntimeName
     $initialVmiUid = [string]$initialVmi.metadata.uid
     if (-not $initialVmiUid) { throw 'Initial VMI has no UID' }
+
+    $runtimeVm = (Invoke-KubectlText 'get' 'virtualmachine.kubevirt.io' '-n' $TenantNamespace $vmRuntimeName '-o' 'json' | ConvertFrom-Json)
+    if (-not [bool]$runtimeVm.spec.template.spec.domain.devices.tpm.persistent) {
+        throw 'Generated KubeVirt VM does not request persistent TPM state'
+    }
+    $cloudInitVolumes = @($runtimeVm.spec.template.spec.volumes | Where-Object { $_.name -eq 'cloudinitdisk' })
+    if ($cloudInitVolumes.Count -ne 1) { throw 'Generated KubeVirt VM does not contain exactly one cloudinitdisk volume' }
+    $cloudInitSecretName = [string]$cloudInitVolumes[0].cloudInitNoCloud.secretRef.name
+    if (-not $cloudInitSecretName) { throw 'cloudinitdisk does not reference a Secret' }
+    Invoke-KubectlText 'get' 'secret' '-n' $TenantNamespace $cloudInitSecretName '-o' 'name' | Out-Null
+
+    Wait-Until -TimeoutSeconds 300 -Description 'persistent TPM backend PVC Bound' -Condition {
+        $probe = Invoke-NativeText -FilePath $KubectlPath -Arguments @('get','pvc','-n',$TenantNamespace,'-l',"persistent-state-for=$vmRuntimeName",'-o','json')
+        if ($probe.ExitCode -ne 0) { return $false }
+        $list = $probe.Text | ConvertFrom-Json
+        $bound = @($list.items | Where-Object { $_.status.phase -eq 'Bound' -and -not $_.metadata.deletionTimestamp })
+        return ($bound.Count -eq 1)
+    }
+    $tpmPvcs = (Invoke-KubectlText 'get' 'pvc' '-n' $TenantNamespace '-l' "persistent-state-for=$vmRuntimeName" '-o' 'json' | ConvertFrom-Json)
+    $tpmItems = @($tpmPvcs.items | Where-Object { $_.status.phase -eq 'Bound' -and -not $_.metadata.deletionTimestamp })
+    if ($tpmItems.Count -ne 1) { throw "Expected exactly one Bound persistent-state PVC; found $($tpmItems.Count)" }
+    $tpmPvc = $tpmItems[0]
+    $tpmPvcName = [string]$tpmPvc.metadata.name
+    $tpmPvcUid = [string]$tpmPvc.metadata.uid
+    if ([string]$tpmPvc.spec.storageClassName -ne 'replicated') { throw "Persistent TPM PVC $tpmPvcName is not on replicated StorageClass" }
+    $tpmPvName = [string]$tpmPvc.spec.volumeName
+    if (-not $tpmPvName) { throw "Persistent TPM PVC $tpmPvcName has no bound PV" }
+    $tpmVolumeHandle = (Invoke-KubectlText 'get' 'pv' $tpmPvName '-o' 'jsonpath={.spec.csi.volumeHandle}').Trim()
+    if (-not $tpmVolumeHandle) { throw "Persistent TPM PV $tpmPvName has no CSI volumeHandle" }
+    [void](Test-ThreeNodeLinstorResource -VolumeHandle $tpmVolumeHandle -NodeNames $nodeNames -EvidencePath (Join-Path $evidenceDir 'linstor-tpm-state.txt'))
+
     $volumes = @($initialVmi.spec.volumes)
     $osVolume = @($volumes | Where-Object { $_.dataVolume.name -eq $diskRuntimeName })
     if ($osVolume.Count -lt 1) { throw "VMI does not attach expected product OS DataVolume $diskRuntimeName" }
@@ -346,6 +402,10 @@ $cloudInitIndented
     $startedVmi = Get-VMI $vmRuntimeName
     $startVmiUid = [string]$startedVmi.metadata.uid
     if (-not $startVmiUid -or $startVmiUid -eq $initialVmiUid) { throw 'Product stop/start did not create a fresh VMI UID' }
+    $tpmAfterStart = (Invoke-KubectlText 'get' 'pvc' '-n' $TenantNamespace $tpmPvcName '-o' 'json' | ConvertFrom-Json)
+    if ([string]$tpmAfterStart.metadata.uid -ne $tpmPvcUid -or $tpmAfterStart.status.phase -ne 'Bound') {
+        throw 'Persistent TPM backend PVC identity did not survive product stop/start'
+    }
 
     # Reboot through the official KubeVirt VM restart subresource and require another fresh Running VMI.
     $restartPath = "/apis/subresources.kubevirt.io/v1/namespaces/$TenantNamespace/virtualmachines/$vmRuntimeName/restart"
@@ -361,9 +421,23 @@ $cloudInitIndented
     $restartedVmi = Get-VMI $vmRuntimeName
     $restartVmiUid = [string]$restartedVmi.metadata.uid
     $restartNode = [string]$restartedVmi.status.nodeName
+    $tpmAfterRestart = (Invoke-KubectlText 'get' 'pvc' '-n' $TenantNamespace $tpmPvcName '-o' 'json' | ConvertFrom-Json)
+    if ([string]$tpmAfterRestart.metadata.uid -ne $tpmPvcUid -or $tpmAfterRestart.status.phase -ne 'Bound') {
+        throw 'Persistent TPM backend PVC identity did not survive KubeVirt restart'
+    }
 
-    Invoke-KubectlText 'get' 'vmdisk.apps.cozystack.io,vminstance.apps.cozystack.io' '-n' $TenantNamespace $diskLogicalName $vmLogicalName '-o' 'wide' 2>$null | Set-Content -Path (Join-Path $evidenceDir 'product-resources.txt') -Encoding UTF8
-    Invoke-KubectlText 'get' 'virtualmachine.kubevirt.io,virtualmachineinstance.kubevirt.io,datavolume.cdi.kubevirt.io,pvc' '-n' $TenantNamespace '-l' "layersentry.io/run-id=$runId" '-o' 'wide' 2>$null | Set-Content -Path (Join-Path $evidenceDir 'runtime-resources.txt') -Encoding UTF8
+    $productEvidence = @(
+        (Invoke-KubectlText 'get' 'vmdisk.apps.cozystack.io' '-n' $TenantNamespace $diskLogicalName '-o' 'wide'),
+        (Invoke-KubectlText 'get' 'vminstance.apps.cozystack.io' '-n' $TenantNamespace $vmLogicalName '-o' 'wide')
+    )
+    $productEvidence | Set-Content -Path (Join-Path $evidenceDir 'product-resources.txt') -Encoding UTF8
+    $runtimeEvidence = @(
+        (Invoke-KubectlText 'get' 'virtualmachine.kubevirt.io' '-n' $TenantNamespace $vmRuntimeName '-o' 'wide'),
+        (Invoke-KubectlText 'get' 'virtualmachineinstance.kubevirt.io' '-n' $TenantNamespace $vmRuntimeName '-o' 'wide'),
+        (Invoke-KubectlText 'get' 'datavolume.cdi.kubevirt.io' '-n' $TenantNamespace $diskRuntimeName '-o' 'wide'),
+        (Invoke-KubectlText 'get' 'pvc' '-n' $TenantNamespace $diskRuntimeName $tpmPvcName '-o' 'wide')
+    )
+    $runtimeEvidence | Set-Content -Path (Join-Path $evidenceDir 'runtime-resources.txt') -Encoding UTF8
 
     $summary = @(
         'status=PASS',
@@ -381,6 +455,16 @@ $cloudInitIndented
         'osdisk_three_node_drbd=PASS',
         'vm_create_boot=PASS',
         'vm_disk_attachment=PASS',
+        'persistent_tpm_enabled=PASS',
+        'persistent_tpm_storageclass=replicated',
+        "persistent_tpm_pvc=$tpmPvcName",
+        "persistent_tpm_pv=$tpmPvName",
+        "persistent_tpm_volume_handle=$tpmVolumeHandle",
+        'persistent_tpm_three_node_drbd=PASS',
+        'persistent_tpm_identity_stop_start=PASS',
+        'persistent_tpm_identity_restart=PASS',
+        "cloud_init_secret=$cloudInitSecretName",
+        'cloud_init_cluster_portable=PASS',
         'vm_default_nic=PASS',
         "vm_default_mac=$($defaultInterface.mac)",
         "vm_default_ip=$($defaultInterface.ipAddress)",
@@ -414,6 +498,21 @@ $cloudInitIndented
                 return ($crAbsent -and $vmAbsent -and $vmiAbsent)
             }
         } catch { $cleanupErrors.Add($_.Exception.Message) }
+    }
+
+    if ($tpmPvcName) {
+        try {
+            Wait-Until -TimeoutSeconds 420 -Description "persistent TPM PVC $tpmPvcName cleanup" -Condition {
+                return (Test-KubectlObjectAbsent @('get','pvc','-n',$TenantNamespace,$tpmPvcName,'-o','name'))
+            }
+        } catch { $cleanupErrors.Add($_.Exception.Message) }
+        if ($tpmPvName) {
+            try {
+                Wait-Until -TimeoutSeconds 300 -Description "persistent TPM PV $tpmPvName reclamation" -Condition {
+                    return (Test-KubectlObjectAbsent @('get','pv',$tpmPvName,'-o','name'))
+                }
+            } catch { $cleanupErrors.Add($_.Exception.Message) }
+        }
     }
 
     if ($diskCreated) {
