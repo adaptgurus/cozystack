@@ -32,7 +32,7 @@ jobs:
 
       - name: Inspect live gatekeeper configuration without secret values
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Continue'
           $k='C:\hci-tools\kubectl.exe'
           $d = & $k -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
           if (-not $d) { throw 'gatekeeper deployment missing' }
@@ -51,18 +51,21 @@ jobs:
               }
             }
           }
-          Write-Host '===== services/endpoints/routes ====='
-          & $k -n cozy-dashboard get svc,endpoints,httproute,ingress -o wide 2>$null
+          Write-Host '===== services/routes ====='
+          & $k -n cozy-dashboard get svc,ingress -o wide 2>$null
+          & $k -n cozy-dashboard get httproute -o wide 2>$null
+          exit 0
 
       - name: Inspect gatekeeper OAuth logs
         run: |
           $ErrorActionPreference = 'Continue'
           $k='C:\hci-tools\kubectl.exe'
           Write-Host '===== gatekeeper current logs ====='
-          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=500 --timestamps=true
+          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=700 --timestamps=true
           Write-Host '===== gatekeeper previous logs if any ====='
           $pod = (& $k -n cozy-dashboard get pod -l 'app.kubernetes.io/name=gatekeeper,app.kubernetes.io/instance=incloud-web' -o jsonpath='{.items[0].metadata.name}')
           if ($pod) { & $k -n cozy-dashboard logs $pod --all-containers=true --previous --tail=300 --timestamps=true 2>$null }
+          exit 0
 
       - name: Inspect Keycloak client and operator status safely
         run: |
@@ -80,14 +83,13 @@ jobs:
               if ($i.status) { $i.status | ConvertTo-Json -Depth 8 }
             }
           }
-          Write-Host '===== Keycloak pods ====='
-          & $k get pods -A -o wide | Select-String -Pattern 'keycloak' -CaseSensitive:$false
           Write-Host '===== Keycloak recent auth/offline/error log lines ====='
           $pods = & $k get pods -A -o json 2>$null | ConvertFrom-Json
           foreach ($p in @($pods.items | Where-Object { $_.metadata.name -match 'keycloak' })) {
             Write-Host "--- $($p.metadata.namespace)/$($p.metadata.name) ---"
-            & $k logs -n $p.metadata.namespace $p.metadata.name --all-containers=true --tail=1200 --timestamps=true 2>$null | Select-String -Pattern 'offline|dashboard|LOGIN_ERROR|CODE_TO_TOKEN_ERROR|invalid|token|error' -CaseSensitive:$false | Select-Object -Last 160
+            & $k logs -n $p.metadata.namespace $p.metadata.name --all-containers=true --tail=1500 --timestamps=true 2>$null | Select-String -Pattern 'offline|dashboard|LOGIN_ERROR|CODE_TO_TOKEN_ERROR|invalid|token|error' -CaseSensitive:$false | Select-Object -Last 220
           }
+          exit 0
 
       - name: Inspect dashboard RBAC bindings and identity permissions
         run: |
@@ -108,13 +110,11 @@ jobs:
           )
           foreach ($c in $checks) {
             $verb=$c[0]; $res=$c[1]; $ns=$c[2]
-            if ($ns) {
-              $r=& $k auth can-i $verb $res -n $ns --as=$user --as-group=$group 2>&1
-            } else {
-              $r=& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1
-            }
+            if ($ns) { $r=& $k auth can-i $verb $res -n $ns --as=$user --as-group=$group 2>&1 }
+            else { $r=& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1 }
             Write-Host "$verb $res namespace=$ns => $r"
           }
+          exit 0
 
       - name: Inspect dashboard Helm ownership and source version
         run: |
@@ -124,3 +124,4 @@ jobs:
           & $k -n cozy-dashboard get helmrelease -o yaml | Select-String -Pattern 'chart:|version:|sourceRef:|Ready|message:' -Context 1,2
           & $k get package -A 2>$null | Select-String -Pattern 'dashboard' -CaseSensitive:$false
           Write-Host 'No Secret data was read or printed.'
+          exit 0
