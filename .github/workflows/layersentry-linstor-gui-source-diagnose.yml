@@ -1,0 +1,54 @@
+name: LayerSentry LINSTOR GUI Source Diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-source-diagnose.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Inspect declarative ownership and chart source without secrets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== HELMRELEASE METADATA ==='
+          $hr = (& $env:KUBECTL get helmrelease linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+          Write-Host ('uid=' + $hr.metadata.uid)
+          Write-Host ('ownerRefs=' + (($hr.metadata.ownerReferences | ConvertTo-Json -Depth 10 -Compress)))
+          Write-Host ('labels=' + (($hr.metadata.labels | ConvertTo-Json -Depth 10 -Compress)))
+          Write-Host ('annotations=' + (($hr.metadata.annotations | ConvertTo-Json -Depth 10 -Compress)))
+          Write-Host '=== HELMRELEASE CHART/SOURCE ==='
+          if ($hr.spec.chart) { Write-Host ('chart=' + ($hr.spec.chart | ConvertTo-Json -Depth 20 -Compress)) }
+          if ($hr.spec.chartRef) { Write-Host ('chartRef=' + ($hr.spec.chartRef | ConvertTo-Json -Depth 20 -Compress)) }
+          Write-Host ('postRenderers=' + (($hr.spec.postRenderers | ConvertTo-Json -Depth 30 -Compress)))
+          Write-Host ('valuesFrom=' + (($hr.spec.valuesFrom | ConvertTo-Json -Depth 20 -Compress)))
+
+          Write-Host '=== PACKAGE ==='
+          $pkg = (& $env:KUBECTL get package.cozystack.io cozystack.linstor-gui -o json | ConvertFrom-Json)
+          Write-Host ('packageMetadata=' + (([ordered]@{name=$pkg.metadata.name;uid=$pkg.metadata.uid;labels=$pkg.metadata.labels;annotations=$pkg.metadata.annotations;ownerReferences=$pkg.metadata.ownerReferences}) | ConvertTo-Json -Depth 20 -Compress))
+          Write-Host ('packageSpec=' + ($pkg.spec | ConvertTo-Json -Depth 30 -Compress))
+          Write-Host ('packageStatus=' + ($pkg.status | ConvertTo-Json -Depth 30 -Compress))
+
+          Write-Host '=== RELATED FLUX SOURCES ==='
+          & $env:KUBECTL get helmcharts.source.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,CHART:.spec.chart,VERSION:.spec.version,SOURCEKIND:.spec.sourceRef.kind,SOURCENAME:.spec.sourceRef.name,READY:.status.conditions[?(@.type=="Ready")].status,ARTIFACT:.status.artifact.url' --no-headers | Select-String -Pattern 'linstor-gui|cozy-linstor' -CaseSensitive:$false
+          & $env:KUBECTL get ocirepositories.source.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,URL:.spec.url,REF:.spec.ref.tag,READY:.status.conditions[?(@.type=="Ready")].status' --no-headers 2>$null | Select-String -Pattern 'linstor-gui|cozystack' -CaseSensitive:$false
+          & $env:KUBECTL get helmrepositories.source.toolkit.fluxcd.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,URL:.spec.url,READY:.status.conditions[?(@.type=="Ready")].status' --no-headers 2>$null | Select-String -Pattern 'cozystack|linstor' -CaseSensitive:$false
+
+          Write-Host '=== CURRENT LIVE SCOPE AFTER FLUX ==='
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          @($dep.spec.template.spec.containers[0].args | Where-Object { $_ -like '--scope=*' }) | ForEach-Object { Write-Host $_ }
