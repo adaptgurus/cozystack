@@ -13,16 +13,21 @@ spec:
       {{- if .Values.cpuAllocationRatio }}
       cpuAllocationRatio: {{ .Values.cpuAllocationRatio }}
       {{- end }}
+      # KubeVirt v1.8.4 GA gates are intentionally not listed here. GA gates
+      # are always active and their feature-gate names are obsolete/redundant.
+      # The remaining static gates are non-GA capabilities that Cozystack uses
+      # and therefore require repository + real-lab validation before release.
       featureGates:
       - HotplugVolumes
       - ExpandDisks
-      - LiveMigration
-      - AutoResourceLimitsGate
       - CPUManager
-      - GPU
       - VMExport
       {{- range .Values.extraFeatureGates }}
       - {{ . }}
+      {{- end }}
+      {{- with .Values.disabledFeatureGates }}
+      disabledFeatureGates:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
     {{- with .Values.permittedHostDevices }}
     permittedHostDevices:
@@ -33,15 +38,32 @@ spec:
       {{- toYaml . | nindent 6 }}
     {{- end }}
     evictionStrategy: LiveMigrate
+    migrations:
+      parallelMigrationsPerCluster: {{ .Values.migrations.parallelMigrationsPerCluster }}
+      parallelOutboundMigrationsPerNode: {{ .Values.migrations.parallelOutboundMigrationsPerNode }}
+      bandwidthPerMigration: {{ .Values.migrations.bandwidthPerMigration }}
+      completionTimeoutPerGiB: {{ .Values.migrations.completionTimeoutPerGiB }}
+      progressTimeout: {{ .Values.migrations.progressTimeout }}
+      # Production safety: keep migrations on TLS-protected pre-copy and do not
+      # automatically pause a guest, switch to post-copy, or bypass safety
+      # checks merely to force a migration to complete.
+      disableTLS: false
+      allowAutoConverge: false
+      allowPostCopy: false
+      allowWorkloadDisruption: false
+      unsafeMigrationOverride: false
     virtualMachineOptions:
       disableSerialConsoleLog: {}
     vmRolloutStrategy: LiveUpdate
+  # Fail closed on accidental platform removal while VM workloads still exist.
+  uninstallStrategy: BlockUninstallIfWorkloadsExist
   workloadUpdateStrategy:
+    # LiveMigrate is deliberately the only automatic update method. Adding
+    # Evict would shut down non-live-migratable workloads (for example many
+    # host-device/GPU VMs) during KubeVirt updates. Those workloads instead
+    # remain running until a controlled maintenance window handles them.
     workloadUpdateMethods:
     - LiveMigrate
-    - Evict
-    batchEvictionInterval: 1m
-    batchEvictionSize: 10
   customizeComponents: {}
   imagePullPolicy: IfNotPresent
   monitorNamespace: tenant-root

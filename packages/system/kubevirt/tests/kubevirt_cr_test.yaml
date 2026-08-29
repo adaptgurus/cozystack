@@ -1,28 +1,101 @@
-suite: cozy-kubevirt CR parameterization
+suite: cozy-kubevirt CR production hardening
 templates:
   - templates/kubevirt-cr.yaml
 release:
   name: kubevirt
   namespace: cozy-kubevirt
 tests:
-  - it: keeps the upstream default feature-gate set and omits permittedHostDevices when values are empty
+  - it: enables only the deliberately validated non-GA feature-gate set by default
     asserts:
       - equal:
           path: spec.configuration.developerConfiguration.featureGates
           value:
           - HotplugVolumes
           - ExpandDisks
-          - LiveMigration
-          - AutoResourceLimitsGate
           - CPUManager
-          - GPU
           - VMExport
       - notExists:
           path: spec.configuration.developerConfiguration.cpuAllocationRatio
       - notExists:
+          path: spec.configuration.developerConfiguration.disabledFeatureGates
+      - notExists:
           path: spec.configuration.permittedHostDevices
       - notExists:
           path: spec.configuration.mediatedDevicesConfiguration
+      - equal:
+          path: spec.uninstallStrategy
+          value: BlockUninstallIfWorkloadsExist
+      - equal:
+          path: spec.workloadUpdateStrategy.workloadUpdateMethods
+          value:
+          - LiveMigrate
+
+  - it: makes the production migration safety envelope explicit
+    asserts:
+      - equal:
+          path: spec.configuration.migrations.parallelMigrationsPerCluster
+          value: 5
+      - equal:
+          path: spec.configuration.migrations.parallelOutboundMigrationsPerNode
+          value: 2
+      - equal:
+          path: spec.configuration.migrations.bandwidthPerMigration
+          value: 64Mi
+      - equal:
+          path: spec.configuration.migrations.completionTimeoutPerGiB
+          value: 800
+      - equal:
+          path: spec.configuration.migrations.progressTimeout
+          value: 150
+      - equal:
+          path: spec.configuration.migrations.disableTLS
+          value: false
+      - equal:
+          path: spec.configuration.migrations.allowAutoConverge
+          value: false
+      - equal:
+          path: spec.configuration.migrations.allowPostCopy
+          value: false
+      - equal:
+          path: spec.configuration.migrations.allowWorkloadDisruption
+          value: false
+      - equal:
+          path: spec.configuration.migrations.unsafeMigrationOverride
+          value: false
+
+  - it: allows controlled migration throughput tuning without weakening safety switches
+    set:
+      migrations:
+        parallelMigrationsPerCluster: 2
+        parallelOutboundMigrationsPerNode: 1
+        bandwidthPerMigration: 128Mi
+        completionTimeoutPerGiB: 900
+        progressTimeout: 180
+    asserts:
+      - equal:
+          path: spec.configuration.migrations.parallelMigrationsPerCluster
+          value: 2
+      - equal:
+          path: spec.configuration.migrations.parallelOutboundMigrationsPerNode
+          value: 1
+      - equal:
+          path: spec.configuration.migrations.bandwidthPerMigration
+          value: 128Mi
+      - equal:
+          path: spec.configuration.migrations.completionTimeoutPerGiB
+          value: 900
+      - equal:
+          path: spec.configuration.migrations.progressTimeout
+          value: 180
+      - equal:
+          path: spec.configuration.migrations.disableTLS
+          value: false
+      - equal:
+          path: spec.configuration.migrations.allowPostCopy
+          value: false
+      - equal:
+          path: spec.configuration.migrations.unsafeMigrationOverride
+          value: false
 
   - it: emits cpuAllocationRatio under developerConfiguration when set
     set:
@@ -43,13 +116,22 @@ tests:
           value:
           - HotplugVolumes
           - ExpandDisks
-          - LiveMigration
-          - AutoResourceLimitsGate
           - CPUManager
-          - GPU
           - VMExport
           - HostDevices
           - WorkloadEncryptionSEV
+
+  - it: renders an explicit disabled feature gate list for future fail-closed upgrades
+    set:
+      disabledFeatureGates:
+      - ImageVolume
+      - NodeRestriction
+    asserts:
+      - equal:
+          path: spec.configuration.developerConfiguration.disabledFeatureGates
+          value:
+          - ImageVolume
+          - NodeRestriction
 
   - it: renders permittedHostDevices verbatim from the values block
     set:

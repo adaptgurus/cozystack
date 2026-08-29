@@ -12,47 +12,52 @@ test:
 # in-tree CR.
 CR_FILE ?= templates/kubevirt-cr.yaml
 
-# Re-apply the cozystack-specific parameterization on top of the in-tree
+# Re-apply the Cozystack-specific parameterization on top of the in-tree
 # templates/kubevirt-cr.yaml. This target does NOT download anything from
 # upstream — the live KubeVirt CR distributed by upstream is a near-empty
-# stub (featureGates: [], customizeComponents: {}, imagePullPolicy, empty
-# workloadUpdateStrategy) and cannot stand in for the in-tree file, which
-# carries cozystack-specific defaults (cozy-kubevirt namespace, full
-# featureGates list including LiveMigration / AutoResourceLimitsGate /
-# CPUManager / GPU / VMExport, evictionStrategy: LiveMigrate,
-# workloadUpdateMethods, vmRolloutStrategy, monitorNamespace, etc.) that
-# have been hand-curated over multiple cozystack releases.
+# stub and cannot stand in for the in-tree file, which carries deliberately
+# curated Cozystack production settings.
+#
+# KubeVirt v1.8.4 feature-gate rule:
+#   * GA gates (LiveMigration, AutoResourceLimitsGate, GPU) are always active
+#     and MUST NOT be re-added to developerConfiguration.featureGates.
+#   * The static list in the in-tree CR contains only capabilities that are
+#     still non-GA in v1.8.4 and therefore remain subject to CI/lab evidence.
 #
 # To refresh from a newer upstream KubeVirt:
-#   1. Operator inspects the new upstream release notes for spec changes
-#      that affect the cozystack-managed fields listed above.
-#   2. Operator hand-merges the new fields into templates/kubevirt-cr.yaml.
-#   3. Operator runs `make update` to re-apply the five cozystack
-#      parameterization sed patches in case they were lost during the
-#      hand-merge.
+#   1. Inspect the upstream release notes and feature-gate lifecycle changes.
+#   2. Hand-merge schema/spec changes into templates/kubevirt-cr.yaml.
+#   3. Preserve the production safety invariants checked at the end of this
+#      target (uninstall protection, TLS pre-copy migration and no automatic
+#      eviction/disruptive migration fallback).
+#   4. Run `make update` and the full KubeVirt production CI gate.
 #
 # GNU sed is required — on macOS run under a Linux container or via gsed.
 update:
 	@test -f $(CR_FILE) || { echo "ERROR: $(CR_FILE) not found — drop a hand-merged upstream CR there first" >&2; exit 1; }
-	@# Idempotent — each sed only inserts if the matching cozystack patch
+	@# Idempotent — each sed only inserts if the matching Cozystack patch
 	@# isn't already present in the file.
 	grep -q '^  namespace: cozy-kubevirt$$' $(CR_FILE) || sed -i 's/namespace: kubevirt/namespace: cozy-kubevirt/g' $(CR_FILE)
 	grep -q '{{- if .Values.cpuAllocationRatio }}' $(CR_FILE) || sed -i '/^    developerConfiguration:$$/a\      {{- if .Values.cpuAllocationRatio }}\n      cpuAllocationRatio: {{ .Values.cpuAllocationRatio }}\n      {{- end }}' $(CR_FILE)
 	grep -q '{{- range .Values.extraFeatureGates }}' $(CR_FILE) || sed -i '/^      - VMExport$$/a\      {{- range .Values.extraFeatureGates }}\n      - {{ . }}\n      {{- end }}' $(CR_FILE)
 	@# permittedHostDevices and mediatedDevicesConfiguration are guarded
 	@# independently: a hand-merge may drop one while keeping the other, and
-	@# each must self-heal on its own. A single guard over both would skip the
-	@# second insert whenever the first is still present, then trip the
-	@# sanity-check tail below.
+	@# each must self-heal on its own.
 	grep -q '{{- with .Values.permittedHostDevices }}' $(CR_FILE) || sed -i '/^    evictionStrategy:/i\    {{- with .Values.permittedHostDevices }}\n    permittedHostDevices:\n      {{- toYaml . | nindent 6 }}\n    {{- end }}' $(CR_FILE)
 	grep -q '{{- with .Values.mediatedDevicesConfiguration }}' $(CR_FILE) || sed -i '/^    evictionStrategy:/i\    {{- with .Values.mediatedDevicesConfiguration }}\n    mediatedDevicesConfiguration:\n      {{- toYaml . | nindent 6 }}\n    {{- end }}' $(CR_FILE)
-	@# Sanity-check: every cozystack patch MUST end up in the file. If the
-	@# hand-merge step moved or renamed an anchor (developerConfiguration:,
-	@# - VMExport, evictionStrategy:) the sed silently no-ops and the chart
-	@# ships without the parameterization. Each message names the directive
-	@# that failed to land and the anchor its insert keys off, so the operator
-	@# knows which line to restore before re-running.
+	@# Parameterization sanity checks. If a hand-merge moved/renamed an anchor,
+	@# fail rather than silently ship a partially parameterized KubeVirt CR.
 	@grep -q '{{- if .Values.cpuAllocationRatio }}' $(CR_FILE) || { echo "ERROR: directive '{{- if .Values.cpuAllocationRatio }}' not inserted — restore the 'developerConfiguration:' anchor in $(CR_FILE) and re-run" >&2; exit 1; }
 	@grep -q '{{- range .Values.extraFeatureGates }}' $(CR_FILE) || { echo "ERROR: directive '{{- range .Values.extraFeatureGates }}' not inserted — restore the '- VMExport' anchor in $(CR_FILE) and re-run" >&2; exit 1; }
 	@grep -q '{{- with .Values.permittedHostDevices }}' $(CR_FILE) || { echo "ERROR: directive '{{- with .Values.permittedHostDevices }}' not inserted — restore the 'evictionStrategy:' anchor in $(CR_FILE) and re-run" >&2; exit 1; }
 	@grep -q '{{- with .Values.mediatedDevicesConfiguration }}' $(CR_FILE) || { echo "ERROR: directive '{{- with .Values.mediatedDevicesConfiguration }}' not inserted — restore the 'evictionStrategy:' anchor in $(CR_FILE) and re-run" >&2; exit 1; }
+	@# Production safety invariants are intentionally fail-closed. Unlike the
+	@# parameterization above these are never silently manufactured during an
+	@# upstream refresh; a maintainer must consciously preserve/review them.
+	@grep -q '^  uninstallStrategy: BlockUninstallIfWorkloadsExist$$' $(CR_FILE) || { echo "ERROR: KubeVirt uninstall workload protection is missing" >&2; exit 1; }
+	@grep -q '^      disableTLS: false$$' $(CR_FILE) || { echo "ERROR: live-migration TLS protection is not explicitly enabled" >&2; exit 1; }
+	@grep -q '^      allowAutoConverge: false$$' $(CR_FILE) || { echo "ERROR: automatic migration convergence must remain disabled by default" >&2; exit 1; }
+	@grep -q '^      allowPostCopy: false$$' $(CR_FILE) || { echo "ERROR: post-copy migration must remain disabled by default" >&2; exit 1; }
+	@grep -q '^      allowWorkloadDisruption: false$$' $(CR_FILE) || { echo "ERROR: disruptive migration fallback must remain disabled by default" >&2; exit 1; }
+	@grep -q '^      unsafeMigrationOverride: false$$' $(CR_FILE) || { echo "ERROR: unsafe migration override must remain disabled" >&2; exit 1; }
+	@if grep -q '^    - Evict$$' $(CR_FILE); then echo "ERROR: automatic Evict fallback would shut down non-live-migratable VMs during KubeVirt upgrades" >&2; exit 1; fi

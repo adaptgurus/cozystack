@@ -1,0 +1,169 @@
+name: LayerSentry KubeVirt Production CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - packages/system/kubevirt/**
+      - packages/system/kubevirt-operator/**
+      - packages/system/kubevirt-cdi-operator/**
+      - packages/system/kubevirt-instancetypes/**
+      - .github/workflows/layersentry-kubevirt-production-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  kubevirt-production-contract:
+    name: KubeVirt v1.8.4 production contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Install pinned helm-unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
+
+      - name: Run KubeVirt chart and update-idempotency tests
+        run: make -C packages/system/kubevirt test
+
+      - name: Lint and render KubeVirt chart
+        run: |
+          helm lint packages/system/kubevirt
+          helm template kubevirt packages/system/kubevirt > /tmp/kubevirt-rendered.yaml
+
+      - name: Enforce KubeVirt v1.8.4 production safety contract
+        shell: python
+        run: |
+          from pathlib import Path
+
+          source = Path("packages/system/kubevirt/templates/kubevirt-cr.yaml").read_text()
+          rendered = Path("/tmp/kubevirt-rendered.yaml").read_text()
+
+          required_rendered = {
+              "uninstall workload protection": "uninstallStrategy: BlockUninstallIfWorkloadsExist",
+              "migration TLS": "disableTLS: false",
+              "pre-copy only": "allowPostCopy: false",
+              "no forced convergence": "allowAutoConverge: false",
+              "no workload disruption fallback": "allowWorkloadDisruption: false",
+              "no unsafe override": "unsafeMigrationOverride: false",
+          }
+          for name, token in required_rendered.items():
+              if token not in rendered:
+                  raise SystemExit(f"missing KubeVirt production invariant: {name}: {token}")
+
+          # Check only the static featureGates template block. GA feature names
+          # can legitimately occur elsewhere, but v1.8.4 GA gates must not be
+          # configured as experimental feature gates.
+          start = source.index("      featureGates:")
+          end = source.index("      {{- range .Values.extraFeatureGates }}", start)
+          static_gates = source[start:end]
+          for gate in ("HotplugVolumes", "ExpandDisks", "CPUManager", "VMExport"):
+              if f"- {gate}" not in static_gates:
+                  raise SystemExit(f"required non-GA KubeVirt capability gate missing: {gate}")
+          for obsolete_ga_gate in ("LiveMigration", "AutoResourceLimitsGate", "GPU"):
+              if f"- {obsolete_ga_gate}" in static_gates:
+                  raise SystemExit(f"GA KubeVirt v1.8.4 gate must not be listed: {obsolete_ga_gate}")
+
+          start = source.index("  workloadUpdateStrategy:")
+          end = source.index("  customizeComponents:", start)
+          update_block = source[start:end]
+          if "    - LiveMigrate" not in update_block:
+              raise SystemExit("KubeVirt updates must retain LiveMigrate")
+          if "    - Evict" in update_block:
+              raise SystemExit("automatic Evict fallback would shut down non-live-migratable VMs")
+
+          print("KUBEVIRT_FEATURE_GATE_LIFECYCLE=PASS")
+          print("KUBEVIRT_MIGRATION_FAIL_SAFE=PASS")
+          print("KUBEVIRT_UPDATE_NO_FORCED_EVICTION=PASS")
+          print("KUBEVIRT_UNINSTALL_PROTECTION=PASS")
+
+      - name: Verify immutable upstream KubeVirt and CDI release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          KUBEVIRT_VERSION=v1.8.4
+          KUBEVIRT_OPERATOR_SHA256=d1d8264eec5b802c122bec6c54d8c3b11e119ee2a5c75602aaa8b53ea3857eda
+          KUBEVIRT_NETWORKPOLICY_SHA256=13cd1288afebc3a1a38054f9c162b56d1ea23938db2c0853ef2a5fae5ba10f8f
+          CDI_VERSION=v1.64.0
+          CDI_OPERATOR_SHA256=9540acafd85ecf6523eb77c9759a24e6d02d7494e253baa6930a90f0b8fad63c
+
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml" \
+            --output /tmp/kubevirt-operator.yaml
+          echo "${KUBEVIRT_OPERATOR_SHA256}  /tmp/kubevirt-operator.yaml" | sha256sum -c -
+
+          # Verify the official policy artifact but do not blindly deploy it.
+          # The restrictive egress policy must first pass the Cilium-specific
+          # control-plane/migration connectivity test in TESTSER.
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-network-policies.yaml" \
+            --output /tmp/kubevirt-network-policies.yaml
+          echo "${KUBEVIRT_NETWORKPOLICY_SHA256}  /tmp/kubevirt-network-policies.yaml" | sha256sum -c -
+
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-operator.yaml" \
+            --output /tmp/cdi-operator.yaml
+          echo "${CDI_OPERATOR_SHA256}  /tmp/cdi-operator.yaml" | sha256sum -c -
+
+          grep -Fq "KUBEVIRT_RELEASE ?= ${KUBEVIRT_VERSION}" packages/system/kubevirt-operator/Makefile
+          grep -Fq "KUBEVIRT_OPERATOR_SHA256 ?= ${KUBEVIRT_OPERATOR_SHA256}" packages/system/kubevirt-operator/Makefile
+          grep -Fq "image: quay.io/kubevirt/virt-operator:${KUBEVIRT_VERSION}" packages/system/kubevirt-operator/templates/kubevirt-operator.yaml
+          grep -Fq "CDI_VERSION ?= ${CDI_VERSION}" packages/system/kubevirt-cdi-operator/Makefile
+          grep -Fq "CDI_OPERATOR_SHA256 ?= ${CDI_OPERATOR_SHA256}" packages/system/kubevirt-cdi-operator/Makefile
+          grep -Fq "image: quay.io/kubevirt/cdi-operator:${CDI_VERSION}" packages/system/kubevirt-cdi-operator/templates/cdi-operator.yaml
+
+          echo "KUBEVIRT_UPSTREAM_PROVENANCE=PASS version=${KUBEVIRT_VERSION}"
+          echo "CDI_UPSTREAM_PROVENANCE=PASS version=${CDI_VERSION}"
+
+      - name: Prove virtualization regeneration is reproducible and non-destructive
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gawk
+
+          test -f packages/system/kubevirt-operator/templates/prometheusrule.yaml
+          make -C packages/system/kubevirt-operator update
+          test -f packages/system/kubevirt-operator/templates/prometheusrule.yaml
+          git diff --exit-code -- packages/system/kubevirt-operator/templates
+
+          make -C packages/system/kubevirt-cdi-operator update
+          git diff --exit-code -- packages/system/kubevirt-cdi-operator/templates
+
+          echo "KUBEVIRT_OPERATOR_REGENERATION=PASS"
+          echo "CDI_OPERATOR_REGENERATION=PASS"
+          echo "KUBEVIRT_LOCAL_MONITORING_PRESERVED=PASS"
+
+      - name: Enforce no floating virtualization regeneration inputs
+        shell: python
+        run: |
+          from pathlib import Path
+
+          files = {
+              "KubeVirt operator": Path("packages/system/kubevirt-operator/Makefile"),
+              "CDI operator": Path("packages/system/kubevirt-cdi-operator/Makefile"),
+              "common-instancetypes": Path("packages/system/kubevirt-instancetypes/Makefile"),
+          }
+          forbidden = ("releases/latest", "?ref=main", "?ref=master")
+          for name, path in files.items():
+              text = path.read_text()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"floating virtualization regeneration input in {name}: {token}")
+
+          operator_makefile = files["KubeVirt operator"].read_text()
+          if "rm -rf templates" in operator_makefile:
+              raise SystemExit("KubeVirt operator refresh must not delete local template assets")
+
+          print("KUBEVIRT_REGENERATION_REPRODUCIBLE=PASS")
