@@ -126,12 +126,10 @@ export function useConsoleSidebarSections(): SidebarSection[] {
 }
 
 /**
- * Access check for the Admin portal. The portal hosts two cluster-wide
- * operator areas with independent permissions: Cluster Usage (proxied by
- * `nodes/list`) and Backup Classes (`backupclasses/update`, via
- * {@link useBackupClassAdminAccess}). A user sees the portal if they can use
- * at least one. `isLoading` lets route guards wait instead of redirecting
- * mid-flight; the per-area booleans gate the individual sidebar entries.
+ * Access check for the Admin portal. The portal hosts cluster-wide operator
+ * areas with independent permissions. Capacity and Network Fabric use the
+ * cluster operator check (proxied by nodes/list); Backup Classes requires
+ * backupclasses/update. A user sees the portal if they can use at least one.
  */
 export function useAdminAccess(): {
   allowed: boolean
@@ -157,9 +155,8 @@ export function useCanSeeAdmin(): boolean {
 }
 
 /**
- * Admin sidebar: the cluster-wide operator areas (Capacity and Backup Classes).
- * Each entry is gated by its own permission so the sidebar never shows an area
- * the user cannot open.
+ * Admin sidebar: cluster-wide operator areas. Network Fabric is intentionally
+ * a first-class area rather than hiding host networking under Capacity.
  */
 export function useAdminSidebarSections(): SidebarSection[] {
   const { canClusterUsage, canBackupClasses } = useAdminAccess()
@@ -172,6 +169,12 @@ export function useAdminSidebarSections(): SidebarSection[] {
           { label: "Cluster", to: "/admin/capacity/cluster", icon: Gauge },
           { label: "Nodes", to: "/admin/capacity/nodes", icon: Server },
           { label: "Storage", to: "/admin/capacity/storage", icon: HardDrive },
+        ],
+      })
+      sections.push({
+        title: "Network",
+        items: [
+          { label: "Network Fabric", to: "/admin/network/fabric", icon: Network },
         ],
       })
     }
