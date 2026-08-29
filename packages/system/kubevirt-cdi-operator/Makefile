@@ -23,6 +23,12 @@ update:
 	@grep -q 'image: quay.io/kubevirt/cdi-operator:$(CDI_VERSION)' templates/cdi-operator.yaml || { echo "ERROR: downloaded CDI operator manifest does not contain expected $(CDI_VERSION) image" >&2; exit 1; }
 	sed -i 's/namespace: cdi/namespace: cozy-kubevirt-cdi/g' templates/cdi-operator.yaml
 	awk -i inplace -v RS="---" '!/kind: Namespace/{printf "%s", $$0 RS}' templates/cdi-operator.yaml
-	@# The patch records repo-root paths (a/packages/system/...); this Makefile
-	@# executes from this package directory, so strip through the package prefix.
+	@# The startup probe patch records repo-root paths (a/packages/system/...);
+	@# this target executes from this package directory, so strip the package
+	@# prefix. Keep --batch so CI can never block on an interactive patch prompt.
 	patch --no-backup-if-mismatch --batch -p4 < patches/startupProbe.diff
+	@# Cozystack deliberately keeps the CDI operator eligible for dedicated
+	@# system/control-plane nodes. Upstream v1.64 removed CriticalAddonsOnly;
+	@# represent our scheduling divergence explicitly instead of relying on a
+	@# hidden hand-edit that disappears on the next regeneration.
+	patch --no-backup-if-mismatch --batch -p1 < patches/cozystackScheduling.diff
