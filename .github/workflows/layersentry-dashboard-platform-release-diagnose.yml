@@ -1,0 +1,58 @@
+name: LayerSentry Dashboard Platform Release Diagnose
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-platform-release-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Inspect cozystack-platform HelmRelease source inputs safely
+        run: |
+          $ErrorActionPreference='Stop'
+          $hr=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json | ConvertFrom-Json
+          if(-not $hr){throw 'cozy-system/cozystack-platform HelmRelease missing'}
+          Write-Host "HR ns=$($hr.metadata.namespace) name=$($hr.metadata.name) generation=$($hr.metadata.generation) resourceVersion=$($hr.metadata.resourceVersion)"
+          Write-Host "HR owners=$((@($hr.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name+'/controller='+$_.controller)}) -join ';')"
+          Write-Host "HR labels=$((@($hr.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+          Write-Host "HR annotations=$((@($hr.metadata.annotations.PSObject.Properties)|Where-Object{$_.Name -notmatch '(?i)token|secret|password'}|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+          if($hr.spec.chartRef){Write-Host "HR chartRef kind=$($hr.spec.chartRef.kind) name=$($hr.spec.chartRef.name) namespace=$($hr.spec.chartRef.namespace)"}
+          if($hr.spec.chart){Write-Host "HR chart=$($hr.spec.chart.spec.chart) version=$($hr.spec.chart.spec.version) sourceKind=$($hr.spec.chart.spec.sourceRef.kind) sourceName=$($hr.spec.chart.spec.sourceRef.name)"}
+          Write-Host "HR interval=$($hr.spec.interval) valuesFromCount=$(@($hr.spec.valuesFrom).Count)"
+          foreach($vf in @($hr.spec.valuesFrom)){
+            Write-Host "valuesFrom kind=$($vf.kind) name=$($vf.name) valuesKey=$($vf.valuesKey) targetPath=$($vf.targetPath) optional=$($vf.optional)"
+          }
+          Write-Host "HR valuesTopLevelKeys=$((@($hr.spec.values.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+          $op=$hr.spec.values.cozystackOperator
+          if($op){
+            Write-Host "cozystackOperator keys=$((@($op.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+            Write-Host "cozystackOperator platformSourceUrl=$($op.platformSourceUrl)"
+            Write-Host "cozystackOperator platformSourceRef=$($op.platformSourceRef)"
+            foreach($p in @($op.PSObject.Properties)){
+              if($p.Name -match '(?i)platform|source|package'){
+                $v=$p.Value
+                if($v -is [string] -or $v -is [bool] -or $v -is [int] -or $v -is [long]){Write-Host "cozystackOperator $($p.Name)=$v"}
+              }
+            }
+          }else{Write-Host 'cozystackOperator values absent from inline HR values'}
+          foreach($mf in @($hr.metadata.managedFields)){
+            Write-Host "managedField manager=$($mf.manager) operation=$($mf.operation) apiVersion=$($mf.apiVersion) time=$($mf.time) subresource=$($mf.subresource)"
+          }
+          $ready=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          Write-Host "HR ready=$($ready.status) reason=$($ready.reason) message=$($ready.message)"
+          Write-Host 'PLATFORM_RELEASE_DIAGNOSE=PASS'
