@@ -47,10 +47,29 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             $dss = ($dsRaw | ConvertFrom-Json).items
             foreach ($ds in @($dss | Where-Object { $_.metadata.name -match 'satellite' })) {
-              Write-Host "daemonset=$($ds.metadata.name) desired=$($ds.status.desiredNumberScheduled) current=$($ds.status.currentNumberScheduled) ready=$($ds.status.numberReady)"
+              Write-Host "daemonset=$($ds.metadata.name) desired=$($ds.status.desiredNumberScheduled) current=$($ds.status.currentNumberScheduled) ready=$($ds.status.numberReady) hostNetwork=$($ds.spec.template.spec.hostNetwork)"
               Write-Host "nodeSelector=$($ds.spec.template.spec.nodeSelector | ConvertTo-Json -Compress)"
               Write-Host "tolerations=$($ds.spec.template.spec.tolerations | ConvertTo-Json -Compress -Depth 8)"
               Write-Host "affinity=$($ds.spec.template.spec.affinity | ConvertTo-Json -Compress -Depth 12)"
+              foreach ($c in @($ds.spec.template.spec.containers)) {
+                foreach ($p in @($c.ports)) {
+                  Write-Host "satellite_port container=$($c.name) name=$($p.name) containerPort=$($p.containerPort) hostPort=$($p.hostPort) hostIP=$($p.hostIP) protocol=$($p.protocol)"
+                }
+              }
+            }
+          }
+          Write-Host '===== ALL DECLARED HOST PORTS ====='
+          $podsRaw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get pods -A -o json
+          if ($LASTEXITCODE -eq 0) {
+            $pods = ($podsRaw | ConvertFrom-Json).items
+            foreach ($pod in @($pods)) {
+              foreach ($c in @($pod.spec.containers)) {
+                foreach ($p in @($c.ports)) {
+                  if ($p.hostPort -and [int]$p.hostPort -gt 0) {
+                    Write-Host "hostport_owner ns=$($pod.metadata.namespace) pod=$($pod.metadata.name) node=$($pod.spec.nodeName) phase=$($pod.status.phase) hostNetwork=$($pod.spec.hostNetwork) container=$($c.name) name=$($p.name) hostPort=$($p.hostPort) containerPort=$($p.containerPort) protocol=$($p.protocol)"
+                  }
+                }
+              }
             }
           }
           Write-Host '===== BLOCKSTOR EVENTS ====='
