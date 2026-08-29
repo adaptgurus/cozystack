@@ -70,7 +70,7 @@ describe("StorageBackendHealth", () => {
 
     expect(await screen.findByText("Backend operational health")).toBeInTheDocument()
 
-    const linstorRow = screen.getByRole("row", { name: /LINSTOR/ })
+    const linstorRow = await screen.findByRole("row", { name: /LINSTOR/ })
     expect(within(linstorRow).getByText("2 classes")).toBeInTheDocument()
     expect(within(linstorRow).getByText("4 / 4 ready")).toBeInTheDocument()
     expect(within(linstorRow).getByText("Workloads ready")).toBeInTheDocument()
