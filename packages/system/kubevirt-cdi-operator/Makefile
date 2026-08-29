@@ -28,7 +28,28 @@ update:
 	@# prefix. Keep --batch so CI can never block on an interactive patch prompt.
 	patch --no-backup-if-mismatch --batch -p4 < patches/startupProbe.diff
 	@# Cozystack deliberately keeps the CDI operator eligible for dedicated
-	@# system/control-plane nodes. Upstream v1.64 removed CriticalAddonsOnly;
-	@# represent our scheduling divergence explicitly instead of relying on a
-	@# hidden hand-edit that disappears on the next regeneration.
-	patch --no-backup-if-mismatch --batch -p1 < patches/cozystackScheduling.diff
+	@# system/control-plane nodes. Upstream v1.64 removed these tolerations.
+	@# Insert them against an exact pod-spec anchor and require exactly one
+	@# anchor, so an upstream structural change fails closed instead of silently
+	@# applying scheduling policy to the wrong workload.
+	python3 - <<'PY'
+	from pathlib import Path
+	p = Path("templates/cdi-operator.yaml")
+	s = p.read_text()
+	anchor = "      serviceAccountName: cdi-operator\n---"
+	if s.count(anchor) != 1:
+	    raise SystemExit(f"ERROR: expected exactly one CDI operator pod-spec anchor, found {s.count(anchor)}")
+	replacement = """      serviceAccountName: cdi-operator
+      tolerations:
+       - key: CriticalAddonsOnly
+         operator: Exists
+       - effect: NoSchedule
+         key: node-role.kubernetes.io/control-plane
+         operator: Exists
+       - effect: NoSchedule
+         key: node-role.kubernetes.io/master
+         operator: Exists
+---
+"""
+	p.write_text(s.replace(anchor, replacement, 1))
+	PY
