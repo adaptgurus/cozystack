@@ -1,0 +1,136 @@
+name: LayerSentry Dashboard OIDC Live Fix V4
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-oidc-live-fix-v4.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-oidc-live-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  repair:
+    name: Apply verified dashboard OIDC browser fix on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Verify backend and locate scope argument
+        run: |
+          $ErrorActionPreference='Stop'
+          $tenant=& $env:KUBECTL get tenant layersentry -n tenant-root -o json | ConvertFrom-Json
+          $ns=& $env:KUBECTL get ns tenant-layersentry -o json | ConvertFrom-Json
+          if(-not $tenant -or $ns.status.phase -ne 'Active'){throw 'layersentry tenant backend not healthy'}
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($d.spec.template.spec.containers) | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1
+          $scope=@($proxy.args) | Where-Object {$_ -like '--scope=*'}
+          Write-Host "PRE_FIX tenant=layersentry namespace=Active liveScope=$scope"
+
+      - name: Patch oauth2 proxy scope with explicit JSON array
+        run: |
+          $ErrorActionPreference='Stop'
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $ci=-1
+          for($i=0;$i -lt @($d.spec.template.spec.containers).Count;$i++){
+            if($d.spec.template.spec.containers[$i].name -eq 'auth-proxy'){$ci=$i;break}
+          }
+          if($ci -lt 0){throw 'auth-proxy missing'}
+          $ai=-1
+          for($i=0;$i -lt @($d.spec.template.spec.containers[$ci].args).Count;$i++){
+            if([string]$d.spec.template.spec.containers[$ci].args[$i] -like '--scope=*'){$ai=$i;break}
+          }
+          if($ai -lt 0){throw 'scope argument missing'}
+          $json='[{"op":"replace","path":"/spec/template/spec/containers/' + $ci + '/args/' + $ai + '","value":"--scope=openid email profile"}]'
+          $file=Join-Path $env:RUNNER_TEMP 'dashboard-scope-array.json'
+          [IO.File]::WriteAllText($file,$json,[Text.Encoding]::ASCII)
+          & $env:KUBECTL -n cozy-dashboard patch deployment incloud-web-gatekeeper --type=json --patch-file $file | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'scope patch failed'}
+          $after=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $ap=@($after.spec.template.spec.containers) | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1
+          $scope=@($ap.args) | Where-Object {$_ -like '--scope=*'}
+          if($scope -ne '--scope=openid email profile'){throw "scope mismatch after patch: $scope"}
+          Write-Host 'OAUTH2_PROXY_SCOPE_FIX=PASS'
+
+      - name: Rotate dashboard cookie secret and restart gatekeeper
+        run: |
+          $ErrorActionPreference='Stop'
+          $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+          $bytes=New-Object byte[] 16
+          $rng.GetBytes($bytes)
+          $alphabet='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+          $sb=New-Object Text.StringBuilder
+          foreach($x in $bytes){[void]$sb.Append($alphabet[$x % $alphabet.Length])}
+          $cookie=$sb.ToString()
+          Write-Output "::add-mask::$cookie"
+          $b64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+          Write-Output "::add-mask::$b64"
+          $obj=@{data=@{cookieSecret=$b64}}
+          $file=Join-Path $env:RUNNER_TEMP 'dashboard-cookie-merge.json'
+          $obj | ConvertTo-Json -Compress -Depth 4 | Set-Content -Path $file -Encoding ASCII
+          & $env:KUBECTL -n cozy-dashboard patch secret dashboard-auth-config --type=merge --patch-file $file | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'cookie rotation failed'}
+          & $env:KUBECTL -n cozy-dashboard rollout restart deployment/incloud-web-gatekeeper | Out-Null
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/incloud-web-gatekeeper --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'gatekeeper rollout failed'}
+          Write-Host 'DASHBOARD_SESSION_INVALIDATION=PASS'
+
+      - name: Prove fresh dashboard identity can read tenant and plan APIs
+        run: |
+          $ErrorActionPreference='Stop'
+          function Decode([string]$jwt){
+            $p=$jwt.Split('.')[1].Replace('-','+').Replace('_','/')
+            switch($p.Length % 4){2{$p+='=='};3{$p+='='}}
+            ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json)
+          }
+          $pb64=(& $env:KUBECTL -n cozy-system get secret layersentry-gui-admin-password -o jsonpath='{.data.password}' | Out-String).Trim()
+          $cb64=(& $env:KUBECTL -n cozy-dashboard get secret dashboard-client -o jsonpath='{.data.client-secret-key}' | Out-String).Trim()
+          if(-not $pb64 -or -not $cb64){throw 'credential key missing'}
+          Write-Output "::add-mask::$pb64"; Write-Output "::add-mask::$cb64"
+          $password=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pb64))
+          $clientSecret=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cb64))
+          Write-Output "::add-mask::$password"; Write-Output "::add-mask::$clientSecret"
+          $hostName=(& $env:KUBECTL -n cozy-keycloak get ingress -o json | ConvertFrom-Json).items | ForEach-Object {$_.spec.rules[0].host} | Where-Object {$_ -like 'keycloak.*'} | Select-Object -First 1
+          $file=Join-Path $env:RUNNER_TEMP 'dashboard-v4-token.json'
+          $http=(& curl.exe -k -sS -o $file -w '%{http_code}' -X POST "https://$hostName/realms/cozy/protocol/openid-connect/token" --data-urlencode 'grant_type=password' --data-urlencode 'client_id=dashboard' --data-urlencode "client_secret=$clientSecret" --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'scope=openid email profile' | Out-String).Trim()
+          $r=Get-Content $file -Raw | ConvertFrom-Json
+          if($http -ne '200' -or -not $r.id_token){throw "token mint failed HTTP=$http error=$($r.error)"}
+          Write-Output "::add-mask::$($r.id_token)"
+          if($r.access_token){Write-Output "::add-mask::$($r.access_token)"}
+          if($r.refresh_token){Write-Output "::add-mask::$($r.refresh_token)"}
+          $claims=Decode $r.id_token
+          if('kubernetes' -notin @($claims.aud)){throw 'kubernetes audience missing'}
+          if('cozystack-cluster-admin' -notin @($claims.groups)){throw 'cluster-admin group missing'}
+          $tn=@(& $env:KUBECTL --token=$($r.id_token) get --raw '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 2>&1)
+          if($LASTEXITCODE -ne 0){throw "TenantNamespaces API rejected token: $($tn -join ' | ')"}
+          $tnObj=($tn -join "`n") | ConvertFrom-Json
+          $names=@($tnObj.items) | ForEach-Object {$_.metadata.name}
+          Write-Host "TENANTNAMESPACES_API=PASS items=$([string]::Join(',', $names))"
+          $plan=@(& $env:KUBECTL --token=$($r.id_token) get --raw '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/plans.backups.cozystack.io' 2>&1)
+          if($LASTEXITCODE -ne 0){throw "Plan CRD API rejected token: $($plan -join ' | ')"}
+          Write-Host 'PLAN_CRD_API=PASS'
+          Write-Host "FRESH_DASHBOARD_ID_TOKEN=PASS user=$($claims.preferred_username) audience=kubernetes group=cozystack-cluster-admin"
+
+      - name: Confirm corrected live scope persists immediately
+        run: |
+          $ErrorActionPreference='Stop'
+          Start-Sleep -Seconds 15
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($d.spec.template.spec.containers) | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1
+          $scope=@($proxy.args) | Where-Object {$_ -like '--scope=*'}
+          if($scope -ne '--scope=openid email profile'){throw "scope reverted: $scope"}
+          & $env:KUBECTL -n cozy-dashboard get pods -o wide
+          Write-Host "POST_FIX liveScope=$scope"
+          Write-Host 'FINAL_DASHBOARD_OIDC_FIX=PASS'
