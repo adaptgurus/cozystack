@@ -1,0 +1,144 @@
+name: LayerSentry Dashboard OIDC Live Diagnose
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-dashboard-oidc-live-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose-oidc:
+    name: Diagnose exact dashboard OIDC token path on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Verify cluster and existing tenant state
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:KUBECTL get nodes
+          if ($LASTEXITCODE -ne 0) { throw 'cluster access failed' }
+          Write-Host '===== EXISTING TENANT ====='
+          & $env:KUBECTL get tenants.apps.cozystack.io -A 2>$null | Select-String -Pattern 'layersentry|NAME'
+          & $env:KUBECTL get ns tenant-layersentry 2>$null
+          exit 0
+
+      - name: Inspect live oauth2-proxy and Keycloak client contract
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $d = & $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $c = @($d.spec.template.spec.containers) | Where-Object { $_.name -eq 'auth-proxy' } | Select-Object -First 1
+          if (-not $c) { throw 'auth-proxy container not found' }
+          Write-Host '===== LIVE OAUTH2-PROXY SAFE ARGS ====='
+          @($c.args) | Where-Object { $_ -match '^--(provider|redirect-url|oidc-issuer-url|scope|pass-access-token|pass-authorization-header|skip-oidc-discovery|login-url|redeem-url|oidc-jwks-url|validate-url|api-route)=' } | ForEach-Object { Write-Host $_ }
+
+          Write-Host '===== LIVE DASHBOARD KEYCLOAK CLIENT SAFE FIELDS ====='
+          $kc = & $env:KUBECTL get keycloakclients.v1.edp.epam.com -A -o json | ConvertFrom-Json
+          $client = @($kc.items) | Where-Object { $_.spec.clientId -eq 'dashboard' } | Select-Object -First 1
+          if (-not $client) { throw 'dashboard KeycloakClient not found' }
+          Write-Host "namespace=$($client.metadata.namespace) name=$($client.metadata.name) clientId=$($client.spec.clientId)"
+          Write-Host "defaultScopes=$([string]::Join(',', @($client.spec.defaultClientScopes)))"
+          Write-Host "optionalScopes=$([string]::Join(',', @($client.spec.optionalClientScopes)))"
+          Write-Host "status=$($client.status.value) failureCount=$($client.status.failureCount)"
+
+      - name: Inspect kube-apiserver OIDC contract and recent failures
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== KUBE-APISERVER OIDC FLAGS ====='
+          $pods = & $env:KUBECTL -n kube-system get pods -l component=kube-apiserver -o json 2>$null | ConvertFrom-Json
+          foreach ($p in @($pods.items)) {
+            Write-Host "pod=$($p.metadata.name) node=$($p.spec.nodeName)"
+            foreach ($c in @($p.spec.containers)) {
+              @($c.command + $c.args) | Where-Object { "$_" -match '(?i)oidc|authentication-config' } | ForEach-Object { Write-Host "  $_" }
+            }
+          }
+          Write-Host '===== KUBE-APISERVER RECENT OIDC/JWT/TLS ERRORS ====='
+          foreach ($p in @($pods.items)) {
+            & $env:KUBECTL -n kube-system logs $p.metadata.name --tail=2500 --timestamps=true 2>$null |
+              Select-String -Pattern 'oidc|openid|jwt|issuer|audience|x509|certificate|jwks|authentication failed|unauthorized' -CaseSensitive:$false |
+              Select-Object -Last 250
+          }
+          exit 0
+
+      - name: Test Keycloak issuer TLS from runner
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $hostName = (& $env:KUBECTL -n cozy-keycloak get ingress -o json | ConvertFrom-Json).items | ForEach-Object { $_.spec.rules[0].host } | Where-Object { $_ -like 'keycloak.*' } | Select-Object -First 1
+          if (-not $hostName) { throw 'Keycloak ingress host not found' }
+          $issuer = "https://$hostName/realms/cozy"
+          Write-Host "issuer=$issuer"
+          $trustedCode = (& curl.exe -sS -o NUL -w '%{http_code}' "$issuer/.well-known/openid-configuration" 2>$null | Out-String).Trim()
+          $trustedExit = $LASTEXITCODE
+          $insecureCode = (& curl.exe -k -sS -o NUL -w '%{http_code}' "$issuer/.well-known/openid-configuration" 2>$null | Out-String).Trim()
+          $insecureExit = $LASTEXITCODE
+          Write-Host "issuer_tls_default exit=$trustedExit http=$trustedCode"
+          Write-Host "issuer_tls_skip_verify exit=$insecureExit http=$insecureCode"
+          exit 0
+
+      - name: Mint dashboard tokens safely and test exact Kubernetes bearer path
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Decode-JwtPayload([string]$jwt) {
+            $parts = $jwt.Split('.')
+            if ($parts.Count -lt 2) { throw 'invalid JWT format' }
+            $payload = $parts[1].Replace('-','+').Replace('_','/')
+            switch ($payload.Length % 4) { 2 { $payload += '==' }; 3 { $payload += '=' } }
+            return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json)
+          }
+          function Show-SafeClaims([string]$label, $claims) {
+            $aud = if ($claims.aud -is [array]) { [string]::Join(',', @($claims.aud)) } else { [string]$claims.aud }
+            $groups = [string]::Join(',', @($claims.groups))
+            Write-Host "$label iss=$($claims.iss) aud=$aud azp=$($claims.azp) preferred_username=$($claims.preferred_username) groups=$groups exp=$($claims.exp) iat=$($claims.iat)"
+          }
+
+          $passwordB64 = (& $env:KUBECTL -n cozy-system get secret layersentry-gui-admin-password -o jsonpath='{.data.password}' | Out-String).Trim()
+          $clientSecretB64 = (& $env:KUBECTL -n cozy-dashboard get secret dashboard-client -o jsonpath='{.data.client-secret-key}' | Out-String).Trim()
+          if (-not $passwordB64 -or -not $clientSecretB64) { throw 'required credential Secret key is absent' }
+          Write-Output "::add-mask::$passwordB64"
+          Write-Output "::add-mask::$clientSecretB64"
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($passwordB64))
+          $clientSecret = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($clientSecretB64))
+          Write-Output "::add-mask::$password"
+          Write-Output "::add-mask::$clientSecret"
+
+          $hostName = (& $env:KUBECTL -n cozy-keycloak get ingress -o json | ConvertFrom-Json).items | ForEach-Object { $_.spec.rules[0].host } | Where-Object { $_ -like 'keycloak.*' } | Select-Object -First 1
+          if (-not $hostName) { throw 'Keycloak ingress host not found' }
+          $tokenUrl = "https://$hostName/realms/cozy/protocol/openid-connect/token"
+          $tokenFile = Join-Path $env:RUNNER_TEMP 'layersentry-dashboard-oidc-token.json'
+          $http = (& curl.exe -k -sS -o $tokenFile -w '%{http_code}' -X POST $tokenUrl --data-urlencode 'grant_type=password' --data-urlencode 'client_id=dashboard' --data-urlencode "client_secret=$clientSecret" --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'scope=openid email profile offline_access' | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'dashboard token request transport failed' }
+          $r = Get-Content $tokenFile -Raw | ConvertFrom-Json
+          if ($http -ne '200' -or -not $r.id_token -or -not $r.access_token) { throw "dashboard token request failed HTTP=$http error=$($r.error) description=$($r.error_description)" }
+          Write-Output "::add-mask::$($r.id_token)"
+          Write-Output "::add-mask::$($r.access_token)"
+          if ($r.refresh_token) { Write-Output "::add-mask::$($r.refresh_token)" }
+
+          $idClaims = Decode-JwtPayload $r.id_token
+          $accessClaims = Decode-JwtPayload $r.access_token
+          Show-SafeClaims 'ID_TOKEN' $idClaims
+          Show-SafeClaims 'ACCESS_TOKEN' $accessClaims
+
+          Write-Host '===== EXACT KUBERNETES API BEARER TESTS ====='
+          $idOut = @(& $env:KUBECTL --token=$($r.id_token) get --raw '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 2>&1)
+          $idExit = $LASTEXITCODE
+          $idSummary = if ($idExit -eq 0) { 'PASS' } else { ($idOut | Select-Object -Last 2) -join ' | ' }
+          Write-Host "kubernetes_with_id_token exit=$idExit result=$idSummary"
+
+          $accessOut = @(& $env:KUBECTL --token=$($r.access_token) get --raw '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 2>&1)
+          $accessExit = $LASTEXITCODE
+          $accessSummary = if ($accessExit -eq 0) { 'PASS' } else { ($accessOut | Select-Object -Last 2) -join ' | ' }
+          Write-Host "kubernetes_with_access_token exit=$accessExit result=$accessSummary"
+
+          Write-Host 'No bearer token, password, client secret, kubeconfig, or Secret body was printed.'
