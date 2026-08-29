@@ -8,8 +8,8 @@ describe("NetworkFabricPage", () => {
 
     expect(screen.getByRole("heading", { name: "Network Fabric" })).toBeInTheDocument()
     expect(screen.getByText(/build host and vm networking without yaml/i)).toBeInTheDocument()
-    expect(screen.getByText("Purpose")).toBeInTheDocument()
-    expect(screen.getByText("Review")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Purpose/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Review/i })).toBeInTheDocument()
     expect(screen.queryByText(/machine:\s*network/i)).not.toBeInTheDocument()
   })
 
