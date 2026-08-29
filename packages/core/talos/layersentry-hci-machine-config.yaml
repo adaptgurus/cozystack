@@ -1,8 +1,8 @@
-# LayerSentry HCI Talos runtime defaults.
+# LayerSentry universal HCI/dHCI Talos runtime defaults.
 #
-# This configuration is embedded into LayerSentry boot/install assets by
-# hack/gen-profiles.sh. Keep array-specific WWID/product overrides outside this
-# generic image policy; controllers or site machine-config patches can add them.
+# The image provides capability only. Array-specific WWID/WWN/NQN policy,
+# storage ownership, VLANs, firewall policy and destructive actions belong to
+# LayerSentry/site reconciliation and must never be inferred from /dev/sdX.
 version: v1alpha1
 machine:
   kernel:
@@ -10,9 +10,8 @@ machine:
       - name: dm_multipath
       - name: dm_round-robin
       - name: nfsd
-      # Stock Talos v1.13.6 disables CONFIG_INFINIBAND_ISER. The LayerSentry
-      # kernel build enables it as a module and explicitly packages ib_iser in
-      # the Talos initramfs module allow-list.
+      # Stock Talos v1.13.6 disables CONFIG_INFINIBAND_ISER. LayerSentry builds
+      # the exact kernel with CONFIG_INFINIBAND_ISER=m and packages ib_iser.
       - name: ib_iser
 ---
 apiVersion: v1alpha1
@@ -22,16 +21,13 @@ configFiles:
   - mountPath: /etc/multipath.conf
     content: |
       defaults {
+          # Stable SAN identity is WWID-based; never invent friendly sdX-like
+          # aliases. `find_multipaths yes` also avoids claiming ordinary local
+          # single-path disks merely because multipathd is installed.
           user_friendly_names no
           find_multipaths yes
-          path_selector "round-robin 0"
       }
----
-# LayerSentry deliberately does not impose an OS-level ingress firewall in the
-# generic HCI image. Talos' default ingress action is accept; pin it explicitly
-# so storage traffic such as NFS, iSCSI, iSER and NVMe-oF is not blocked. The
-# kernel netfilter/conntrack substrate is retained for Kubernetes/Cilium
-# compatibility; normal LayerSentry Kubernetes datapath policy is Cilium/eBPF.
-apiVersion: v1alpha1
-kind: NetworkDefaultActionConfig
-ingress: accept
+
+# Deliberately no NetworkDefaultActionConfig is embedded here. The universal
+# ISO must not hard-code an open host firewall or block storage fabrics. Talos
+# defaults plus LayerSentry/Cilium/site policy own ingress/egress enforcement.
