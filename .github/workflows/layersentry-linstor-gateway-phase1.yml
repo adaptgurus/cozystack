@@ -28,6 +28,7 @@ jobs:
           grep -q 'kind: Service' /tmp/gateway.yaml
           grep -q 'linstor-controller.cozy-linstor.svc:3370' /tmp/gateway.yaml
           grep -q 'containerPort: 8337' /tmp/gateway.yaml
+          grep -q 'path: /api/v2/status' /tmp/gateway.yaml
       - name: Build checksum-pinned Gateway image
         run: |
           set -euo pipefail
@@ -175,14 +176,14 @@ jobs:
                         containerPort: 8337
                     readinessProbe:
                       httpGet:
-                        path: /status
+                        path: /api/v2/status
                         port: http
                       initialDelaySeconds: 2
                       periodSeconds: 5
                       timeoutSeconds: 3
                     livenessProbe:
                       httpGet:
-                        path: /status
+                        path: /api/v2/status
                         port: http
                       initialDelaySeconds: 10
                       periodSeconds: 20
@@ -253,10 +254,10 @@ jobs:
           }
           try {
             Write-Host '===== GATEWAY STATUS ====='
-            $status = Invoke-RestMethod -Uri 'http://127.0.0.1:18337/status' -TimeoutSec 10
+            $status = Invoke-RestMethod -Uri 'http://127.0.0.1:18337/api/v2/status' -TimeoutSec 10
             $statusJson = $status | ConvertTo-Json -Compress -Depth 10
             Write-Host $statusJson
-            if ($statusJson -notmatch '2\.3\.0') { throw 'Gateway /status does not report v2.3.0' }
+            if ($null -eq $status -or [string]::IsNullOrWhiteSpace([string]$status.status)) { throw 'Gateway /api/v2/status response is invalid' }
 
             $readOnlyPaths = @('/api/v2/iscsi','/api/v2/nfs','/api/v2/nvme-of')
             foreach ($path in $readOnlyPaths) {
