@@ -4,9 +4,9 @@ export NAMESPACE=cozy-kubevirt-cdi
 include ../../../hack/package.mk
 
 # Keep CDI regeneration reproducible. The in-tree manifest is currently
-# v1.64.0; do not follow releases/latest because that can silently change the
-# virtualization stack during an unrelated package refresh. Upgrade only after
-# compatibility and real-lab import/clone/upload validation.
+# v1.64.0; do not follow a floating latest-release redirect because that can
+# silently change the virtualization stack during an unrelated package refresh.
+# Upgrade only after compatibility and real-lab import/clone/upload validation.
 CDI_VERSION ?= v1.64.0
 CDI_OPERATOR_SHA256 ?= 9540acafd85ecf6523eb77c9759a24e6d02d7494e253baa6930a90f0b8fad63c
 
