@@ -1,0 +1,148 @@
+name: LayerSentry Network Inventory Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/scripts/layersentry/collect-network-inventory.ps1
+      - .github/workflows/layersentry-network-inventory-lab.yml
+      - packages/system/dashboard/images/console/apps/console/src/routes/NetworkFabricPage.tsx
+      - packages/system/dashboard/templates/clusterrole-cluster-usage.yaml
+
+concurrency:
+  group: layersentry-network-inventory-lab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  inventory:
+    name: Discover and publish Talos network topology
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      TALOSCTL: C:\hci-tools\talosctl.exe
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+
+    steps:
+      - name: Checkout layersentry-platform
+        uses: actions/checkout@v4
+
+      - name: Collect read-only Talos network resources
+        id: collect
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing branch $env:GITHUB_REF_NAME"
+          }
+          foreach ($path in @($env:TALOSCTL, $env:TALOSCONFIG, $env:KUBECTL, $env:KUBECONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+
+          $reportPath = Join-Path $env:RUNNER_TEMP 'layersentry-network-inventory.json'
+          $nodes = @($env:HCI_NODE_IPS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          & "$env:GITHUB_WORKSPACE\.github\scripts\layersentry\collect-network-inventory.ps1" `
+            -Talosctl $env:TALOSCTL `
+            -Talosconfig $env:TALOSCONFIG `
+            -Nodes $nodes `
+            -Output $reportPath `
+            -SourceCommit $env:GITHUB_SHA `
+            -SourceRun $env:GITHUB_RUN_ID
+
+          if (-not (Test-Path $reportPath)) { throw 'network inventory report was not created' }
+          $report = Get-Content -Raw $reportPath | ConvertFrom-Json
+          if ($report.schemaVersion -ne 'network.layersentry.io/v1alpha1') {
+            throw "unexpected schemaVersion $($report.schemaVersion)"
+          }
+          if ([int]$report.nodeCount -ne $nodes.Count) {
+            throw "inventory node count $($report.nodeCount) does not match expected $($nodes.Count)"
+          }
+          if ($report.sourceCommit -ne $env:GITHUB_SHA) {
+            throw "inventory sourceCommit $($report.sourceCommit) does not match $env:GITHUB_SHA"
+          }
+
+          @(
+            '## LayerSentry Talos Network Inventory',
+            '',
+            "Nodes: **$($report.nodeCount)**",
+            '',
+            "Ready: **$($report.readyNodeCount)**",
+            '',
+            "Partial: **$($report.partial)**",
+            '',
+            '| Node | State | Management interface | Gateway | Physical NICs |',
+            '|---|---|---|---|---:|'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          foreach ($node in @($report.nodes)) {
+            $physical = @($node.links | Where-Object { $_.physical }).Count
+            $mgmt = if ($node.management.interface) { $node.management.interface } else { 'unknown' }
+            $gateway = if ($node.management.gateway) { $node.management.gateway } else { '-' }
+            "| $($node.name) | $($node.state) | $mgmt | $gateway | $physical |" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
+          "report_path=$reportPath" | Add-Content -Path $env:GITHUB_OUTPUT
+          "ready_count=$($report.readyNodeCount)" | Add-Content -Path $env:GITHUB_OUTPUT
+          "partial=$($report.partial)" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: Publish inventory to authenticated dashboard surface
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $reportPath = '${{ steps.collect.outputs.report_path }}'
+          foreach ($path in @($env:KUBECTL, $env:KUBECONFIG, $reportPath)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+
+          & $env:KUBECTL get namespace cozy-system -o name | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'cozy-system namespace is unavailable' }
+
+          $manifest = (& $env:KUBECTL -n cozy-system create configmap layersentry-network-inventory "--from-file=inventory.json=$reportPath" --dry-run=client -o yaml 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'failed to render network inventory ConfigMap' }
+          $manifest | & $env:KUBECTL apply -f - | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to publish network inventory ConfigMap' }
+
+          & $env:KUBECTL -n cozy-system label configmap layersentry-network-inventory `
+            app.kubernetes.io/part-of=layersentry `
+            layersentry.io/network-inventory=true --overwrite | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to label network inventory ConfigMap' }
+
+          $published = (& $env:KUBECTL -n cozy-system get configmap layersentry-network-inventory -o json | ConvertFrom-Json)
+          $payload = $published.data.'inventory.json' | ConvertFrom-Json
+          if ($payload.sourceCommit -ne $env:GITHUB_SHA) {
+            throw "published sourceCommit $($payload.sourceCommit) does not match $env:GITHUB_SHA"
+          }
+          if (($published.data.'inventory.json') -match 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|client-key-data|talosconfig') {
+            throw 'credential material detected in published network inventory'
+          }
+          Write-Host "NETWORK_INVENTORY_CONFIGMAP=PASS ready=$($payload.readyNodeCount) partial=$($payload.partial)"
+
+      - name: Enforce evidence boundary
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = (& $env:KUBECTL -n cozy-system get configmap layersentry-network-inventory -o json | ConvertFrom-Json).data.'inventory.json' | ConvertFrom-Json
+          foreach ($node in @($payload.nodes)) {
+            foreach ($link in @($node.links)) {
+              if ($link.speedMbps -and [int64]$link.speedMbps -ge 4294967295) {
+                throw "invalid unknown-speed sentinel published for $($node.name)/$($link.name)"
+              }
+              if ($link.sriov.supported -eq $true -and $null -eq $link.sriov.totalVfs) {
+                throw "SR-IOV marked supported without totalVfs evidence on $($node.name)/$($link.name)"
+              }
+              if ($link.rdma.supported -eq $true -and @($link.rdma.devices).Count -eq 0) {
+                throw "RDMA marked supported without sysfs device evidence on $($node.name)/$($link.name)"
+              }
+            }
+          }
+          Write-Host 'NETWORK_EVIDENCE_BOUNDARY=PASS'
