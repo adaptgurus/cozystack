@@ -8,7 +8,7 @@ machine:
   kernel:
     modules:
       - name: dm_multipath
-      - name: dm_round-robin
+      - name: dm_round_robin
       # Load rebuilt external modules as an image-integrity/ABI gate. Loading
       # ZFS itself is safe because LayerSentry removes the upstream auto-import
       # service; pool import/export remains controller-owned.
