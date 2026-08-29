@@ -74,7 +74,7 @@ jobs:
           s = s.replace(old, new, 1)
 
           old = '''\t\tlogger.Info("forced source-watcher drift via AG status Ready=False patch",\n\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt)'''
-          new = '''\t\tlogger.Info("requested source-watcher recovery without mutating Flux-owned status",\n\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt,\n\t\t\t"currentSourceDigest", currentSourceDigest, "observedSourcesDigest", ag.Status.ObservedSourcesDigest)'''
+          new = '''\t\tlogger.Info("requested source-watcher recovery without mutating Flux-owned status",\n\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt,\n\t\t\t"observedSourcesDigest", ag.Status.ObservedSourcesDigest)'''
           if s.count(old) != 1:
               raise SystemExit(f'force log anchor count={s.count(old)}')
           s = s.replace(old, new, 1)
