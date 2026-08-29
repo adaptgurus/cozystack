@@ -16,31 +16,31 @@ defaults:
     shell: powershell
 
 jobs:
-  discover-keycloak-user-api:
-    name: Discover native Keycloak user management on TESTSER
+  inspect-keycloak-user-api:
+    name: Inspect native Keycloak admin group mapping on TESTSER
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 15
     env:
       KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
       KUBECTL: C:\hci-tools\kubectl.exe
     steps:
-      - name: Validate Keycloak and discover user CRDs
+      - name: Validate Keycloak and inspect admin group/user resources
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($hr in @('keycloak-operator','keycloak','keycloak-configure')) {
             & $env:KUBECTL wait --for=condition=Ready "helmrelease/$hr" -n cozy-keycloak --timeout=120s
             if ($LASTEXITCODE -ne 0) { throw "Keycloak HelmRelease $hr is not Ready" }
           }
-          Write-Host '=== Keycloak API resources ==='
-          & $env:KUBECTL api-resources | Select-String -Pattern 'keycloak' -CaseSensitive:$false
-          Write-Host '=== Keycloak CRDs ==='
-          & $env:KUBECTL get crd -o name | Select-String -Pattern 'keycloak' -CaseSensitive:$false
-          Write-Host '=== Keycloak workloads (names/images only) ==='
-          & $env:KUBECTL get pods -n cozy-keycloak -o custom-columns='NAME:.metadata.name,IMAGE:.spec.containers[0].image' --no-headers
-          Write-Host '=== Keycloak secret names only ==='
-          & $env:KUBECTL get secret -n cozy-keycloak -o name
-          $userCrds = @(& $env:KUBECTL get crd -o name | Select-String -Pattern 'user.*keycloak|keycloak.*user' -CaseSensitive:$false | ForEach-Object { $_.Line.Trim() })
-          foreach ($crdName in $userCrds) {
-            Write-Host "=== Schema for $crdName ==="
-            & $env:KUBECTL explain ($crdName -replace '^customresourcedefinition.apiextensions.k8s.io/','') --recursive | Select-Object -First 220
+          Write-Host '=== Realm groups ==='
+          $groups = (& $env:KUBECTL get keycloakrealmgroups.v1.edp.epam.com -A -o json | ConvertFrom-Json)
+          foreach ($g in @($groups.items)) {
+            Write-Host ("GROUP ns={0} resource={1} name={2} realm={3}/{4} path={5} status={6}" -f $g.metadata.namespace,$g.metadata.name,$g.spec.name,$g.spec.realmRef.kind,$g.spec.realmRef.name,$g.spec.path,$g.status.value)
           }
+          $adminGroups = @($groups.items | Where-Object { $_.metadata.name -eq 'cozystack-cluster-admin' -or $_.spec.name -eq 'cozystack-cluster-admin' -or $_.spec.path -match 'cozystack-cluster-admin' })
+          if ($adminGroups.Count -eq 0) { throw 'cozystack-cluster-admin KeycloakRealmGroup was not found' }
+          Write-Host '=== Existing realm users (password fields excluded) ==='
+          $users = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com -A -o json | ConvertFrom-Json)
+          foreach ($u in @($users.items)) {
+            Write-Host ("USER ns={0} resource={1} username={2} groups={3} realm={4}/{5} status={6} failures={7}" -f $u.metadata.namespace,$u.metadata.name,$u.spec.username,(@($u.spec.groups) -join ','),$u.spec.realmRef.kind,$u.spec.realmRef.name,$u.status.value,$u.status.failureCount)
+          }
+          Write-Host 'KEYCLOAK_NATIVE_USER_API=PASS'
