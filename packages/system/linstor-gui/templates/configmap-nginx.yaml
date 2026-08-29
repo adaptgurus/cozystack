@@ -84,6 +84,15 @@ data:
           proxy_pass {{ trimSuffix "/" .Values.gateway.endpoint }}/;
         }
 
+        # Inject one discoverable launcher into the upstream SPA shell instead
+        # of forking LINBIT's frontend. SPA fallback requests internally land
+        # on /index.html, so the launcher is available throughout the GUI.
+        location = /index.html {
+          sub_filter_once on;
+          sub_filter '</body>' '<a id="layersentry-storage-fabric-launcher" href="/storage-fabric/" aria-label="Open LayerSentry Storage Fabric" style="position:fixed;right:20px;bottom:20px;z-index:2147483647;padding:10px 14px;border-radius:10px;background:#102a3a;color:#d8fbff;border:1px solid #2b7185;text-decoration:none;font:600 13px system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 10px 28px rgba(0,0,0,.28)">Storage Fabric</a></body>';
+          try_files $uri =404;
+        }
+
         # Static upstream LINSTOR GUI assets
         location / {
           try_files $uri $uri/ /index.html;
