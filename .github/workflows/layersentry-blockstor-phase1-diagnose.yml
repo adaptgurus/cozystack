@@ -1,0 +1,73 @@
+name: LayerSentry Blockstor Phase 1 Diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-blockstor-phase1-diagnose.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    name: Read-only Blockstor Phase 1 diagnostics on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Capture current safe state and scheduler evidence
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          if (-not (Test-Path $env:KUBECTL)) { throw "kubectl missing: $env:KUBECTL" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          Write-Host '===== KUBERNETES NODES ====='
+          & $env:KUBECTL get nodes -o wide
+          if ($LASTEXITCODE -ne 0) { throw 'cannot read Kubernetes nodes' }
+
+          Write-Host '===== CLASSIC LINSTOR SAFETY BOUNDARY ====='
+          & $env:KUBECTL get storageclass local replicated -o custom-columns='NAME:.metadata.name,PROVISIONER:.provisioner'
+          & $env:KUBECTL get volumesnapshotclass linstor-snapshots -o custom-columns='NAME:.metadata.name,DRIVER:.driver'
+
+          Write-Host '===== BLOCKSTOR OBJECTS ====='
+          & $env:KUBECTL get deployment,daemonset,pod,svc -n blockstor-system -o wide
+          & $env:KUBECTL get nodes.blockstor.cozystack.io -o wide
+          $poolJson = & $env:KUBECTL get storagepools.blockstor.cozystack.io -o json 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $poolCount = @(($poolJson | ConvertFrom-Json).items).Count
+            Write-Host "BLOCKSTOR_STORAGEPOOL_COUNT=$poolCount"
+            if ($poolCount -ne 0) { throw 'SAFETY FAILURE: Blockstor StoragePools exist during Phase 1 diagnosis' }
+          } else {
+            Write-Host 'BLOCKSTOR_STORAGEPOOL_CRD_NOT_PRESENT_OR_UNREADABLE'
+          }
+
+          $ds = & $env:KUBECTL get daemonset blockstor-satellite -n blockstor-system -o name 2>$null
+          if ($LASTEXITCODE -eq 0 -and $ds) {
+            Write-Host '===== SATELLITE DAEMONSET ====='
+            & $env:KUBECTL describe daemonset blockstor-satellite -n blockstor-system
+          }
+
+          $pods = @((& $env:KUBECTL get pods -n blockstor-system -o json | ConvertFrom-Json).items)
+          foreach ($pod in $pods) {
+            if (($pod.status.phase -ne 'Running') -or (-not $pod.spec.nodeName)) {
+              Write-Host "===== POD DIAG $($pod.metadata.name) ====="
+              & $env:KUBECTL describe pod $pod.metadata.name -n blockstor-system
+            }
+          }
+
+          Write-Host '===== BLOCKSTOR EVENTS ====='
+          & $env:KUBECTL get events -n blockstor-system --sort-by=.lastTimestamp
+
+          Write-Host '===== NODE TAINTS / ALLOCATABLE ====='
+          & $env:KUBECTL get nodes -o custom-columns='NAME:.metadata.name,TAINTS:.spec.taints,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory,PODS:.status.allocatable.pods'
+          Write-Host 'BLOCKSTOR_PHASE1_DIAG=PASS'
