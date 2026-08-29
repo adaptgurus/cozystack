@@ -33,12 +33,17 @@ import (
 // for the previous source revision and therefore would otherwise look healthy
 // to a condition-only consumer.
 //
-// A fresh ArtifactGenerator with no observed digest is not called divergent;
-// its normal initial reconciliation and grace-period path owns that state.
+// A generator with no declared sources, or a fresh generator with no observed
+// digest, is not evidence of divergence. Those states remain owned by the
+// normal reconciliation / grace-period paths and therefore fail closed rather
+// than manufacturing a comparison against an empty source set.
 func (r *PackageSourceReconciler) artifactGeneratorSourceDiverged(
 	ctx context.Context,
 	ag *sourcewatcherv1beta1.ArtifactGenerator,
 ) (bool, string, error) {
+	if len(ag.Spec.Sources) == 0 {
+		return false, "", nil
+	}
 	currentDigest, observable, err := r.currentArtifactGeneratorSourcesDigest(ctx, ag)
 	if err != nil {
 		return false, "", err
