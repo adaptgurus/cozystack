@@ -18,9 +18,16 @@ linstor:
 
 ## @section LayerSentry Storage Fabric
 ## @param gateway.endpoint In-cluster LINSTOR Gateway REST endpoint. The browser never talks to this address directly; nginx exposes it same-origin under `/gateway/`.
-## @param gateway.provisioningEnabled Enables mutating Gateway API methods through the GUI proxy. Keep false until persistent disk identity and Gateway agent prerequisites are certified.
+## @param gateway.provisioningEnabled Administrative opt-in for mutating Gateway API methods through the GUI proxy.
 ## @param gateway.provisioningDisabledReason User-facing explanation shown while Storage Fabric is in safe/read-only mode.
+## @param gateway.safety.persistentDiskIdentityCertified Must be true only after stable WWID/by-id identity is certified on every storage node.
+## @param gateway.safety.agentDataPlaneCertified Must be true only after DRBD Reactor and protocol target services pass node certification.
+## @param gateway.safety.certificationReference Change/ticket/evidence reference. Required when all provisioning gates are enabled.
 gateway:
   endpoint: "http://linstor-gateway.cozy-linstor.svc:8337"
   provisioningEnabled: false
   provisioningDisabledReason: "Provisioning is locked until stable persistent disk identity (WWID/by-id) and LINSTOR Gateway agent prerequisites are certified."
+  safety:
+    persistentDiskIdentityCertified: false
+    agentDataPlaneCertified: false
+    certificationReference: ""
