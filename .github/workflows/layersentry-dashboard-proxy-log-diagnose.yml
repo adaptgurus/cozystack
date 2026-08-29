@@ -1,0 +1,64 @@
+name: LayerSentry Dashboard Proxy Log Diagnose
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-dashboard-proxy-log-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+    steps:
+      - name: Inspect dashboard proxy paths and recent failures safely
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          if (-not (Test-Path $k)) { throw "kubectl missing: $k" }
+
+          Write-Host '===== GATEKEEPER ARGS / IMAGE ====='
+          $d = & $k -n cozy-dashboard get deploy incloud-web-gatekeeper -o json 2>$null | ConvertFrom-Json
+          foreach ($c in @($d.spec.template.spec.containers)) {
+            Write-Host "container=$($c.name) image=$($c.image)"
+            @($c.args) | ForEach-Object { Write-Host "arg=$_" }
+          }
+
+          Write-Host '===== RECENT GATEKEEPER REQUESTS RELEVANT TO TENANT/PLAN/CRD ====='
+          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=2500 --timestamps=true 2>$null |
+            Select-String -Pattern 'customresourcedefinitions|plans\.backups|tenantnamespaces|forbidden|unauthorized| 401 | 403 | 404 |error' -CaseSensitive:$false |
+            Select-Object -Last 500
+
+          Write-Host '===== CONSOLE LOGS ====='
+          & $k -n cozy-dashboard logs deploy/cozy-dashboard-console --all-containers=true --tail=1000 --timestamps=true 2>$null |
+            Select-String -Pattern 'error|plan|schema|tenant' -CaseSensitive:$false |
+            Select-Object -Last 300
+
+          Write-Host '===== SAFE RBAC CHECKS ====='
+          $group='cozystack-cluster-admin'
+          $user='layersentry-auth-check'
+          foreach ($verbResource in @(
+            @('list','tenantnamespaces.core.cozystack.io'),
+            @('get','tenantnamespaces.core.cozystack.io'),
+            @('get','customresourcedefinitions.apiextensions.k8s.io'),
+            @('list','plans.backups.cozystack.io'),
+            @('create','tenants.apps.cozystack.io')
+          )) {
+            $verb=$verbResource[0]; $res=$verbResource[1]
+            $out=& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1
+            Write-Host "$verb $res => $out"
+          }
+
+          $global:LASTEXITCODE=0
+          exit 0
