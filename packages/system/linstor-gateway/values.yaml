@@ -1,4 +1,8 @@
-enabled: false
+# The Gateway REST control plane is part of the LayerSentry storage fabric and
+# must be available whenever this chart is installed. Protocol provisioning
+# remains independently fail-closed in the GUI until agent prerequisites are
+# certified; enabling the stateless server does not initialize or modify disks.
+enabled: true
 
 replicas: 2
 
@@ -18,6 +22,9 @@ linstor:
 gateway:
   listenAddress: ":8337"
   corsAllowedOrigins: []
+  # LINSTOR Gateway v2.3 supports token_file. Keep credentials exclusively in
+  # a Secret; never place bearer tokens in values or a ConfigMap. mTLS remains
+  # the baseline when no API token is configured.
   tokenSecret:
     name: ""
     key: token
@@ -25,6 +32,16 @@ gateway:
 service:
   type: ClusterIP
   port: 8337
+
+availability:
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpread:
+    enabled: true
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
 
 resources:
   requests:
