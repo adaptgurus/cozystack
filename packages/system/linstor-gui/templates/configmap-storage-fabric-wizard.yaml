@@ -1,0 +1,584 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linstor-gui-storage-fabric-wizard
+  labels:
+    {{- include "linstor-gui.labels" . | nindent 4 }}
+data:
+  wizard.js: |
+    (() => {
+      "use strict";
+
+      const provisioningEnabled = {{ .Values.gateway.provisioningEnabled }};
+      const persistentDiskIdentityCertified = {{ .Values.gateway.safety.persistentDiskIdentityCertified }};
+      const agentDataPlaneCertified = {{ .Values.gateway.safety.agentDataPlaneCertified }};
+      const certificationReference = {{ .Values.gateway.safety.certificationReference | toJson }};
+      const provisioningDisabledReason = {{ .Values.gateway.provisioningDisabledReason | toJson }};
+      const provisioningReady =
+        provisioningEnabled &&
+        persistentDiskIdentityCertified &&
+        agentDataPlaneCertified &&
+        certificationReference.trim().length > 0;
+
+      const protocolMeta = {
+        iscsi: {
+          title: "Create iSCSI target",
+          noun: "iSCSI target",
+          endpoint: "/gateway/api/v2/iscsi",
+          identityLabel: "Target IQN",
+          defaultIdentity: (name) => `iqn.2026-08.io.layersentry:${name}`
+        },
+        nfs: {
+          title: "Create NFS export",
+          noun: "NFS export",
+          endpoint: "/gateway/api/v2/nfs"
+        },
+        nvme: {
+          title: "Create NVMe/TCP target",
+          noun: "NVMe/TCP target",
+          endpoint: "/gateway/api/v2/nvme-of",
+          identityLabel: "Target NQN",
+          defaultIdentity: (name) => `nqn.2026-08.io.layersentry:nvme:${name}`
+        }
+      };
+
+      const state = {
+        protocol: "iscsi",
+        step: 0,
+        values: {}
+      };
+
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function addStyles() {
+        const style = document.createElement("style");
+        style.textContent = `
+          .lsw-backdrop{position:fixed;inset:0;z-index:2147483600;background:rgba(3,7,18,.74);backdrop-filter:blur(5px);display:none;align-items:center;justify-content:center;padding:20px}
+          .lsw-backdrop.open{display:flex}
+          .lsw-dialog{width:min(860px,100%);max-height:min(820px,calc(100vh - 40px));overflow:auto;border:1px solid #33425e;border-radius:18px;background:#10192b;color:#eef3ff;box-shadow:0 30px 90px rgba(0,0,0,.5)}
+          .lsw-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;padding:22px 24px 18px;border-bottom:1px solid #293650;position:sticky;top:0;background:#10192b;z-index:2}
+          .lsw-head h2{margin:0;font-size:21px;letter-spacing:-.025em}.lsw-head p{margin:5px 0 0;color:#9eabc4;font-size:12px}
+          .lsw-close{border:1px solid #33425e;background:transparent;color:#dce7fb;border-radius:9px;width:34px;height:34px;cursor:pointer;font-size:19px}
+          .lsw-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:16px 24px 0}
+          .lsw-step{border:1px solid #293650;border-radius:9px;padding:9px 10px;color:#7f8ca5;font-size:11px}.lsw-step.active{border-color:#4c8b9b;color:#bff8ff;background:rgba(103,232,249,.07)}.lsw-step.done{color:#74e5ae}
+          .lsw-body{padding:22px 24px}.lsw-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.lsw-span{grid-column:1/-1}
+          .lsw-field{display:grid;gap:6px}.lsw-field label{font-size:12px;font-weight:650}.lsw-help{font-size:11px;color:#8794ac;line-height:1.4}
+          .lsw-field input,.lsw-field select,.lsw-field textarea{width:100%;border:1px solid #33425e;background:#0c1424;color:#eef3ff;border-radius:9px;padding:10px 11px;font:inherit;outline:none}
+          .lsw-field input:focus,.lsw-field select:focus,.lsw-field textarea:focus{border-color:#4c8b9b;box-shadow:0 0 0 3px rgba(103,232,249,.08)}.lsw-field textarea{min-height:92px;resize:vertical}
+          .lsw-error{display:none;margin:0 24px 18px;padding:11px 13px;border:1px solid rgba(255,123,138,.4);border-radius:9px;background:rgba(255,123,138,.08);color:#ffc2c9;font-size:12px;white-space:pre-wrap}.lsw-error.show{display:block}
+          .lsw-note{border:1px solid rgba(246,198,91,.3);background:rgba(246,198,91,.06);border-radius:10px;padding:12px 13px;color:#f6dfa8;font-size:11px;line-height:1.5}
+          .lsw-good{border-color:rgba(94,230,168,.3);background:rgba(94,230,168,.06);color:#bdf7dc}
+          .lsw-review{display:grid;gap:13px}.lsw-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.lsw-review-item{border:1px solid #293650;border-radius:9px;padding:10px;background:rgba(255,255,255,.02)}.lsw-review-item b{display:block;font-size:11px;color:#8997af;margin-bottom:4px}.lsw-review-item span{font-size:12px;overflow-wrap:anywhere}
+          .lsw-pre{margin:0;border:1px solid #293650;border-radius:10px;background:#08101f;padding:13px;overflow:auto;color:#cce6ed;font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
+          .lsw-gates{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.lsw-gate{border:1px solid #293650;border-radius:9px;padding:9px;font-size:11px}.lsw-gate strong{display:block;margin-bottom:3px}.lsw-gate.pass{border-color:rgba(94,230,168,.3);color:#bdf7dc}.lsw-gate.block{border-color:rgba(246,198,91,.3);color:#f6dfa8}
+          .lsw-foot{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:16px 24px 22px;border-top:1px solid #293650}.lsw-actions{display:flex;gap:9px}
+          .lsw-button{border:1px solid #33425e;background:rgba(255,255,255,.03);color:#eef3ff;border-radius:9px;padding:9px 14px;cursor:pointer;font:inherit}.lsw-button.primary{border-color:#3f8799;background:rgba(103,232,249,.10);color:#c9faff}.lsw-button:disabled{opacity:.42;cursor:not-allowed}
+          .lsw-toast{position:fixed;right:22px;top:22px;z-index:2147483647;max-width:440px;border:1px solid rgba(94,230,168,.35);background:#10291f;color:#c7f8de;border-radius:11px;padding:12px 14px;box-shadow:0 18px 45px rgba(0,0,0,.35);font-size:12px}
+          @media(max-width:680px){.lsw-grid,.lsw-review-grid,.lsw-gates{grid-template-columns:1fr}.lsw-span{grid-column:auto}.lsw-steps{grid-template-columns:1fr}.lsw-foot{align-items:flex-start;flex-direction:column}.lsw-actions{width:100%;justify-content:flex-end}}
+        `;
+        document.head.appendChild(style);
+      }
+
+      const backdrop = el("div", "lsw-backdrop");
+      backdrop.setAttribute("role", "presentation");
+      const dialog = el("section", "lsw-dialog");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      dialog.setAttribute("aria-labelledby", "lsw-title");
+
+      const head = el("div", "lsw-head");
+      const headCopy = el("div");
+      const title = el("h2", "", "");
+      title.id = "lsw-title";
+      const subtitle = el("p", "", "LayerSentry guided provisioning · LINSTOR Gateway v2");
+      headCopy.append(title, subtitle);
+      const closeButton = el("button", "lsw-close", "×");
+      closeButton.type = "button";
+      closeButton.setAttribute("aria-label", "Close provisioning wizard");
+      head.append(headCopy, closeButton);
+
+      const steps = el("div", "lsw-steps");
+      ["1 · Basics", "2 · Network & access", "3 · Review & create"].forEach((label) => {
+        steps.appendChild(el("div", "lsw-step", label));
+      });
+
+      const body = el("div", "lsw-body");
+      const errorBox = el("div", "lsw-error");
+      errorBox.setAttribute("role", "alert");
+
+      const foot = el("div", "lsw-foot");
+      const safetySummary = el("div", "lsw-help", "");
+      const actions = el("div", "lsw-actions");
+      const backButton = el("button", "lsw-button", "Back");
+      const nextButton = el("button", "lsw-button primary", "Continue");
+      backButton.type = "button";
+      nextButton.type = "button";
+      actions.append(backButton, nextButton);
+      foot.append(safetySummary, actions);
+
+      dialog.append(head, steps, body, errorBox, foot);
+      backdrop.appendChild(dialog);
+      document.body.appendChild(backdrop);
+
+      function field(name, labelText, options = {}) {
+        const wrap = el("div", "lsw-field" + (options.span ? " lsw-span" : ""));
+        const label = el("label", "", labelText);
+        label.htmlFor = "lsw-" + name;
+        let input;
+        if (options.type === "textarea") {
+          input = document.createElement("textarea");
+        } else if (options.type === "select") {
+          input = document.createElement("select");
+          (options.options || []).forEach(([value, text]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = text;
+            input.appendChild(option);
+          });
+        } else {
+          input = document.createElement("input");
+          input.type = options.type || "text";
+        }
+        input.id = "lsw-" + name;
+        input.name = name;
+        if (options.placeholder) input.placeholder = options.placeholder;
+        if (options.min !== undefined) input.min = String(options.min);
+        if (options.max !== undefined) input.max = String(options.max);
+        if (options.step !== undefined) input.step = String(options.step);
+        if (options.autocomplete) input.autocomplete = options.autocomplete;
+        input.value = state.values[name] ?? options.value ?? "";
+        input.addEventListener("input", () => {
+          state.values[name] = input.value;
+          if (name === "name" && !state.values.identityTouched && protocolMeta[state.protocol].defaultIdentity) {
+            state.values.identity = protocolMeta[state.protocol].defaultIdentity(normalizeName(input.value));
+            const identityInput = document.getElementById("lsw-identity");
+            if (identityInput) identityInput.value = state.values.identity;
+          }
+          hideError();
+        });
+        if (name === "identity") {
+          input.addEventListener("input", () => { state.values.identityTouched = true; });
+        }
+        wrap.append(label, input);
+        if (options.help) wrap.appendChild(el("div", "lsw-help", options.help));
+        return wrap;
+      }
+
+      function normalizeName(raw) {
+        let value = String(raw || "").toLowerCase().trim().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+        if (/^[0-9]/.test(value)) value = "r-" + value;
+        return value.slice(0, 42);
+      }
+
+      function lines(value) {
+        return String(value || "").split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+      }
+
+      function validName(value) {
+        return /^[a-z][a-z0-9-]+$/.test(value) && value.length >= 2;
+      }
+
+      function validIQN(value) {
+        return /^iqn\.\d{4}-(0[1-9]|1[0-2])\.[a-z0-9-]+\.[a-z0-9-]+:[a-z][a-z0-9-]+$/.test(value);
+      }
+
+      function validNQN(value) {
+        const parts = String(value || "").split(":");
+        return parts.length === 3 && parts[0].length >= 2 && parts[1] === "nvme" && parts[2].length >= 2 && /^[A-Za-z0-9._-]+$/.test(parts[2]);
+      }
+
+      function validIPv4(ip) {
+        const parts = ip.split(".");
+        if (parts.length !== 4) return false;
+        return parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+      }
+
+      function validCIDR(value) {
+        const raw = String(value || "").trim();
+        const slash = raw.lastIndexOf("/");
+        if (slash <= 0) return false;
+        const ip = raw.slice(0, slash);
+        const prefix = Number(raw.slice(slash + 1));
+        if (!Number.isInteger(prefix)) return false;
+        if (ip.includes(":")) return prefix >= 0 && prefix <= 128 && /^[0-9A-Fa-f:]+$/.test(ip);
+        return validIPv4(ip) && prefix >= 0 && prefix <= 32;
+      }
+
+      function ensureDefaults(protocol) {
+        state.values = {
+          name: "",
+          capacityGiB: "10",
+          resourceGroup: "DfltRscGrp",
+          serviceCidr: "",
+          identity: "",
+          identityTouched: false,
+          allowedInitiators: "",
+          chapUsername: "",
+          chapPassword: "",
+          blockSize: "",
+          writeCache: "",
+          allowedCidrs: "",
+          exportPath: "/data",
+          filesystem: "ext4",
+          implementation: "kernel"
+        };
+        state.protocol = protocol;
+        state.step = 0;
+      }
+
+      function renderBasics() {
+        const grid = el("div", "lsw-grid");
+        grid.append(
+          field("name", "Resource name", {
+            placeholder: "database-prod",
+            help: "Lowercase letters, digits and hyphens; must start with a letter."
+          }),
+          field("capacityGiB", "Capacity (GiB)", {
+            type: "number", min: 1, max: 1048576, step: 1,
+            help: "Creates volume 1. Gateway reserves volume 0 for cluster-private metadata."
+          }),
+          field("resourceGroup", "LINSTOR resource group", {
+            help: "Existing LINSTOR resource group used for placement and replication."
+          })
+        );
+        if (state.protocol !== "nfs") {
+          grid.appendChild(field("identity", protocolMeta[state.protocol].identityLabel, {
+            span: true,
+            placeholder: state.protocol === "iscsi" ? "iqn.2026-08.io.layersentry:database-prod" : "nqn.2026-08.io.layersentry:nvme:database-prod",
+            help: state.protocol === "iscsi"
+              ? "Gateway requires a standards-style IQN with a lowercase LINSTOR-safe resource suffix."
+              : "Gateway v2 expects <vendor>:nvme:<subsystem>."
+          }));
+        }
+        return grid;
+      }
+
+      function renderNetwork() {
+        const grid = el("div", "lsw-grid");
+        if (state.protocol === "iscsi") {
+          grid.append(
+            field("serviceCidr", "Service IP / CIDR", {
+              placeholder: "10.10.20.50/24",
+              help: "Floating service address exposed to iSCSI initiators on TCP/3260."
+            }),
+            field("allowedInitiators", "Allowed initiator IQNs", {
+              type: "textarea", span: true,
+              placeholder: "iqn.1998-01.com.vmware:host01\niqn.1998-01.com.vmware:host02",
+              help: "Optional. One IQN per line or comma-separated."
+            }),
+            field("chapUsername", "CHAP username", { autocomplete: "off", help: "Optional; username and password must be supplied together." }),
+            field("chapPassword", "CHAP password", { type: "password", autocomplete: "new-password", help: "Minimum 12 characters when CHAP is enabled." }),
+            field("blockSize", "Block size", {
+              type: "select",
+              options: [["", "Gateway default"], ["512", "512"], ["1024", "1024"], ["2048", "2048"], ["4096", "4096"]]
+            }),
+            field("writeCache", "Write cache", {
+              type: "select",
+              options: [["", "Gateway default"], ["writethrough", "Write-through"], ["writeback", "Write-back"]]
+            })
+          );
+        } else if (state.protocol === "nfs") {
+          grid.append(
+            field("serviceCidr", "Service IP / CIDR", {
+              placeholder: "10.10.20.60/24",
+              help: "Floating NFS service address on TCP/2049."
+            }),
+            field("allowedCidrs", "Allowed client CIDRs", {
+              type: "textarea", span: true,
+              placeholder: "10.20.0.0/16\n10.30.40.0/24",
+              help: "Required by LayerSentry. No implicit allow-all export is generated by this wizard."
+            }),
+            field("exportPath", "Export path", {
+              placeholder: "/data",
+              help: "Path is rooted below the Gateway managed export directory."
+            }),
+            field("filesystem", "Filesystem", {
+              type: "select",
+              options: [["ext4", "ext4"], ["xfs", "XFS"]]
+            }),
+            field("implementation", "NFS implementation", {
+              type: "select",
+              options: [["kernel", "Linux kernel NFS"], ["ganesha", "NFS-Ganesha"]]
+            })
+          );
+        } else {
+          grid.append(
+            field("serviceCidr", "Service IP / CIDR", {
+              placeholder: "10.10.20.70/24",
+              help: "Floating NVMe/TCP service address. Gateway uses TCP/4420."
+            })
+          );
+          const note = el("div", "lsw-note lsw-span",
+            "Access control note: the pinned LINSTOR Gateway v2 create schema does not expose NVMe initiator ACLs. Network segmentation/firewall policy must enforce client reachability until an ACL-capable API is certified.");
+          grid.appendChild(note);
+        }
+        return grid;
+      }
+
+      function buildPayload() {
+        const sizeKiB = Math.round(Number(state.values.capacityGiB) * 1024 * 1024);
+        const volume = { number: 1, size_kib: sizeKiB };
+        if (state.protocol === "iscsi") {
+          const payload = {
+            iqn: state.values.identity.trim(),
+            resource_group: state.values.resourceGroup.trim(),
+            volumes: [volume],
+            service_ips: [state.values.serviceCidr.trim()],
+            gross_size: false
+          };
+          const initiators = lines(state.values.allowedInitiators);
+          if (initiators.length) payload.allowed_initiators = initiators;
+          if (state.values.chapUsername.trim()) {
+            payload.username = state.values.chapUsername.trim();
+            payload.password = state.values.chapPassword;
+          }
+          if (state.values.blockSize) payload.block_size = Number(state.values.blockSize);
+          if (state.values.writeCache) payload.write_cache = state.values.writeCache;
+          return payload;
+        }
+        if (state.protocol === "nfs") {
+          volume.file_system = state.values.filesystem;
+          volume.export_path = state.values.exportPath.trim();
+          return {
+            name: state.values.name.trim(),
+            service_ip: state.values.serviceCidr.trim(),
+            allowed_ips: lines(state.values.allowedCidrs),
+            resource_group: state.values.resourceGroup.trim(),
+            volumes: [volume],
+            gross_size: false,
+            implementation: state.values.implementation
+          };
+        }
+        return {
+          nqn: state.values.identity.trim(),
+          service_ip: state.values.serviceCidr.trim(),
+          resource_group: state.values.resourceGroup.trim(),
+          volumes: [volume],
+          gross_size: false
+        };
+      }
+
+      function reviewPayload() {
+        const payload = buildPayload();
+        const safe = JSON.parse(JSON.stringify(payload));
+        if (safe.password) safe.password = "********";
+        return safe;
+      }
+
+      function reviewItem(label, value) {
+        const box = el("div", "lsw-review-item");
+        box.append(el("b", "", label), el("span", "", value || "—"));
+        return box;
+      }
+
+      function renderReview() {
+        const wrap = el("div", "lsw-review");
+        const summary = el("div", "lsw-review-grid");
+        summary.append(
+          reviewItem("Protocol", protocolMeta[state.protocol].noun),
+          reviewItem("Resource", state.values.name),
+          reviewItem("Capacity", state.values.capacityGiB + " GiB"),
+          reviewItem("Service address", state.values.serviceCidr),
+          reviewItem("Resource group", state.values.resourceGroup),
+          reviewItem("Certification", certificationReference || "Not certified")
+        );
+        wrap.appendChild(summary);
+
+        const gates = el("div", "lsw-gates");
+        [
+          ["Admin opt-in", provisioningEnabled],
+          ["Disk identity", persistentDiskIdentityCertified],
+          ["Gateway agents", agentDataPlaneCertified]
+        ].forEach(([label, passed]) => {
+          const item = el("div", "lsw-gate " + (passed ? "pass" : "block"));
+          item.append(el("strong", "", passed ? "Passed" : "Blocked"), el("span", "", label));
+          gates.appendChild(item);
+        });
+        wrap.appendChild(gates);
+
+        const note = el("div", provisioningReady ? "lsw-note lsw-good" : "lsw-note",
+          provisioningReady
+            ? "All LayerSentry safety gates are certified. Create will send one POST to the pinned LINSTOR Gateway API."
+            : provisioningDisabledReason);
+        wrap.appendChild(note);
+
+        const label = el("div", "lsw-help", "Exact Gateway request body (credentials redacted in review)");
+        const pre = el("pre", "lsw-pre", JSON.stringify(reviewPayload(), null, 2));
+        wrap.append(label, pre);
+        return wrap;
+      }
+
+      function validateStep() {
+        const errors = [];
+        if (state.step === 0) {
+          const name = normalizeName(state.values.name);
+          state.values.name = name;
+          const nameInput = document.getElementById("lsw-name");
+          if (nameInput) nameInput.value = name;
+          if (!validName(name)) errors.push("Resource name must start with a lowercase letter, contain only lowercase letters/digits/hyphens, and be at least 2 characters.");
+          const size = Number(state.values.capacityGiB);
+          if (!Number.isFinite(size) || size < 1 || !Number.isInteger(size)) errors.push("Capacity must be a whole number of GiB greater than zero.");
+          if (!state.values.resourceGroup.trim()) errors.push("LINSTOR resource group is required.");
+          if (state.protocol === "iscsi" && !validIQN(state.values.identity)) errors.push("Target IQN format is invalid. Example: iqn.2026-08.io.layersentry:database-prod");
+          if (state.protocol === "nvme" && !validNQN(state.values.identity)) errors.push("Target NQN format is invalid. Example: nqn.2026-08.io.layersentry:nvme:database-prod");
+        } else if (state.step === 1) {
+          if (!validCIDR(state.values.serviceCidr)) errors.push("Service address must be a valid IPv4 or IPv6 CIDR.");
+          if (state.protocol === "iscsi") {
+            const invalidInitiators = lines(state.values.allowedInitiators).filter((value) => !validIQN(value));
+            if (invalidInitiators.length) errors.push("One or more allowed initiator IQNs are invalid.");
+            const hasUser = state.values.chapUsername.trim().length > 0;
+            const hasPass = state.values.chapPassword.length > 0;
+            if (hasUser !== hasPass) errors.push("CHAP username and password must be provided together.");
+            if (hasPass && state.values.chapPassword.length < 12) errors.push("CHAP password must be at least 12 characters.");
+          } else if (state.protocol === "nfs") {
+            const clients = lines(state.values.allowedCidrs);
+            if (!clients.length) errors.push("At least one allowed NFS client CIDR is required.");
+            if (clients.some((value) => !validCIDR(value))) errors.push("One or more allowed NFS client CIDRs are invalid.");
+            if (!state.values.exportPath.startsWith("/")) errors.push("NFS export path must start with '/'.");
+            if (state.values.exportPath === "/") errors.push("Use a specific NFS export path instead of '/'.");
+          }
+        }
+        if (errors.length) {
+          showError(errors.join("\n"));
+          return false;
+        }
+        return true;
+      }
+
+      function showError(message) {
+        errorBox.textContent = message;
+        errorBox.classList.add("show");
+      }
+
+      function hideError() {
+        errorBox.textContent = "";
+        errorBox.classList.remove("show");
+      }
+
+      function render() {
+        hideError();
+        title.textContent = protocolMeta[state.protocol].title;
+        [...steps.children].forEach((node, index) => {
+          node.className = "lsw-step" + (index === state.step ? " active" : index < state.step ? " done" : "");
+        });
+        body.replaceChildren();
+        if (state.step === 0) body.appendChild(renderBasics());
+        if (state.step === 1) body.appendChild(renderNetwork());
+        if (state.step === 2) body.appendChild(renderReview());
+
+        backButton.style.visibility = state.step === 0 ? "hidden" : "visible";
+        nextButton.textContent = state.step === 2 ? (provisioningReady ? "Create resource" : "Create locked") : "Continue";
+        nextButton.disabled = state.step === 2 && !provisioningReady;
+        safetySummary.textContent = provisioningReady
+          ? "Certified: " + certificationReference
+          : "Safe mode: review is available; creation remains blocked.";
+        window.setTimeout(() => {
+          const firstInput = body.querySelector("input,select,textarea");
+          if (firstInput) firstInput.focus();
+        }, 0);
+      }
+
+      function openWizard(protocol) {
+        ensureDefaults(protocol);
+        backdrop.classList.add("open");
+        document.body.style.overflow = "hidden";
+        render();
+      }
+
+      function closeWizard() {
+        backdrop.classList.remove("open");
+        document.body.style.overflow = "";
+        hideError();
+      }
+
+      function toast(message) {
+        const node = el("div", "lsw-toast", message);
+        document.body.appendChild(node);
+        window.setTimeout(() => node.remove(), 5000);
+      }
+
+      async function submit() {
+        if (!provisioningReady) {
+          showError(provisioningDisabledReason);
+          return;
+        }
+        const payload = buildPayload();
+        nextButton.disabled = true;
+        nextButton.textContent = "Creating…";
+        try {
+          const response = await fetch(protocolMeta[state.protocol].endpoint, {
+            method: "POST",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: {
+              "Accept": "application/json",
+              "Content-Type": "application/json",
+              "X-LayerSentry-Provisioning": "certified",
+              "X-LayerSentry-Certification-Reference": certificationReference
+            },
+            body: JSON.stringify(payload)
+          });
+          const raw = await response.text();
+          let message = raw;
+          try {
+            const parsed = raw ? JSON.parse(raw) : {};
+            message = parsed.message || parsed.error || raw;
+          } catch (_) {
+            // Preserve plain-text Gateway errors.
+          }
+          if (!response.ok) throw new Error(message || `Gateway returned HTTP ${response.status}`);
+          closeWizard();
+          toast(protocolMeta[state.protocol].noun + " created successfully.");
+          const refresh = document.getElementById("refresh");
+          if (refresh) refresh.click();
+        } catch (error) {
+          showError(String(error && error.message ? error.message : error));
+          nextButton.disabled = false;
+          nextButton.textContent = "Create resource";
+        }
+      }
+
+      backButton.addEventListener("click", () => {
+        if (state.step > 0) {
+          state.step -= 1;
+          render();
+        }
+      });
+
+      nextButton.addEventListener("click", async () => {
+        if (state.step < 2) {
+          if (!validateStep()) return;
+          state.step += 1;
+          render();
+          return;
+        }
+        await submit();
+      });
+
+      closeButton.addEventListener("click", closeWizard);
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop) closeWizard();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && backdrop.classList.contains("open")) closeWizard();
+      });
+
+      addStyles();
+
+      document.querySelectorAll(".create-action").forEach((button) => {
+        const card = button.closest("[data-protocol]");
+        if (!card) return;
+        const protocol = card.getAttribute("data-protocol");
+        if (!protocolMeta[protocol]) return;
+        button.disabled = false;
+        button.title = provisioningReady
+          ? "Open the certified LayerSentry provisioning wizard."
+          : "Open the guided wizard. Creation remains locked until safety certification passes.";
+        button.addEventListener("click", () => openWizard(protocol));
+      });
+    })();
