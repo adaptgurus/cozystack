@@ -29,7 +29,7 @@ function Invoke-TalosText {
     $ErrorActionPreference = $previous
   }
   if ($exitCode -ne 0 -and -not $AllowFailure) {
-    throw "talosctl failed for node $Node: $($Arguments -join ' '): $text"
+    throw "talosctl failed for node ${Node}: $($Arguments -join ' '): $text"
   }
   return [pscustomobject]@{ Ok = ($exitCode -eq 0); Text = $text }
 }

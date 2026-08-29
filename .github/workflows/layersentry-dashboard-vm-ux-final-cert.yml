@@ -269,7 +269,7 @@ jobs:
           $contract|ConvertTo-Json|Set-Content (Join-Path $env:RUNNER_TEMP 'vm-final-contract.json') -Encoding UTF8
           Write-Host "FINAL_PREFLIGHT=PASS nodes=$($nodes.Count) packageBase=$env:BASE_PACKAGE_DIGEST vmPlural=$($contract.plural)"
 
-      - name: Switch operator and package sources to immutable VM UX release
+      - name: Switch operator to immutable VM UX platform source
         run: |
           $ErrorActionPreference='Stop'
           $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json
@@ -277,10 +277,10 @@ jobs:
           $args=New-Object System.Collections.Generic.List[string]
           $urlSeen=$false;$refSeen=$false
           foreach($a in @($op.args)){
-            $s=[string]$a
-            if($s -like '--platform-source-url=*'){$args.Add("--platform-source-url=$env:PACKAGE_URL");$urlSeen=$true}
-            elseif($s -like '--platform-source-ref=*'){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST");$refSeen=$true}
-            else{$args.Add($s)}
+            $v=[string]$a
+            if($v -like '--platform-source-url=*'){$args.Add("--platform-source-url=$env:PACKAGE_URL");$urlSeen=$true}
+            elseif($v -like '--platform-source-ref=*'){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST");$refSeen=$true}
+            else{$args.Add($v)}
           }
           if(-not$urlSeen){$args.Add("--platform-source-url=$env:PACKAGE_URL")}
           if(-not$refSeen){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST")}
@@ -291,26 +291,20 @@ jobs:
           if($LASTEXITCODE){throw 'operator source patch failed'}
           & $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host
           if($LASTEXITCODE){throw 'operator rollout failed'}
-
-          $ref=[ordered]@{digest=$env:RELEASE_PACKAGE_DIGEST;tag=$null;semver=$null;semverFilter=$null}
-          $sp=[ordered]@{spec=[ordered]@{url=$env:PACKAGE_URL;ref=$ref}}
-          $sf=Join-Path $env:RUNNER_TEMP 'vm-final-source.json';$sp|ConvertTo-Json -Depth 12|Set-Content $sf -Encoding UTF8
-          foreach($name in @('cozystack-platform','cozystack-packages')){
-            & $env:KUBECTL -n cozy-system patch ocirepository.source.toolkit.fluxcd.io $name --type=merge "--patch-file=$sf"|Out-Null
-            if($LASTEXITCODE){throw "source patch failed: $name"}
-          }
           Set-Content (Join-Path $env:RUNNER_TEMP 'vm-final-mutated.flag') 'true'
+
+          # cozystack-platform is owned directly by the operator. Do not race the
+          # platform by forcing its derived cozystack-packages source before the
+          # new platform artifact has reconciled.
           $deadline=(Get-Date).AddMinutes(5)
           do{
-            Start-Sleep 5;$ok=$true
-            foreach($name in @('cozystack-platform','cozystack-packages')){
-              $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json|ConvertFrom-Json
-              $r=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
-              if([string]$src.spec.ref.digest -ne $env:RELEASE_PACKAGE_DIGEST -or $r.status -ne 'True' -or [string]$src.status.artifact.revision -notmatch [regex]::Escape($env:RELEASE_PACKAGE_DIGEST)){$ok=$false}
-            }
+            Start-Sleep 5
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-platform -o json|ConvertFrom-Json
+            $r=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            $ok=([string]$src.spec.url -eq $env:PACKAGE_URL -and [string]$src.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $r.status -eq 'True' -and [string]$src.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
           }while(-not$ok -and (Get-Date)-lt$deadline)
-          if(-not$ok){throw 'release package sources did not become Ready'}
-          Write-Host "VM_UX_PACKAGE_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
+          if(-not$ok){throw "release platform source did not become Ready: $($r.message)"}
+          Write-Host "VM_UX_PLATFORM_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
 
       - name: Reconcile platform and remove only stale console-image renderer
         run: |
@@ -320,6 +314,19 @@ jobs:
           $deadline=(Get-Date).AddMinutes(7)
           do{Start-Sleep 5;$p=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json|ConvertFrom-Json;$r=@($p.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while(([string]$p.status.lastHandledReconcileAt -ne $stamp -or $r.status -ne 'True') -and (Get-Date)-lt$deadline)
           if([string]$p.status.lastHandledReconcileAt -ne $stamp -or $r.status -ne 'True'){throw "platform reconcile failed: $($r.message)"}
+
+          # The reconciled platform owns the derived cozystack-packages source.
+          # Validate it only after the platform rollout, otherwise the incumbent
+          # platform legitimately restores its own baseline source and races CI.
+          $deadline=(Get-Date).AddMinutes(5)
+          do{
+            Start-Sleep 5
+            $pkg=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-packages -o json|ConvertFrom-Json
+            $pkgReady=@($pkg.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            $pkgOk=([string]$pkg.spec.url -eq $env:PACKAGE_URL -and [string]$pkg.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $pkgReady.status -eq 'True' -and [string]$pkg.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
+          }while(-not$pkgOk -and (Get-Date)-lt$deadline)
+          if(-not$pkgOk){throw "derived package source did not become Ready after platform reconcile: $($pkgReady.message)"}
+          Write-Host "VM_UX_PACKAGE_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
 
           $deadline=(Get-Date).AddMinutes(6)
           do{
@@ -548,7 +555,7 @@ jobs:
           }
           $sap=Join-Path $env:RUNNER_TEMP 'vm-browser-sa.txt';$crbp=Join-Path $env:RUNNER_TEMP 'vm-browser-crb.txt'
           if(Test-Path $crbp){$x=(Get-Content $crbp -Raw).Trim();& $env:KUBECTL delete clusterrolebinding $x --ignore-not-found=true|Out-Null}
-          if(Test-Path $sap -and Test-Path $cf){$x=(Get-Content $sap -Raw).Trim();$c=Get-Content $cf -Raw|ConvertFrom-Json;& $env:KUBECTL -n $c.namespace delete serviceaccount $x --ignore-not-found=true|Out-Null}
+          if((Test-Path $sap) -and (Test-Path $cf)){$x=(Get-Content $sap -Raw).Trim();$c=Get-Content $cf -Raw|ConvertFrom-Json;& $env:KUBECTL -n $c.namespace delete serviceaccount $x --ignore-not-found=true|Out-Null}
           Write-Host 'VM_E2E_CLEANUP=PASS leakedResources=0'
           if($global:LASTEXITCODE -ne 0){$global:LASTEXITCODE=0}
 
