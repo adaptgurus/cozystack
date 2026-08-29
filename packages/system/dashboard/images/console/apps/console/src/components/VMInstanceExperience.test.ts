@@ -13,6 +13,8 @@ describe("getVmNameError", () => {
     expect(getVmNameError("Web-01")).toContain("lowercase")
     expect(getVmNameError("-web")).toContain("lowercase")
     expect(getVmNameError("web-")).toContain("lowercase")
+    expect(getVmNameError("prod..web")).toContain("lowercase")
+    expect(getVmNameError("prod-.web")).toContain("lowercase")
   })
 
   it("enforces the Kubernetes DNS subdomain length limit", () => {
