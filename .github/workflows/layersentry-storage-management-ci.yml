@@ -1,0 +1,65 @@
+name: LayerSentry Storage Management CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - packages/system/dashboard/templates/clusterrole-cluster-usage.yaml
+      - packages/system/dashboard/templates/clusterrolebinding-cluster-usage.yaml
+      - packages/system/dashboard/tests/cluster_usage_rbac_test.yaml
+      - packages/system/dashboard/images/console/apps/console/src/routes/StoragePage.tsx
+      - packages/system/dashboard/images/console/apps/console/src/components/storage/**
+      - .github/workflows/layersentry-storage-management-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard-rbac:
+    name: Storage Management dashboard Helm/RBAC tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Install pinned helm-unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
+
+      - name: Run dashboard Helm unit tests
+        run: helm unittest packages/system/dashboard
+
+      - name: Enforce read-only Storage Management RBAC
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          text = Path("packages/system/dashboard/templates/clusterrole-cluster-usage.yaml").read_text()
+          required = (
+              "persistentvolumes",
+              "persistentvolumeclaims",
+              "storageclasses",
+              "volumesnapshots",
+              "layersentry-storage-inventory",
+          )
+          for token in required:
+              if token not in text:
+                  raise SystemExit(f"missing Storage Management RBAC token: {token}")
+
+          forbidden = {"create", "update", "patch", "delete", "deletecollection"}
+          for match in re.finditer(r"verbs:\s*\[([^\]]+)\]", text):
+              verbs = {v.strip().strip("\"'") for v in match.group(1).split(",")}
+              bad = verbs & forbidden
+              if bad:
+                  raise SystemExit(f"write verb leaked into Storage Management ClusterRole: {sorted(bad)}")
+          print("STORAGE_MANAGEMENT_RBAC_READ_ONLY=PASS")
