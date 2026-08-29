@@ -97,7 +97,8 @@ const FIELD_LABELS: Record<string, string> = {
 }
 
 const FIELD_ORDER = Object.keys(FIELD_LABELS)
-const DNS_SUBDOMAIN = /^[a-z0-9](?:[-.a-z0-9]*[a-z0-9])?$/
+const DNS_SUBDOMAIN =
+  /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/
 
 function asRecord(value: unknown): VmSpec {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -123,7 +124,7 @@ export function getVmNameError(name: string): string | null {
   if (name !== name.trim()) return "VM name cannot start or end with spaces."
   if (name.length > 253) return "VM name must be 253 characters or fewer."
   if (!DNS_SUBDOMAIN.test(name)) {
-    return "Use lowercase letters, numbers, '-' or '.', and start and end with a letter or number."
+    return "Use lowercase letters, numbers, '-' or '.', with each dot-separated part starting and ending with a letter or number."
   }
   return null
 }
