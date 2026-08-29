@@ -1,0 +1,77 @@
+name: LayerSentry Storage Safety
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/scripts/layersentry/storage_inventory.py
+      - .github/scripts/layersentry/test_storage_inventory.py
+      - .github/workflows/layersentry-storage-safety.yml
+  pull_request:
+    paths:
+      - .github/scripts/layersentry/storage_inventory.py
+      - .github/scripts/layersentry/test_storage_inventory.py
+      - .github/workflows/layersentry-storage-safety.yml
+
+permissions:
+  contents: read
+
+jobs:
+  storage-safety-unit:
+    name: Storage identity and data-safety gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Compile storage safety module
+        run: python3 -m py_compile .github/scripts/layersentry/storage_inventory.py
+      - name: Run storage safety unit tests
+        run: python3 -m unittest discover -s .github/scripts/layersentry -p 'test_storage_inventory.py' -v
+      - name: Prove inventory module has no destructive executors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import ast
+
+          path = Path(".github/scripts/layersentry/storage_inventory.py")
+          tree = ast.parse(path.read_text(encoding="utf-8"))
+
+          forbidden = {
+              "wipefs", "mkfs", "pvcreate", "pvremove", "vgcreate", "vgremove",
+              "lvcreate", "lvremove", "zpool", "parted", "sgdisk", "fdisk",
+          }
+          offenders = []
+
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.Call):
+                  continue
+              func = node.func
+              name = func.id if isinstance(func, ast.Name) else (
+                  func.attr if isinstance(func, ast.Attribute) else ""
+              )
+              if name not in {"run", "check_call", "check_output", "Popen"}:
+                  continue
+              if not node.args:
+                  continue
+              arg = node.args[0]
+              values = []
+              if isinstance(arg, (ast.List, ast.Tuple)):
+                  for element in arg.elts:
+                      if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                          values.append(element.value)
+              elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                  values.append(arg.value)
+              hits = forbidden.intersection(values)
+              if hits:
+                  offenders.append((node.lineno, sorted(hits)))
+
+          if offenders:
+              raise SystemExit(f"destructive subprocess invocation found: {offenders}")
+
+          print("STORAGE_INVENTORY_READ_ONLY_AST_GATE=PASS")
+          PY
