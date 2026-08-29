@@ -65,7 +65,7 @@ jobs:
           sudo install -m 0755 /tmp/flux /usr/local/bin/flux
           YQ_VERSION=v4.47.2
           curl -fsSLo /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          echo 'f0b855c0c2d07a3fd5027e22b0d7b96a8e87bb68dbd4e72b0dd711e3a5379ee5  /tmp/yq' >/tmp/yq.expected
+          echo '1bb99e1019e23de33c7e6afc23e93dad72aad6cf2cb03c797f068ea79814ddb0  /tmp/yq' >/tmp/yq.expected
           sha256sum -c /tmp/yq.expected
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
           flux version --client
