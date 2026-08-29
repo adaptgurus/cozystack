@@ -9,6 +9,11 @@ machine:
     modules:
       - name: dm_multipath
       - name: dm_round-robin
+      # Load rebuilt external modules as an image-integrity/ABI gate. Loading
+      # ZFS itself is safe because LayerSentry removes the upstream auto-import
+      # service; pool import/export remains controller-owned.
+      - name: drbd
+      - name: zfs
       - name: nfsd
       # Stock Talos v1.13.6 disables CONFIG_INFINIBAND_ISER. LayerSentry builds
       # the exact kernel with CONFIG_INFINIBAND_ISER=m and packages ib_iser.
