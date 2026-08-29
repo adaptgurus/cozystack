@@ -32,24 +32,4 @@ update:
 	@# Insert them against an exact pod-spec anchor and require exactly one
 	@# anchor, so an upstream structural change fails closed instead of silently
 	@# applying scheduling policy to the wrong workload.
-	python3 - <<'PY'
-	from pathlib import Path
-	p = Path("templates/cdi-operator.yaml")
-	s = p.read_text()
-	anchor = "      serviceAccountName: cdi-operator\n---"
-	if s.count(anchor) != 1:
-	    raise SystemExit(f"ERROR: expected exactly one CDI operator pod-spec anchor, found {s.count(anchor)}")
-	replacement = """      serviceAccountName: cdi-operator
-      tolerations:
-       - key: CriticalAddonsOnly
-         operator: Exists
-       - effect: NoSchedule
-         key: node-role.kubernetes.io/control-plane
-         operator: Exists
-       - effect: NoSchedule
-         key: node-role.kubernetes.io/master
-         operator: Exists
----
-"""
-	p.write_text(s.replace(anchor, replacement, 1))
-	PY
+	python3 -c 'from pathlib import Path; p=Path("templates/cdi-operator.yaml"); s=p.read_text(); a="      serviceAccountName: cdi-operator\n---"; n=s.count(a); n == 1 or (_ for _ in ()).throw(SystemExit(f"ERROR: expected exactly one CDI operator pod-spec anchor, found {n}")); r="      serviceAccountName: cdi-operator\n      tolerations:\n       - key: CriticalAddonsOnly\n         operator: Exists\n       - effect: NoSchedule\n         key: node-role.kubernetes.io/control-plane\n         operator: Exists\n       - effect: NoSchedule\n         key: node-role.kubernetes.io/master\n         operator: Exists\n---\n"; p.write_text(s.replace(a, r, 1))'
