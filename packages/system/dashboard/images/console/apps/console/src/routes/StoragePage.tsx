@@ -1,3 +1,4 @@
+import { StorageBackendHealth } from "../components/storage/StorageBackendHealth.tsx"
 import { StorageManagementOverview } from "../components/storage/StorageManagementOverview.tsx"
 
 /**
@@ -19,6 +20,7 @@ export function StoragePage() {
         </p>
       </div>
       <StorageManagementOverview />
+      <StorageBackendHealth />
     </div>
   )
 }

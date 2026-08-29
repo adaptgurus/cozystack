@@ -49,6 +49,7 @@ jobs:
 
           text = Path("packages/system/dashboard/templates/clusterrole-cluster-usage.yaml").read_text()
           required = (
+              "pods",
               "persistentvolumes",
               "persistentvolumeclaims",
               "storageclasses",
@@ -101,7 +102,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Storage Management component tests
-        run: pnpm --filter @cozystack/console exec vitest run src/components/storage/StorageManagementOverview.test.tsx
+        run: pnpm --filter @cozystack/console exec vitest run src/components/storage/StorageManagementOverview.test.tsx src/components/storage/StorageBackendHealth.test.tsx
 
       - name: Type-check console
         run: pnpm --filter @cozystack/console typecheck
