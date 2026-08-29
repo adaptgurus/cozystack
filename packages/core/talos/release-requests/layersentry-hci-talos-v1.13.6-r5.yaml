@@ -1,0 +1,26 @@
+apiVersion: layersentry.io/v1alpha1
+kind: TalosReleaseBuildRequest
+metadata:
+  name: layersentry-hci-talos-v1.13.6-r5
+spec:
+  talosVersion: v1.13.6
+  releaseRevision: r5
+  architecture: amd64
+  sourceBranch: layersentry-platform
+  requestedFromCommit: e6f00e823451be90a2f97a41ad55c36251e84996
+  workflow: .github/workflows/layersentry-talos-hci-iso.yml
+  artifact: layersentry-hci-talos-1.13.6-amd64.iso
+  kernelRequirements:
+    - CONFIG_INFINIBAND_ISER=m
+  acceptance:
+    - custom-kernel-build
+    - signed-kernel-and-storage-extensions
+    - iso-content-verification
+    - qemu-boot
+    - talos-api-verification
+    - runtime-module-verification
+    - disk-install
+    - disk-only-reboot
+    - immutable-installer-publication
+    - github-release-publication
+    - published-byte-sha256-verification
