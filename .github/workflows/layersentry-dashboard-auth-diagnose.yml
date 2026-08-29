@@ -56,18 +56,24 @@ jobs:
           & $k -n cozy-dashboard get httproute -o wide 2>$null
           exit 0
 
-      - name: Inspect gatekeeper OAuth logs
+      - name: Inspect gatekeeper OAuth refresh and upstream failures
         run: |
           $ErrorActionPreference = 'Continue'
           $k='C:\hci-tools\kubectl.exe'
-          Write-Host '===== gatekeeper current logs ====='
-          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=700 --timestamps=true
-          Write-Host '===== gatekeeper previous logs if any ====='
+          Write-Host '===== gatekeeper auth/refresh/error lines ====='
+          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=3000 --timestamps=true 2>$null |
+            Select-String -Pattern 'refresh|session|token|invalid|expired|unauthor|error|redeem|401|403|customresourcedefinitions|tenantnamespaces' -CaseSensitive:$false |
+            Select-Object -Last 900
+          Write-Host '===== gatekeeper previous auth/refresh/error lines if any ====='
           $pod = (& $k -n cozy-dashboard get pod -l 'app.kubernetes.io/name=gatekeeper,app.kubernetes.io/instance=incloud-web' -o jsonpath='{.items[0].metadata.name}')
-          if ($pod) { & $k -n cozy-dashboard logs $pod --all-containers=true --previous --tail=300 --timestamps=true 2>$null }
+          if ($pod) {
+            & $k -n cozy-dashboard logs $pod --all-containers=true --previous --tail=1500 --timestamps=true 2>$null |
+              Select-String -Pattern 'refresh|session|token|invalid|expired|unauthor|error|redeem|401|403' -CaseSensitive:$false |
+              Select-Object -Last 500
+          }
           exit 0
 
-      - name: Inspect Keycloak client and operator status safely
+      - name: Inspect Keycloak dashboard client and auth status safely
         run: |
           $ErrorActionPreference = 'Continue'
           $k='C:\hci-tools\kubectl.exe'
@@ -75,20 +81,42 @@ jobs:
           & $k get keycloakclients.v1.edp.epam.com -A 2>$null | Select-String -Pattern 'dashboard' -CaseSensitive:$false
           $kc = & $k get keycloakclients.v1.edp.epam.com -A -o json 2>$null | ConvertFrom-Json
           if ($kc) {
-            foreach ($i in @($kc.items | Where-Object { $_.metadata.name -match 'dashboard' })) {
+            foreach ($i in @($kc.items | Where-Object { $_.metadata.name -match 'dashboard' -or $_.spec.clientId -eq 'dashboard' })) {
               Write-Host "namespace=$($i.metadata.namespace) name=$($i.metadata.name) clientId=$($i.spec.clientId) realm=$($i.spec.realmRef.name)"
               Write-Host "defaultScopes=$([string]::Join(',', @($i.spec.defaultClientScopes)))"
               Write-Host "optionalScopes=$([string]::Join(',', @($i.spec.optionalClientScopes)))"
               Write-Host "redirectUris=$([string]::Join(',', @($i.spec.redirectUris)))"
+              Write-Host "webOrigins=$([string]::Join(',', @($i.spec.webOrigins)))"
+              Write-Host "directAccess=$($i.spec.directAccess) serviceAccount=$($i.spec.serviceAccount.enabled)"
               if ($i.status) { $i.status | ConvertTo-Json -Depth 8 }
             }
           }
-          Write-Host '===== Keycloak recent auth/offline/error log lines ====='
+          Write-Host '===== Keycloak recent token/session errors ====='
           $pods = & $k get pods -A -o json 2>$null | ConvertFrom-Json
           foreach ($p in @($pods.items | Where-Object { $_.metadata.name -match 'keycloak' })) {
             Write-Host "--- $($p.metadata.namespace)/$($p.metadata.name) ---"
-            & $k logs -n $p.metadata.namespace $p.metadata.name --all-containers=true --tail=1500 --timestamps=true 2>$null | Select-String -Pattern 'offline|dashboard|LOGIN_ERROR|CODE_TO_TOKEN_ERROR|invalid|token|error' -CaseSensitive:$false | Select-Object -Last 220
+            & $k logs -n $p.metadata.namespace $p.metadata.name --all-containers=true --tail=3000 --timestamps=true 2>$null |
+              Select-String -Pattern 'offline|dashboard|LOGIN_ERROR|CODE_TO_TOKEN_ERROR|REFRESH_TOKEN_ERROR|invalid_grant|invalid_token|Session not active|token|error' -CaseSensitive:$false |
+              Select-Object -Last 500
           }
+          exit 0
+
+      - name: Inspect kube-apiserver OIDC contract
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          Write-Host '===== kube-apiserver OIDC/authentication flags ====='
+          $pods = & $k -n kube-system get pods -l component=kube-apiserver -o json 2>$null | ConvertFrom-Json
+          foreach ($p in @($pods.items)) {
+            Write-Host "pod=$($p.metadata.name) node=$($p.spec.nodeName)"
+            foreach ($c in @($p.spec.containers)) {
+              @($c.command + $c.args) |
+                Where-Object { "$_" -match '(?i)oidc|authentication-config|service-account-issuer' } |
+                ForEach-Object { Write-Host "  $_" }
+            }
+          }
+          Write-Host '===== authentication-related ConfigMaps (names only) ====='
+          & $k -n kube-system get configmap -o name 2>$null | Select-String -Pattern 'auth|oidc' -CaseSensitive:$false
           exit 0
 
       - name: Inspect dashboard RBAC bindings and identity permissions
@@ -103,16 +131,16 @@ jobs:
           $group='cozystack-cluster-admin'
           $user='layersentry-admin'
           $checks=@(
-            @('get','tenantnamespaces.core.cozystack.io',''),
+            @('list','tenantnamespaces.core.cozystack.io',''),
             @('get','customresourcedefinitions.apiextensions.k8s.io',''),
-            @('get','plans.backups.cozystack.io','tenant-root'),
+            @('list','plans.backups.cozystack.io',''),
             @('create','tenants.apps.cozystack.io','tenant-root')
           )
           foreach ($c in $checks) {
             $verb=$c[0]; $res=$c[1]; $ns=$c[2]
-            if ($ns) { $r=& $k auth can-i $verb $res -n $ns --as=$user --as-group=$group 2>&1 }
-            else { $r=& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1 }
-            Write-Host "$verb $res namespace=$ns => $r"
+            if ($ns) { $r=@(& $k auth can-i $verb $res -n $ns --as=$user --as-group=$group 2>&1) }
+            else { $r=@(& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1) }
+            Write-Host "$verb $res namespace=$ns => $([string]::Join(' | ', @($r)))"
           }
           exit 0
 
