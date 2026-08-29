@@ -1,0 +1,277 @@
+name: LayerSentry LINSTOR Gateway Phase 1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gateway-phase1.yml
+      - packages/system/linstor-gateway/**
+
+permissions:
+  contents: read
+
+jobs:
+  static-gate:
+    name: Validate Gateway chart and pinned upstream binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Helm render
+        run: |
+          set -euo pipefail
+          helm template test packages/system/linstor-gateway --set enabled=true >/tmp/gateway.yaml
+          grep -q 'kind: Deployment' /tmp/gateway.yaml
+          grep -q 'kind: Service' /tmp/gateway.yaml
+          grep -q 'linstor-controller.cozy-linstor.svc:3370' /tmp/gateway.yaml
+          grep -q 'containerPort: 8337' /tmp/gateway.yaml
+      - name: Build checksum-pinned Gateway image
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg LINSTOR_GATEWAY_VERSION=2.3.0 \
+            --build-arg LINSTOR_GATEWAY_SHA256=a5cd30cc79941d8cbf742b1539a57eefa33d5a001f3b26ef671ff027f2c8e4ef \
+            -t layersentry-linstor-gateway:test \
+            packages/system/linstor-gateway/images/linstor-gateway
+          docker run --rm layersentry-linstor-gateway:test version | tee /tmp/version.txt
+          grep -q '2.3.0' /tmp/version.txt
+
+  live-control-plane:
+    name: Non-destructive Gateway control-plane test on TESTSER
+    needs: static-gate
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Verify safe live baseline
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          if (-not (Test-Path $env:KUBECTL)) { throw "kubectl missing: $env:KUBECTL" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          Write-Host '===== NODES ====='
+          $nodes = @((& $env:KUBECTL get nodes -o json | ConvertFrom-Json).items)
+          if ($LASTEXITCODE -ne 0 -or $nodes.Count -ne 3) { throw 'expected exactly three readable Kubernetes nodes' }
+          foreach ($node in $nodes) {
+            $ready = @($node.status.conditions | Where-Object { $_.type -eq 'Ready' })[0]
+            if ($null -eq $ready -or $ready.status -ne 'True') { throw "node $($node.metadata.name) is not Ready" }
+          }
+          & $env:KUBECTL get nodes -o wide
+
+          Write-Host '===== CLASSIC LINSTOR ====='
+          & $env:KUBECTL get deployment,pod,svc -n cozy-linstor -o wide
+          if ($LASTEXITCODE -ne 0) { throw 'cannot read cozy-linstor resources' }
+          & $env:KUBECTL get svc linstor-controller -n cozy-linstor -o json
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-controller service is missing' }
+
+          $svc = & $env:KUBECTL get svc linstor-controller -n cozy-linstor -o json | ConvertFrom-Json
+          $ports = @($svc.spec.ports | ForEach-Object { [int]$_.port })
+          if ($ports -notcontains 3370) { throw "linstor-controller does not expose internal port 3370; ports=$($ports -join ',')" }
+
+          Write-Host '===== BLOCKSTOR SAFETY BOUNDARY ====='
+          $poolJson = & $env:KUBECTL get storagepools.blockstor.cozystack.io -o json 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $poolCount = @(($poolJson | ConvertFrom-Json).items).Count
+            Write-Host "BLOCKSTOR_STORAGEPOOL_COUNT=$poolCount"
+            if ($poolCount -ne 0) { throw 'SAFETY FAILURE: Blockstor StoragePools exist before Gateway Phase 1' }
+          } else {
+            Write-Host 'BLOCKSTOR_STORAGEPOOL_CRD_NOT_PRESENT_OR_UNREADABLE'
+          }
+          Write-Host 'DESTRUCTIVE_STORAGE_ACTIONS=DISABLED'
+
+      - name: Configure isolated Gateway control plane
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = @'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: linstor-gateway-phase1
+            namespace: cozy-linstor
+            labels:
+              app.kubernetes.io/name: linstor-gateway-phase1
+              layersentry.io/test-phase: gateway-control-plane
+          data:
+            linstor-gateway.toml: |
+              [linstor]
+              controllers = ["linstor-controller.cozy-linstor.svc:3370"]
+
+              [server]
+              cors_allowed_origins = []
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: linstor-gateway-phase1
+            namespace: cozy-linstor
+            labels:
+              app.kubernetes.io/name: linstor-gateway-phase1
+          spec:
+            type: ClusterIP
+            selector:
+              app.kubernetes.io/name: linstor-gateway-phase1
+            ports:
+              - name: http
+                port: 8337
+                targetPort: http
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: linstor-gateway-phase1
+            namespace: cozy-linstor
+            labels:
+              app.kubernetes.io/name: linstor-gateway-phase1
+              layersentry.io/test-phase: gateway-control-plane
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: linstor-gateway-phase1
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: linstor-gateway-phase1
+              spec:
+                automountServiceAccountToken: false
+                securityContext:
+                  seccompProfile:
+                    type: RuntimeDefault
+                initContainers:
+                  - name: fetch-pinned-gateway
+                    image: alpine:3.22.1
+                    command:
+                      - /bin/sh
+                      - -ec
+                      - |
+                        apk add --no-cache ca-certificates curl
+                        curl -fsSL https://github.com/LINBIT/linstor-gateway/releases/download/v2.3.0/linstor-gateway-linux-amd64 -o /work/linstor-gateway
+                        echo 'a5cd30cc79941d8cbf742b1539a57eefa33d5a001f3b26ef671ff027f2c8e4ef  /work/linstor-gateway' | sha256sum -c -
+                        chmod 0755 /work/linstor-gateway
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                    volumeMounts:
+                      - name: work
+                        mountPath: /work
+                containers:
+                  - name: gateway
+                    image: alpine:3.22.1
+                    command: ["/work/linstor-gateway"]
+                    args:
+                      - server
+                      - --addr=:8337
+                      - --config=/etc/linstor-gateway/linstor-gateway.toml
+                    ports:
+                      - name: http
+                        containerPort: 8337
+                    readinessProbe:
+                      httpGet:
+                        path: /status
+                        port: http
+                      initialDelaySeconds: 2
+                      periodSeconds: 5
+                      timeoutSeconds: 3
+                    livenessProbe:
+                      httpGet:
+                        path: /status
+                        port: http
+                      initialDelaySeconds: 10
+                      periodSeconds: 20
+                      timeoutSeconds: 3
+                    resources:
+                      requests:
+                        cpu: 25m
+                        memory: 32Mi
+                      limits:
+                        cpu: 250m
+                        memory: 128Mi
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      runAsNonRoot: true
+                      runAsUser: 65532
+                      runAsGroup: 65532
+                      capabilities:
+                        drop: ["ALL"]
+                    volumeMounts:
+                      - name: work
+                        mountPath: /work
+                        readOnly: true
+                      - name: config
+                        mountPath: /etc/linstor-gateway/linstor-gateway.toml
+                        subPath: linstor-gateway.toml
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+                volumes:
+                  - name: work
+                    emptyDir: {}
+                  - name: config
+                    configMap:
+                      name: linstor-gateway-phase1
+                  - name: tmp
+                    emptyDir: {}
+          '@
+
+          $manifest | & $env:KUBECTL apply -f -
+          if ($LASTEXITCODE -ne 0) { throw 'failed to apply Gateway Phase 1 control plane' }
+
+          & $env:KUBECTL rollout status deployment/linstor-gateway-phase1 -n cozy-linstor --timeout=240s
+          if ($LASTEXITCODE -ne 0) {
+            & $env:KUBECTL get pod -n cozy-linstor -l app.kubernetes.io/name=linstor-gateway-phase1 -o wide
+            & $env:KUBECTL describe pod -n cozy-linstor -l app.kubernetes.io/name=linstor-gateway-phase1
+            & $env:KUBECTL logs -n cozy-linstor -l app.kubernetes.io/name=linstor-gateway-phase1 -c fetch-pinned-gateway --tail=100
+            & $env:KUBECTL logs -n cozy-linstor -l app.kubernetes.io/name=linstor-gateway-phase1 -c gateway --tail=100
+            throw 'Gateway Phase 1 rollout failed'
+          }
+
+      - name: Verify Gateway API without creating storage
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '===== GATEWAY VERSION ====='
+          $version = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- /work/linstor-gateway version
+          if ($LASTEXITCODE -ne 0 -or ($version -join "`n") -notmatch '2\.3\.0') { throw 'Gateway version validation failed' }
+          $version
+
+          Write-Host '===== GATEWAY STATUS ====='
+          $status = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- wget -qO- http://127.0.0.1:8337/status
+          if ($LASTEXITCODE -ne 0) { throw 'Gateway /status failed' }
+          $status
+          if (($status -join "`n") -notmatch '2\.3\.0') { throw 'Gateway /status does not report v2.3.0' }
+
+          $readOnlyPaths = @('/api/v2/iscsi','/api/v2/nfs','/api/v2/nvme-of')
+          foreach ($path in $readOnlyPaths) {
+            Write-Host "===== READ ONLY $path ====="
+            $body = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- wget -qO- "http://127.0.0.1:8337$path"
+            if ($LASTEXITCODE -ne 0) { throw "Gateway read-only endpoint failed: $path" }
+            $body
+          }
+          Write-Host 'GATEWAY_CONTROL_PLANE=PASS'
+          Write-Host 'GATEWAY_MUTATING_API_CALLS=NONE'
+
+      - name: Check data-plane prerequisites without mutation
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== BUILT-IN CHECK-HEALTH (READ ONLY) ====='
+          $health = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- /work/linstor-gateway check-health --controllers=linstor-controller.cozy-linstor.svc:3370 2>&1
+          $health | ForEach-Object { Write-Host $_ }
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'GATEWAY_LOCAL_PREREQUISITES=PASS'
+          } else {
+            Write-Host 'GATEWAY_LOCAL_PREREQUISITES=SAFE_BLOCKED'
+            Write-Host 'Talos host target services/drbd-reactor integration must be certified before creating iSCSI, NFS, or NVMe-oF exports.'
+          }
+          Write-Host 'GATEWAY_EXPORT_CREATE_TEST=SAFE_BLOCKED'
+          Write-Host 'Reason: execution contract prohibits destructive storage provisioning until stable persistent disk identity/WWID is certified.'
+          Write-Host 'LINSTOR_GATEWAY_PHASE1=PASS'
