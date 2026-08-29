@@ -1,0 +1,93 @@
+name: LayerSentry Dashboard Schema Auth Diagnose
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-dashboard-schema-auth-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+    steps:
+      - name: Verify exact Plan schema and dashboard RBAC path
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kubectl = 'C:\hci-tools\kubectl.exe'
+          if (-not (Test-Path $kubectl)) { throw "kubectl missing: $kubectl" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          function Run([string]$title, [scriptblock]$command) {
+            Write-Host "===== $title ====="
+            $global:LASTEXITCODE = 0
+            try { & $command 2>&1 | ForEach-Object { Write-Host $_ } }
+            catch { Write-Host "ERROR: $($_.Exception.Message)" }
+            Write-Host "exit=$LASTEXITCODE"
+            $global:LASTEXITCODE = 0
+          }
+
+          Run 'PLAN CRD VERSION / SCHEMA SUMMARY' {
+            & $kubectl get crd plans.backups.cozystack.io -o 'jsonpath={range .spec.versions[*]}{.name}{" served="}{.served}{" storage="}{.storage}{" rootType="}{.schema.openAPIV3Schema.type}{" specType="}{.schema.openAPIV3Schema.properties.spec.type}{" required="}{.schema.openAPIV3Schema.properties.spec.required}{"\n"}{end}'
+          }
+
+          Run 'PLAN CRD OPTION ANNOTATIONS' {
+            & $kubectl get crd plans.backups.cozystack.io -o 'jsonpath={.metadata.annotations.options\.cozystack\.io/source\.applicationRef\.kind}{"|"}{.metadata.annotations.options\.cozystack\.io/source\.backupClassName}{"\n"}'
+          }
+
+          Run 'CLUSTER ADMIN KUBECONFIG CAN GET EXACT PLAN CRD' {
+            & $kubectl auth can-i get customresourcedefinitions.apiextensions.k8s.io/plans.backups.cozystack.io
+          }
+
+          Run 'COZYSTACK CLUSTER ADMIN GROUP CAN GET CRDS' {
+            & $kubectl auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin get customresourcedefinitions.apiextensions.k8s.io
+          }
+
+          Run 'COZYSTACK CLUSTER ADMIN GROUP CAN GET EXACT PLAN CRD' {
+            & $kubectl auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin get customresourcedefinitions.apiextensions.k8s.io/plans.backups.cozystack.io
+          }
+
+          Run 'COZYSTACK CLUSTER ADMIN GROUP CAN LIST TENANTS' {
+            & $kubectl auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenants.apps.cozystack.io --all-namespaces
+          }
+
+          Run 'COZYSTACK CLUSTER ADMIN GROUP BINDINGS' {
+            $raw = & $kubectl get clusterrolebindings -o json 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $raw) { Write-Host 'UNAVAILABLE'; return }
+            $obj = $raw | ConvertFrom-Json
+            foreach ($item in @($obj.items)) {
+              $matches = @($item.subjects | Where-Object { $_.kind -eq 'Group' -and $_.name -eq 'cozystack-cluster-admin' })
+              if ($matches.Count -gt 0) {
+                Write-Host "binding=$($item.metadata.name) roleRef=$($item.roleRef.kind)/$($item.roleRef.name)"
+              }
+            }
+          }
+
+          Run 'DASHBOARD DEPLOYMENT IMAGES' {
+            & $kubectl get deploy -A -o 'custom-columns=NS:.metadata.namespace,NAME:.metadata.name,IMAGES:.spec.template.spec.containers[*].image' | Select-String -Pattern 'dashboard|cozystack-ui|console' -CaseSensitive:$false
+          }
+
+          Run 'COZYSTACK API DEPLOYMENT IMAGES' {
+            & $kubectl get deploy -A -o 'custom-columns=NS:.metadata.namespace,NAME:.metadata.name,IMAGES:.spec.template.spec.containers[*].image' | Select-String -Pattern 'cozystack-api' -CaseSensitive:$false
+          }
+
+          Run 'PLAN CRD API RAW READ' {
+            $raw = & $kubectl get --raw '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/plans.backups.cozystack.io' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $raw) {
+              Write-Host "bytes=$(([string]$raw).Length) hasOpenAPIV3Schema=$([bool]([string]$raw -match 'openAPIV3Schema')) hasApplicationRef=$([bool]([string]$raw -match 'applicationRef'))"
+            }
+          }
+
+          $global:LASTEXITCODE = 0
+          exit 0
