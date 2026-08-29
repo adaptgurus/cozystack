@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - main
+      - layersentry-platform
     paths:
       - 'packages/system/dashboard/images/console/**'
   pull_request:
