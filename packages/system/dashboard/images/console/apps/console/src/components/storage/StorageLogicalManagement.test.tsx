@@ -74,7 +74,7 @@ function makeClient(allowed = true): K8sClient {
     return list([]) as never
   })
 
-  vi.spyOn(client, "create").mockImplementation(async (group, version, plural, body) => {
+  vi.spyOn(client, "create").mockImplementation(async (_group, _version, plural, body) => {
     if (plural === "selfsubjectaccessreviews") {
       return {
         apiVersion: "authorization.k8s.io/v1",
@@ -133,7 +133,9 @@ describe("StorageLogicalManagement", () => {
   it("fails closed when logical mutation permissions are denied", async () => {
     renderWithK8sProvider(<StorageLogicalManagement />, { client: makeClient(false) })
 
-    expect(await screen.findByText(/Create permission is not granted/i)).toBeInTheDocument()
+    expect(
+      await screen.findByText("Create permission is not granted; this control is fail-closed."),
+    ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Create from observed class" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Create PVC" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Create VolumeSnapshot" })).toBeDisabled()
