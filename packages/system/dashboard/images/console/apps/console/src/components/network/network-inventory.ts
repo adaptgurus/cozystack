@@ -139,7 +139,7 @@ function isParseableTimestamp(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value))
 }
 
-function isCapabilityEvidence(value: unknown): value is CapabilityEvidence {
+function isCapabilityEvidence(value: unknown): boolean {
   if (!isRecord(value)) return false
   return isNullableBoolean(value.supported) && isNonEmptyString(value.source) && isOptionalString(value.reason)
 }
