@@ -2,11 +2,11 @@
 set -eu
 
 OUT_DIR=${1:-../../../_out/extensions}
-ALPINE_IMAGE=${ALPINE_IMAGE:-alpine:3.22}
+ALPINE_IMAGE=${ALPINE_IMAGE:-alpine:3.22@sha256:55ae5d250caebc548793f321534bc6a8ef1d116f334f18f4ada1b2daad3251b2}
 ETHTOOL_VERSION=${ETHTOOL_VERSION:-6.14.1-r0}
 RDMA_CORE_VERSION=${RDMA_CORE_VERSION:-57.0-r0}
 IPROUTE2_RDMA_VERSION=${IPROUTE2_RDMA_VERSION:-6.15.0-r0}
-EXTENSION_VERSION=${EXTENSION_VERSION:-1.0.0-layersentry.1}
+EXTENSION_VERSION=${EXTENSION_VERSION:-1.0.0-layersentry.2}
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
@@ -50,22 +50,21 @@ depends:
       - etcfiles
 container:
   entrypoint: /bin/sleep
-  args:
-    - infinity
+  args: [infinity]
   mounts:
     - source: /dev
       destination: /dev
       type: bind
-      options: [rshared, rbind, rw]
+      options: [rshared, rbind, ro]
     - source: /sys
       destination: /sys
       type: bind
-      options: [rbind, rw]
+      options: [rbind, ro]
   security:
     maskedPaths: []
     readonlyPaths: []
     writeableRootfs: false
-    writeableSysfs: true
+    writeableSysfs: false
 restart: always
 EOF
 
@@ -75,10 +74,26 @@ metadata:
   name: layersentry-hci-tools
   version: "${EXTENSION_VERSION}"
   author: LayerSentry
-  description: LayerSentry HCI diagnostics toolbox with ethtool and RDMA userspace tools.
+  description: Read-only HCI diagnostics toolbox with ethtool and RDMA userspace tools.
   compatibility:
     talos:
       version: ">= v1.13.0"
+EOF
+
+cat > "$OUT_DIR/layersentry-hci-tools.sbom.spdx.json" <<EOF
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "layersentry-hci-tools-${EXTENSION_VERSION}",
+  "documentNamespace": "https://layersentry.invalid/sbom/hci-tools/${EXTENSION_VERSION}",
+  "creationInfo": {"created": "2026-08-30T00:00:00Z", "creators": ["Organization: LayerSentry"]},
+  "packages": [
+    {"name": "ethtool", "SPDXID": "SPDXRef-ethtool", "versionInfo": "${ETHTOOL_VERSION}", "downloadLocation": "NOASSERTION", "filesAnalyzed": false},
+    {"name": "rdma-core", "SPDXID": "SPDXRef-rdma-core", "versionInfo": "${RDMA_CORE_VERSION}", "downloadLocation": "NOASSERTION", "filesAnalyzed": false},
+    {"name": "iproute2-rdma", "SPDXID": "SPDXRef-iproute2-rdma", "versionInfo": "${IPROUTE2_RDMA_VERSION}", "downloadLocation": "NOASSERTION", "filesAnalyzed": false}
+  ]
+}
 EOF
 
 ETHTOOL_BIN=$(find "$SERVICE_ROOT" -type f -name ethtool -perm -0100 | head -1)
@@ -89,6 +104,9 @@ test -n "$ETHTOOL_BIN"
 test -n "$RDMA_BIN"
 test -n "$IBV_DEVICES_BIN"
 test -n "$IBV_DEVINFO_BIN"
+test -s "$OUT_DIR/layersentry-hci-tools.sbom.spdx.json"
+grep -Fq 'options: [rbind, ro]' "$SERVICE_DEFS/layersentry-hci-tools.yaml"
+grep -Fq 'writeableSysfs: false' "$SERVICE_DEFS/layersentry-hci-tools.yaml"
 
 if find "$EXT_ROOT/rootfs" \( -type b -o -type c -o -type p -o -type s \) -print | grep -q .; then
   echo "ERROR: special file found in LayerSentry HCI tools extension" >&2
@@ -100,7 +118,7 @@ if find "$EXT_ROOT/rootfs" \( -type f -o -type d \) -perm -0002 -print | grep -q
 fi
 
 OUT="$OUT_DIR/layersentry-hci-tools.tar"
-tar --sort=name --mtime='UTC 2026-08-29' --owner=0 --group=0 --numeric-owner \
+tar --sort=name --mtime='UTC 2026-08-30' --owner=0 --group=0 --numeric-owner \
   -C "$EXT_ROOT" -cf "$OUT" manifest.yaml rootfs
 sha256sum "$OUT" > "$OUT.sha256"
 echo "built $OUT"
