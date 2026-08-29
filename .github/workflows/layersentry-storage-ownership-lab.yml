@@ -1,0 +1,130 @@
+name: LayerSentry Storage Ownership Read-Only Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-ownership-lab.yml
+
+concurrency:
+  group: layersentry-storage-ownership-lab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  classify:
+    name: Classify existing ZFS and backend ownership read-only
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      TALOSCTL: C:\hci-tools\talosctl.exe
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+
+    steps:
+      - name: Verify read-only lab prerequisites
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing branch $env:GITHUB_REF_NAME"
+          }
+          foreach ($path in @($env:TALOSCTL, $env:TALOSCONFIG, $env:KUBECTL, $env:KUBECONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+          Write-Host 'STORAGE_OWNERSHIP_MODE=READ_ONLY'
+
+      - name: Read Talos ZFS pool and service evidence
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-StrictMode -Version Latest
+
+          function Invoke-Talos([string]$Node, [string[]]$Arguments) {
+            $text = (& $env:TALOSCTL -n $Node -e $Node @Arguments 2>&1 | Out-String)
+            return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = $text }
+          }
+
+          function Emit-Signals([string]$Prefix, [string]$Text, [string]$Pattern) {
+            @($Text -split "`r?`n" |
+              Where-Object { $_ -match $Pattern } |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { $_ } |
+              Select-Object -Unique) |
+              ForEach-Object { Write-Host "${Prefix}=$_" }
+          }
+
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== ZFS OWNERSHIP EVIDENCE $node ====="
+
+            $kstat = Invoke-Talos $node @('list', '/proc/spl/kstat/zfs', '--recurse', '--depth', '2')
+            Write-Host "ZFS_KSTAT_LIST_EXIT=$($kstat.ExitCode)"
+            Emit-Signals 'ZFS_KSTAT_SIGNAL' $kstat.Text 'zfs|arcstats|txgs|pool|objset|state'
+
+            $service = Invoke-Talos $node @('service', 'zfs-service')
+            Write-Host "ZFS_SERVICE_STATUS_EXIT=$($service.ExitCode)"
+            Emit-Signals 'ZFS_SERVICE_STATUS_SIGNAL' $service.Text 'zfs|running|healthy|state|error|failed'
+
+            $logs = Invoke-Talos $node @('logs', 'zfs-service', '--tail', '250')
+            Write-Host "ZFS_SERVICE_LOG_EXIT=$($logs.ExitCode)"
+            Emit-Signals 'ZFS_SERVICE_LOG_SIGNAL' $logs.Text 'pool|import|export|zfs|sdb|error|fail|online|degrad'
+
+            $mountStatuses = Invoke-Talos $node @('get', 'mountstatuses.block.talos.dev', '-o', 'yaml')
+            Write-Host "MOUNT_STATUS_QUERY_EXIT=$($mountStatuses.ExitCode)"
+            Emit-Signals 'MOUNT_STATUS_SIGNAL' $mountStatuses.Text 'sdb|zfs|volumeID|source|target|mount|filesystem'
+
+            $volumeStatuses = Invoke-Talos $node @('get', 'volumestatuses.block.talos.dev', '-o', 'yaml')
+            Write-Host "VOLUME_STATUS_QUERY_EXIT=$($volumeStatuses.ExitCode)"
+            Emit-Signals 'VOLUME_STATUS_SIGNAL' $volumeStatuses.Text 'sdb|zfs|volume|ready|phase|mount|filesystem'
+          }
+
+          Write-Host 'TALOS_ZFS_OWNERSHIP_PROBE=READ_ONLY_COMPLETE'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+
+      - name: Read LINSTOR and Blockstor backing-pool evidence
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-StrictMode -Version Latest
+
+          function Invoke-KubeRead([string]$Name, [string[]]$Arguments, [string]$Pattern) {
+            Write-Host "===== $Name ====="
+            $text = (& $env:KUBECTL @Arguments 2>&1 | Out-String)
+            $exit = $LASTEXITCODE
+            Write-Host "${Name}_QUERY_EXIT=$exit"
+            @($text -split "`r?`n" |
+              Where-Object { $_ -match $Pattern } |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { $_ } |
+              Select-Object -Unique) |
+              ForEach-Object { Write-Host "${Name}_SIGNAL=$_" }
+          }
+
+          $poolPattern = 'zfs|sdb|pool|provider|storage|free|total|capacity|node|device|disk|thin|linstor|blockstor|state|status|ready|online'
+
+          Invoke-KubeRead 'LINSTOR_CLUSTER' @('get', 'linstorclusters.piraeus.io', '-A', '-o', 'yaml') $poolPattern
+          Invoke-KubeRead 'LINSTOR_NODE_POOL' @('get', 'nodestorpool.internal.linstor.linbit.com', '-A', '-o', 'yaml') $poolPattern
+          Invoke-KubeRead 'LINSTOR_NODE' @('get', 'nodes.internal.linstor.linbit.com', '-A', '-o', 'yaml') $poolPattern
+          Invoke-KubeRead 'BLOCKSTOR_STORAGE_POOL' @('get', 'storagepools.blockstor.cozystack.io', '-A', '-o', 'yaml') $poolPattern
+          Invoke-KubeRead 'BLOCKSTOR_NODE' @('get', 'nodes.blockstor.cozystack.io', '-A', '-o', 'yaml') $poolPattern
+          Invoke-KubeRead 'BLOCKSTOR_RESOURCE' @('get', 'resources.blockstor.cozystack.io', '-A', '-o', 'yaml') $poolPattern
+
+          Write-Host 'KUBERNETES_BACKING_POOL_PROBE=READ_ONLY_COMPLETE'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+
+      - name: Enforce diagnostic-only boundary
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host 'STORAGE_OWNERSHIP_CLASSIFICATION=DIAGNOSTIC_ONLY'
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+          Write-Host 'NO_IMPORT_ACTION_TAKEN=true'
+          Write-Host 'NO_MOUNT_ACTION_TAKEN=true'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
