@@ -51,6 +51,7 @@ jobs:
             $builder = New-Object System.Text.StringBuilder
             foreach ($b in $bytes) { [void]$builder.Append($alphabet[$b % $alphabet.Length]) }
             $password = 'Ls9!' + $builder.ToString()
+            Write-Output "::add-mask::$password"
             $secretObject = [ordered]@{
               apiVersion = 'v1'
               kind = 'Secret'
@@ -73,6 +74,7 @@ jobs:
             $secretObj = $secretRaw | ConvertFrom-Json
             if (-not $secretObj.data.password) { throw 'existing GUI password Secret has no password key' }
             $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secretObj.data.password))
+            Write-Output "::add-mask::$password"
           }
           if ($password.Length -lt 20) { throw 'generated/retrieved password is unexpectedly short' }
 
@@ -116,15 +118,19 @@ jobs:
           Write-Host "KEYCLOAK_USER_RECONCILE=PASS username=$env:GUI_USERNAME group=cozystack-cluster-admin realm=cozy status=$($user.status.value)"
 
           $passwordB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($password))
+          Write-Output "::add-mask::$passwordB64"
           "GUI_PASSWORD_B64=$passwordB64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate password with real Keycloak token exchange and admin group claim
         run: |
           $ErrorActionPreference = 'Stop'
           $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:GUI_PASSWORD_B64))
+          Write-Output "::add-mask::$password"
           $clientSecretB64 = (& $env:KUBECTL get secret linstor-gui-client -n cozy-linstor -o jsonpath='{.data.client-secret-key}' | Out-String).Trim()
           if (-not $clientSecretB64) { throw 'linstor-gui client secret key is absent' }
+          Write-Output "::add-mask::$clientSecretB64"
           $clientSecret = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($clientSecretB64))
+          Write-Output "::add-mask::$clientSecret"
           $keycloakIngress = (& $env:KUBECTL get ingress -n cozy-keycloak -o json | ConvertFrom-Json).items | Where-Object { $_.spec.rules[0].host -like 'keycloak.*' } | Select-Object -First 1
           if (-not $keycloakIngress) { throw 'Keycloak ingress was not found' }
           $keycloakHost = $keycloakIngress.spec.rules[0].host
@@ -159,6 +165,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:GUI_PASSWORD_B64))
+          Write-Output "::add-mask::$password"
           $publicKeyXml = '<RSAKeyValue><Modulus>0+tDKsEo09bjBFBV5bKroJoPEcgNplRxEiN6lIM6fhgKEzEcTUB08wjcs8xAKzmq5kf3sGjzSyon0MXlIJVBSyihm0Y4kj1OkJCzndIX8Gu08QXTixyGC89CHpv6IcSu1y53mOGFyuiDsRacbiIt/fH0OKZ16UMyRMb/e+zi1mso4hoTDvWu4dWTAyMI0MQKVgeE0M9hJu82GkvuicttrmXPXFN2r6YGM6Tl7j5tFVIpM6X10f1cu+ZK7VLZ2J0MefqrZaBd+LCfuMrPJGs4FxNYN4BpQRvPDv2pkxObd850mmJbTgIuaxMhXWj/LCoLvLPnn82/VZUizjY2u0/NMQ==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
           $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider 2048
           $rsa.FromXmlString($publicKeyXml)
