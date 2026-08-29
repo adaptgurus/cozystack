@@ -6,6 +6,7 @@ import { ClusterUsageResourcePage } from "./ClusterUsageResourcePage.tsx"
 import { StorageClassUsagePage } from "./StorageClassUsagePage.tsx"
 import { StoragePage } from "./StoragePage.tsx"
 import { NodesPage } from "./NodesPage.tsx"
+import { NetworkFabricPage } from "./NetworkFabricPage.tsx"
 import { BackupClassListPage } from "./BackupClassListPage.tsx"
 import { BackupClassCreatePage } from "./BackupClassCreatePage.tsx"
 import { BackupClassDetailPage } from "./BackupClassDetailPage.tsx"
@@ -14,13 +15,12 @@ import { BackupClassAdminGuard } from "./BackupClassAdminGuard.tsx"
 import { CapacityAdminGuard } from "./CapacityAdminGuard.tsx"
 
 /**
- * Admin portal at /admin/*, hosting two cluster-wide operator areas with
- * independent permissions: Capacity (nodes/list) and Backup Classes
- * (backupclasses/update). useAdminAccess lets a user in if they hold either,
- * so the portal-level gate alone would let a backup-only operator reach a
- * Capacity URL — hence each area is wrapped in its own layout guard that closes
- * the direct-URL hole the sidebar already hides. While the review is in flight
- * we show a spinner; a user with neither area gets a 403 notice.
+ * Admin portal at /admin/*, hosting cluster-wide operator areas with
+ * independent permissions. Capacity and Network Fabric use the cluster
+ * operator access check (nodes/list); Backup Classes has its own permission.
+ * Per-area guards close direct-URL access holes that sidebar hiding alone
+ * cannot protect. While the review is in flight we show a spinner; a user with
+ * neither area gets a 403 notice.
  */
 export function AdminPage() {
   const { allowed, isLoading, canClusterUsage } = useAdminAccess()
@@ -66,6 +66,7 @@ export function AdminPage() {
         <Route path="capacity/cluster/sc/*" element={<StorageClassUsagePage />} />
         <Route path="capacity/storage" element={<StoragePage />} />
         <Route path="capacity/nodes" element={<NodesPage />} />
+        <Route path="network/fabric" element={<NetworkFabricPage />} />
       </Route>
       <Route element={<BackupClassAdminGuard />}>
         <Route path="backups/backupclasses" element={<BackupClassListPage />} />
