@@ -11,6 +11,9 @@ on:
       - packages/system/dashboard/tests/cluster_usage_rbac_test.yaml
       - packages/system/dashboard/images/console/apps/console/src/routes/StoragePage.tsx
       - packages/system/dashboard/images/console/apps/console/src/components/storage/**
+      - packages/system/dashboard/images/console/apps/console/package.json
+      - packages/system/dashboard/images/console/package.json
+      - packages/system/dashboard/images/console/pnpm-lock.yaml
       - .github/workflows/layersentry-storage-management-ci.yml
 
 permissions:
@@ -63,3 +66,41 @@ jobs:
               if bad:
                   raise SystemExit(f"write verb leaked into Storage Management ClusterRole: {sorted(bad)}")
           print("STORAGE_MANAGEMENT_RBAC_READ_ONLY=PASS")
+
+  console:
+    name: Storage Management console tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/system/dashboard/images/console
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: pnpm
+          cache-dependency-path: packages/system/dashboard/images/console/pnpm-lock.yaml
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.1.2 --activate
+          pnpm --version
+
+      - name: Install console dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Storage Management component tests
+        run: pnpm --filter @cozystack/console test -- StorageManagementOverview.test.tsx
+
+      - name: Type-check console
+        run: pnpm --filter @cozystack/console typecheck
+
+      - name: Build console
+        run: pnpm --filter @cozystack/console build
