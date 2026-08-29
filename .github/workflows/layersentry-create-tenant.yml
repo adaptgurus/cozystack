@@ -109,6 +109,11 @@ jobs:
           Write-Host '===== Tenant HelmRelease ====='
           & $k get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant.*layersentry|layersentry' -CaseSensitive:$false
           Write-Host '===== Cluster-admin group can list child tenants ====='
-          $can=& $k auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenantnamespaces.core.cozystack.io 2>$null
-          Write-Host $can
-          if ($can -ne 'yes') { throw 'cozystack-cluster-admin cannot list TenantNamespaces' }
+          $saved=$ErrorActionPreference
+          $ErrorActionPreference='Continue'
+          $canOut=@(& $k auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenantnamespaces.core.cozystack.io 2>&1)
+          $rc=$LASTEXITCODE
+          $ErrorActionPreference=$saved
+          $can=@($canOut | ForEach-Object { "$_" } | Where-Object { $_ -match '^(yes|no)$' } | Select-Object -Last 1)
+          $canOut | ForEach-Object { Write-Host $_ }
+          if ($rc -ne 0 -or $can -ne 'yes') { throw 'cozystack-cluster-admin cannot list TenantNamespaces' }
