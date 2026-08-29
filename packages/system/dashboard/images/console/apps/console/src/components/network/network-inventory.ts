@@ -1,6 +1,7 @@
 export type CapabilityEvidence = {
   supported: boolean | null
   source: string
+  reason?: string
 }
 
 export type SriovEvidence = CapabilityEvidence & {
@@ -19,6 +20,7 @@ export type NetworkLink = {
   kind: string
   physical: boolean
   linkIndex?: number | null
+  parent?: string | null
   masterIndex?: number | null
   master?: string | null
   linkUp?: boolean | null
@@ -62,7 +64,10 @@ export type NetworkRoute = {
 
 export type ManagementPath = {
   interface: string | null
+  physicalInterfaces?: string[]
+  addresses?: string[]
   gateway: string | null
+  family?: string | null
   confidence: "high" | "medium" | "unknown"
   reason: string
 }
@@ -147,6 +152,16 @@ export function compatiblePhysicalLinkNames(
     }
   }
   return [...first].sort((a, b) => a.localeCompare(b))
+}
+
+export function managementProtectedInterfaces(node: NodeNetworkInventory | undefined): string[] {
+  if (!node) return []
+  const protectedInterfaces = new Set<string>()
+  if (node.management.interface) protectedInterfaces.add(node.management.interface)
+  for (const name of node.management.physicalInterfaces ?? []) {
+    if (name) protectedInterfaces.add(name)
+  }
+  return [...protectedInterfaces].sort((a, b) => a.localeCompare(b))
 }
 
 export function capabilityLabel(link: NetworkLink): string {
