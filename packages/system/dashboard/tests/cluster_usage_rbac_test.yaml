@@ -9,8 +9,9 @@ release:
 
 # Capacity pages are restricted to cozystack-cluster-admin and use a single
 # read-only ClusterRole. In addition to node/pod utilisation, Storage Management
-# needs cluster-wide PV/PVC/StorageClass/snapshot reads plus GET access to one
-# fail-closed inventory ConfigMap. No storage mutation verb belongs here.
+# needs cluster-wide PV/PVC/StorageClass/snapshot reads plus GET-only access to
+# the certified LayerSentry storage and network inventory ConfigMaps. No storage
+# or network mutation verb belongs here.
 
 tests:
   - it: ClusterRole exists and grants nodes/pods get/list/watch
@@ -61,7 +62,7 @@ tests:
             resources: ["volumesnapshots"]
             verbs: ["get", "list", "watch"]
 
-  - it: ClusterRole can only get the certified inventory ConfigMap
+  - it: ClusterRole can only get the certified LayerSentry inventory ConfigMaps
     template: templates/clusterrole-cluster-usage.yaml
     asserts:
       - contains:
@@ -69,7 +70,7 @@ tests:
           content:
             apiGroups: [""]
             resources: ["configmaps"]
-            resourceNames: ["layersentry-storage-inventory"]
+            resourceNames: ["layersentry-storage-inventory", "layersentry-network-inventory"]
             verbs: ["get"]
 
   - it: ClusterRole grants metrics.k8s.io nodes get/list
