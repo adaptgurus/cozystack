@@ -31,22 +31,51 @@ jobs:
             --set-string _cluster.oidc-enabled=false \
             --show-only templates/configmap-nginx.yaml \
             --show-only templates/configmap-storage-fabric.yaml \
+            --show-only templates/configmap-storage-fabric-wizard.yaml \
             --show-only templates/deployment.yaml \
             >/tmp/storage-fabric-gui.yaml
 
           grep -q 'name: linstor-gui-storage-fabric' /tmp/storage-fabric-gui.yaml
+          grep -q 'name: linstor-gui-storage-fabric-wizard' /tmp/storage-fabric-gui.yaml
           grep -q 'mountPath: /usr/share/nginx/html/storage-fabric/index.html' /tmp/storage-fabric-gui.yaml
+          grep -q 'mountPath: /usr/share/nginx/html/storage-fabric/wizard.js' /tmp/storage-fabric-gui.yaml
+          grep -q 'src="/storage-fabric/wizard.js"' /tmp/storage-fabric-gui.yaml
           grep -q 'location \^~ /gateway/' /tmp/storage-fabric-gui.yaml
           grep -q 'proxy_pass http://linstor-gateway.cozy-linstor.svc:8337/' /tmp/storage-fabric-gui.yaml
           grep -q 'ProvisioningLocked' /tmp/storage-fabric-gui.yaml
-          grep -q 'LayerSentry Storage Fabric' /tmp/storage-fabric-gui.yaml
-          grep -q '/gateway/api/v2/status' /tmp/storage-fabric-gui.yaml
+          grep -q 'LayerSentry guided provisioning' /tmp/storage-fabric-gui.yaml
           grep -q '/gateway/api/v2/iscsi' /tmp/storage-fabric-gui.yaml
           grep -q '/gateway/api/v2/nfs' /tmp/storage-fabric-gui.yaml
           grep -q '/gateway/api/v2/nvme-of' /tmp/storage-fabric-gui.yaml
+          grep -q '"X-LayerSentry-Provisioning": "certified"' /tmp/storage-fabric-gui.yaml
+          grep -q 'method: "POST"' /tmp/storage-fabric-gui.yaml
           grep -q 'const provisioningEnabled = false' /tmp/storage-fabric-gui.yaml
+          grep -q 'const persistentDiskIdentityCertified = false' /tmp/storage-fabric-gui.yaml
+          grep -q 'const agentDataPlaneCertified = false' /tmp/storage-fabric-gui.yaml
 
-      - name: Prove mutation guard is explicit opt-in
+      - name: Syntax-check rendered wizard JavaScript
+        run: |
+          set -euo pipefail
+          helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
+            --show-only templates/configmap-storage-fabric-wizard.yaml \
+            >/tmp/wizard-rendered.yaml
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("/tmp/wizard-rendered.yaml").read_text()
+          marker = "  wizard.js: |\n"
+          if marker not in text:
+              raise SystemExit("wizard.js block was not rendered")
+          block = text.split(marker, 1)[1]
+          lines = block.splitlines()
+          js = "\n".join(line[4:] if line.startswith("    ") else line for line in lines) + "\n"
+          Path("/tmp/wizard.js").write_text(js)
+          PY
+          node --check /tmp/wizard.js
+
+      - name: Prove administrative opt-in alone remains locked
         run: |
           set -euo pipefail
           helm template linstor-gui packages/system/linstor-gui \
@@ -55,14 +84,55 @@ jobs:
             --set-string _cluster.oidc-enabled=false \
             --set gateway.provisioningEnabled=true \
             --show-only templates/configmap-nginx.yaml \
-            --show-only templates/configmap-storage-fabric.yaml \
-            >/tmp/storage-fabric-gui-enabled.yaml
+            --show-only templates/configmap-storage-fabric-wizard.yaml \
+            >/tmp/storage-fabric-optin-only.yaml
 
-          if grep -q 'ProvisioningLocked' /tmp/storage-fabric-gui-enabled.yaml; then
-            echo 'safe-mode nginx mutation guard remained after explicit opt-in'
+          grep -q 'ProvisioningLocked' /tmp/storage-fabric-optin-only.yaml
+          grep -q 'const provisioningEnabled = true' /tmp/storage-fabric-optin-only.yaml
+          grep -q 'const persistentDiskIdentityCertified = false' /tmp/storage-fabric-optin-only.yaml
+          grep -q 'const agentDataPlaneCertified = false' /tmp/storage-fabric-optin-only.yaml
+
+      - name: Prove certified provisioning requires wizard confirmation header
+        run: |
+          set -euo pipefail
+          helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
+            --set gateway.provisioningEnabled=true \
+            --set gateway.safety.persistentDiskIdentityCertified=true \
+            --set gateway.safety.agentDataPlaneCertified=true \
+            --set-string gateway.safety.certificationReference=TEST-CERT-1 \
+            --show-only templates/configmap-nginx.yaml \
+            --show-only templates/configmap-storage-fabric-wizard.yaml \
+            >/tmp/storage-fabric-certified.yaml
+
+          if grep -q 'ProvisioningLocked' /tmp/storage-fabric-certified.yaml; then
+            echo 'safe-mode mutation guard remained after all certifications'
             exit 1
           fi
-          grep -q 'const provisioningEnabled = true' /tmp/storage-fabric-gui-enabled.yaml
+          grep -q 'ProvisioningConfirmationRequired' /tmp/storage-fabric-certified.yaml
+          grep -q 'X-LayerSentry-Provisioning' /tmp/storage-fabric-certified.yaml
+          grep -q 'const provisioningEnabled = true' /tmp/storage-fabric-certified.yaml
+          grep -q 'const persistentDiskIdentityCertified = true' /tmp/storage-fabric-certified.yaml
+          grep -q 'const agentDataPlaneCertified = true' /tmp/storage-fabric-certified.yaml
+          grep -q 'const certificationReference = "TEST-CERT-1"' /tmp/storage-fabric-certified.yaml
+
+      - name: Reject missing certification reference
+        run: |
+          set -euo pipefail
+          if helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
+            --set gateway.provisioningEnabled=true \
+            --set gateway.safety.persistentDiskIdentityCertified=true \
+            --set gateway.safety.agentDataPlaneCertified=true \
+            --show-only templates/configmap-nginx.yaml >/tmp/missing-cert.yaml 2>/tmp/missing-cert.err; then
+            echo 'fully enabled provisioning unexpectedly rendered without certification reference'
+            exit 1
+          fi
+          grep -q 'gateway.safety.certificationReference is required when provisioning and both safety certifications are enabled' /tmp/missing-cert.err
 
       - name: Reject invalid Gateway endpoint configuration
         run: |
@@ -134,5 +204,6 @@ jobs:
           }
 
           Write-Host 'STORAGE_FABRIC_GUI_DEPENDENCY=PASS'
+          Write-Host 'WIZARD_API_SCHEMA=STATIC_VALIDATED'
           Write-Host 'GATEWAY_MUTATING_API_CALLS=NONE'
           Write-Host 'DESTRUCTIVE_STORAGE_ACTIONS=NONE'
