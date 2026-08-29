@@ -150,3 +150,5 @@ jobs:
           Write-Host "blockstor_pool_query_exit=$LASTEXITCODE"
 
           Write-Host 'SAFETY: diagnostic only; no create/apply/patch/delete and no storage-device mutation is performed.'
+
+# Retrigger marker: live dashboard tenant/schema diagnosis requested 2026-08-29
