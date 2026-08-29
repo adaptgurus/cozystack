@@ -1,0 +1,191 @@
+name: LayerSentry Dashboard OIDC Live Fix
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-dashboard-oidc-live-fix.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-oidc-live-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  fix-dashboard-oidc:
+    name: Align dashboard OIDC and invalidate stale session on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: layersentry-platform
+          fetch-depth: 0
+
+      - name: Backport current upstream dashboard OAuth scope fix
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gate = 'packages/system/dashboard/templates/gatekeeper.yaml'
+          $client = 'packages/system/dashboard/templates/keycloakclient.yaml'
+
+          $g = Get-Content $gate -Raw
+          if ($g.Contains('- --scope=openid email profile offline_access')) {
+            $g = $g.Replace('- --scope=openid email profile offline_access', '- --scope=openid email profile')
+            Set-Content -Path $gate -Value $g -Encoding UTF8
+          }
+          $k = Get-Content $client -Raw
+          $k = [regex]::Replace($k, '(?m)\r?\n  optionalClientScopes:\r?\n    - offline_access', '')
+          Set-Content -Path $client -Value $k -Encoding UTF8
+
+          $g2 = Get-Content $gate -Raw
+          $k2 = Get-Content $client -Raw
+          if (-not $g2.Contains('- --scope=openid email profile')) { throw 'corrected dashboard scope missing' }
+          if ($g2.Contains('offline_access')) { throw 'dashboard gatekeeper still contains offline_access' }
+          if ($k2 -match '(?m)^\s*optionalClientScopes:\s*$|offline_access') { throw 'dashboard KeycloakClient still offers offline_access' }
+          Write-Host 'SOURCE_OIDC_SCOPE_GATE=PASS'
+
+      - name: Commit source correction to layersentry-platform
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'adaptgurus'
+          git config user.email '73125939+adaptgurus@users.noreply.github.com'
+          git add packages/system/dashboard/templates/gatekeeper.yaml packages/system/dashboard/templates/keycloakclient.yaml
+          $pending = git diff --cached --name-only
+          if ($pending) {
+            git commit -m 'fix(layersentry): align dashboard OIDC session scope'
+            git push origin HEAD:layersentry-platform
+            if ($LASTEXITCODE -ne 0) { throw 'failed to push dashboard OIDC source fix' }
+          } else {
+            Write-Host 'Source already aligned; no source commit needed.'
+          }
+
+      - name: Verify live preconditions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:KUBECTL get nodes
+          if ($LASTEXITCODE -ne 0) { throw 'cluster access failed' }
+          $tenant = & $env:KUBECTL get tenant layersentry -n tenant-root -o json | ConvertFrom-Json
+          if (-not $tenant.status.ready) { throw 'layersentry tenant is not Ready' }
+          $ns = & $env:KUBECTL get ns tenant-layersentry -o json | ConvertFrom-Json
+          if ($ns.status.phase -ne 'Active') { throw 'tenant-layersentry namespace is not Active' }
+          Write-Host 'TENANT_BACKEND=PASS layersentry=Ready tenant-layersentry=Active'
+
+      - name: Align live KeycloakClient and oauth2-proxy scope
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $client = & $env:KUBECTL -n cozy-dashboard get keycloakclient.v1.edp.epam.com dashboard-client -o json | ConvertFrom-Json
+          if ('groups' -notin @($client.spec.defaultClientScopes)) { throw 'dashboard client missing groups default scope' }
+          if ('kubernetes-client' -notin @($client.spec.defaultClientScopes)) { throw 'dashboard client missing kubernetes-client default scope' }
+          $clientPatch = @{ spec = @{ optionalClientScopes = @() } } | ConvertTo-Json -Compress -Depth 5
+          & $env:KUBECTL -n cozy-dashboard patch keycloakclient.v1.edp.epam.com dashboard-client --type=merge -p $clientPatch | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'failed to align dashboard KeycloakClient' }
+
+          $d = & $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $ci = -1
+          for ($i=0; $i -lt @($d.spec.template.spec.containers).Count; $i++) {
+            if ($d.spec.template.spec.containers[$i].name -eq 'auth-proxy') { $ci = $i; break }
+          }
+          if ($ci -lt 0) { throw 'auth-proxy container missing' }
+          $ai = -1
+          for ($i=0; $i -lt @($d.spec.template.spec.containers[$ci].args).Count; $i++) {
+            if ([string]$d.spec.template.spec.containers[$ci].args[$i] -like '--scope=*') { $ai = $i; break }
+          }
+          if ($ai -lt 0) { throw 'oauth2-proxy --scope arg missing' }
+          $patch = @(@{ op='replace'; path="/spec/template/spec/containers/$ci/args/$ai"; value='--scope=openid email profile' }) | ConvertTo-Json -Compress
+          & $env:KUBECTL -n cozy-dashboard patch deploy incloud-web-gatekeeper --type=json -p $patch | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'failed to patch live oauth2-proxy scope' }
+          Write-Host 'LIVE_OIDC_SCOPE_PATCH=PASS'
+
+      - name: Invalidate stale dashboard cookie and restart proxy
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          $bytes = New-Object byte[] 16
+          $rng.GetBytes($bytes)
+          $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+          $builder = New-Object System.Text.StringBuilder
+          foreach ($b in $bytes) { [void]$builder.Append($alphabet[$b % $alphabet.Length]) }
+          $cookieSecret = $builder.ToString()
+          Write-Output "::add-mask::$cookieSecret"
+          $cookieB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookieSecret))
+          Write-Output "::add-mask::$cookieB64"
+          $secretPatch = @{ data = @{ cookieSecret = $cookieB64 } } | ConvertTo-Json -Compress -Depth 4
+          & $env:KUBECTL -n cozy-dashboard patch secret dashboard-auth-config --type=merge -p $secretPatch | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'failed to rotate dashboard cookie secret' }
+
+          & $env:KUBECTL -n cozy-dashboard rollout restart deployment/incloud-web-gatekeeper | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'failed to restart dashboard gatekeeper' }
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/incloud-web-gatekeeper --timeout=180s
+          if ($LASTEXITCODE -ne 0) { throw 'dashboard gatekeeper rollout did not complete' }
+          Write-Host 'DASHBOARD_SESSION_INVALIDATION=PASS'
+
+      - name: Validate fresh dashboard token against Kubernetes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Decode-JwtPayload([string]$jwt) {
+            $parts = $jwt.Split('.')
+            $payload = $parts[1].Replace('-','+').Replace('_','/')
+            switch ($payload.Length % 4) { 2 { $payload += '==' }; 3 { $payload += '=' } }
+            return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json)
+          }
+
+          $passwordB64 = (& $env:KUBECTL -n cozy-system get secret layersentry-gui-admin-password -o jsonpath='{.data.password}' | Out-String).Trim()
+          $clientSecretB64 = (& $env:KUBECTL -n cozy-dashboard get secret dashboard-client -o jsonpath='{.data.client-secret-key}' | Out-String).Trim()
+          if (-not $passwordB64 -or -not $clientSecretB64) { throw 'required Secret key missing' }
+          Write-Output "::add-mask::$passwordB64"
+          Write-Output "::add-mask::$clientSecretB64"
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($passwordB64))
+          $clientSecret = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($clientSecretB64))
+          Write-Output "::add-mask::$password"
+          Write-Output "::add-mask::$clientSecret"
+
+          $hostName = (& $env:KUBECTL -n cozy-keycloak get ingress -o json | ConvertFrom-Json).items | ForEach-Object { $_.spec.rules[0].host } | Where-Object { $_ -like 'keycloak.*' } | Select-Object -First 1
+          $tokenUrl = "https://$hostName/realms/cozy/protocol/openid-connect/token"
+          $tokenFile = Join-Path $env:RUNNER_TEMP 'layersentry-dashboard-fixed-token.json'
+          $http = (& curl.exe -k -sS -o $tokenFile -w '%{http_code}' -X POST $tokenUrl --data-urlencode 'grant_type=password' --data-urlencode 'client_id=dashboard' --data-urlencode "client_secret=$clientSecret" --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'scope=openid email profile' | Out-String).Trim()
+          $r = Get-Content $tokenFile -Raw | ConvertFrom-Json
+          if ($http -ne '200' -or -not $r.id_token) { throw "fresh dashboard token request failed HTTP=$http" }
+          Write-Output "::add-mask::$($r.id_token)"
+          if ($r.access_token) { Write-Output "::add-mask::$($r.access_token)" }
+          if ($r.refresh_token) { Write-Output "::add-mask::$($r.refresh_token)" }
+          $claims = Decode-JwtPayload $r.id_token
+          $aud = @($claims.aud)
+          if ('kubernetes' -notin $aud) { throw 'fresh dashboard ID token missing kubernetes audience' }
+          if ('cozystack-cluster-admin' -notin @($claims.groups)) { throw 'fresh dashboard ID token missing cluster-admin group' }
+          if ($claims.preferred_username -ne $env:GUI_USERNAME) { throw 'fresh dashboard ID token username mismatch' }
+
+          $tenantOut = @(& $env:KUBECTL --token=$($r.id_token) get --raw '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw "fresh dashboard ID token cannot list TenantNamespaces: $($tenantOut -join ' | ')" }
+          $planOut = @(& $env:KUBECTL --token=$($r.id_token) get --raw '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/plans.backups.cozystack.io' 2>&1)
+          if ($LASTEXITCODE -ne 0) { throw "fresh dashboard ID token cannot get Plan CRD: $($planOut -join ' | ')" }
+          Write-Host "FRESH_DASHBOARD_ID_TOKEN=PASS issuer=$($claims.iss) audience=kubernetes group=cozystack-cluster-admin"
+          Write-Host 'TENANTNAMESPACES_API=PASS'
+          Write-Host 'PLAN_CRD_API=PASS'
+
+      - name: Verify final live auth state
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $d = & $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy = @($d.spec.template.spec.containers) | Where-Object { $_.name -eq 'auth-proxy' } | Select-Object -First 1
+          $scope = @($proxy.args) | Where-Object { $_ -like '--scope=*' }
+          Write-Host "liveScope=$scope"
+          if ($scope -ne '--scope=openid email profile') { throw "unexpected live scope: $scope" }
+          $client = & $env:KUBECTL -n cozy-dashboard get keycloakclient.v1.edp.epam.com dashboard-client -o json | ConvertFrom-Json
+          Write-Host "defaultScopes=$([string]::Join(',', @($client.spec.defaultClientScopes)))"
+          Write-Host "optionalScopes=$([string]::Join(',', @($client.spec.optionalClientScopes)))"
+          Write-Host "keycloakClientStatus=$($client.status.value)"
+          & $env:KUBECTL -n cozy-dashboard get pods -l 'app.kubernetes.io/name=gatekeeper,app.kubernetes.io/instance=incloud-web' -o wide
+          Write-Host 'FINAL_DASHBOARD_OIDC_FIX=PASS'
