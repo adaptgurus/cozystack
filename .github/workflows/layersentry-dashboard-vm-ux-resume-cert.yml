@@ -1,0 +1,302 @@
+name: LayerSentry Dashboard VM UX Resume Certification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml
+
+concurrency:
+  group: layersentry-dashboard-vm-ux-resume-cert
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  PACKAGE_URL: oci://ghcr.io/adaptgurus/cozystack/cozystack-packages
+  BASE_PACKAGE_DIGEST: sha256:652e8b0e41260ae9f35d1a1ba33b5d304156ae19f7689f7df52be30b835b954f
+  RELEASE_PACKAGE_DIGEST: sha256:a758f1784d53d33bf2dd323aab98a07999bd7bc05c25d543b5dcb030c318ba99
+  IMAGE_REF: ghcr.io/adaptgurus/cozystack/cozystack-ui@sha256:aa6854f8fc38be573b5615eca9235e070c84d71ee25e930e5d3e531f8d84cb01
+
+jobs:
+  verify-release:
+    name: Verify immutable dashboard release artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install pinned Flux CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          V=v2.6.4
+          A="flux_${V#v}_linux_amd64.tar.gz"
+          curl -fsSLo "/tmp/$A" "https://github.com/fluxcd/flux2/releases/download/${V}/$A"
+          curl -fsSLo /tmp/checksums "https://github.com/fluxcd/flux2/releases/download/${V}/flux_${V#v}_checksums.txt"
+          grep " $A$" /tmp/checksums | sed "s#  $A#  /tmp/$A#" >/tmp/expected
+          sha256sum -c /tmp/expected
+          tar -xzf "/tmp/$A" -C /tmp flux
+          sudo install -m 0755 /tmp/flux /usr/local/bin/flux
+
+      - name: Pull and Helm-render exact release package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release
+          flux pull artifact "${PACKAGE_URL}@${RELEASE_PACKAGE_DIGEST}" --output /tmp/release
+          grep -F "image: ${IMAGE_REF}" /tmp/release/system/dashboard/values.yaml >/dev/null
+          grep -F -- '--scope=openid email profile' /tmp/release/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- '--scope=openid email profile offline_access' /tmp/release/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          helm template dashboard /tmp/release/system/dashboard >/tmp/rendered.yaml
+          python3 - <<'PY'
+          import os, yaml
+          docs=list(yaml.safe_load_all(open('/tmp/rendered.yaml')))
+          target=[d for d in docs if isinstance(d,dict) and d.get('kind')=='Deployment' and d.get('metadata',{}).get('name')=='cozy-dashboard-console']
+          if len(target)!=1: raise SystemExit(f'expected one console Deployment, got {len(target)}')
+          containers=target[0]['spec']['template']['spec']['containers']
+          c=[x for x in containers if x.get('name')=='console']
+          if len(c)!=1: raise SystemExit('console container missing')
+          actual=c[0].get('image')
+          expected=os.environ['IMAGE_REF']
+          if actual!=expected: raise SystemExit(f'chart render mismatch expected={expected} actual={actual}')
+          print(f'OFFLINE_CHART_RENDER=PASS image={actual}')
+          PY
+
+  certify-testser:
+    name: Generated-artifact VM GUI E2E on TESTSER
+    needs: verify-release
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 55
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Capture safe baseline and VM contract
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not(Test-Path $env:KUBECONFIG)){throw 'TESTSER kubeconfig missing'}
+          if(-not(Test-Path $env:KUBECTL)){throw 'kubectl missing'}
+          $nodes=@((& $env:KUBECTL get nodes -o json|ConvertFrom-Json).items)
+          if($nodes.Count -lt 3){throw "expected 3-node lab, found $($nodes.Count)"}
+          $bad=@($nodes|Where-Object{[string](@($_.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1).status) -ne 'True'})
+          if($bad.Count){throw "non-Ready nodes: $($bad.metadata.name -join ',')"}
+
+          $sources=[ordered]@{}
+          foreach($n in @('cozystack-platform','cozystack-packages')){
+            $s=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $n -o json|ConvertFrom-Json
+            if([string]$s.spec.url -ne $env:PACKAGE_URL){throw "unexpected $n URL $($s.spec.url)"}
+            if([string]$s.spec.ref.digest -ne $env:BASE_PACKAGE_DIGEST){throw "SAFETY_ABORT $n is not at certified baseline: $($s.spec.ref.digest)"}
+            $sources[$n]=[ordered]@{url=[string]$s.spec.url;digest=[string]$s.spec.ref.digest}
+          }
+          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          if(-not$op){throw 'cozystack-operator container missing'}
+          $ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json
+          $inv=@($ag.status.inventory|Where-Object{$_.name -eq 'cozystack-cozystack-engine-oidc-dashboard'}|Select-Object -First 1)
+          if(-not$inv){throw 'baseline OIDC dashboard artifact missing'}
+          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json|ConvertFrom-Json
+          $post=if($null -ne $hr.spec.postRenderers){$hr.spec.postRenderers|ConvertTo-Json -Depth 80 -Compress}else{'null'}
+          $base=[ordered]@{sources=$sources;operatorArgs=@($op.args);agSourcesDigest=[string]$ag.status.observedSourcesDigest;dashboardArtifactDigest=[string]$inv.digest;dashboardRevision=[string]$hr.status.lastAttemptedRevision;postRenderersJson=$post}
+          $base|ConvertTo-Json -Depth 90|Set-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-baseline.json') -Encoding UTF8
+
+          $ad=& $env:KUBECTL get applicationdefinition vm-instance -o json|ConvertFrom-Json
+          $schema=[string]$ad.spec.application.openAPISchema|ConvertFrom-Json
+          $c=[ordered]@{kind=[string]$ad.spec.application.kind;plural=[string]$ad.spec.application.plural;namespace='tenant-layersentry';instanceType=[string]$schema.properties.instanceType.default;instanceProfile=[string]$schema.properties.instanceProfile.default}
+          if(-not$c.kind -or -not$c.plural){throw 'vm-instance contract incomplete'}
+          if(-not$c.instanceType){$c.instanceType='u1.medium'};if(-not$c.instanceProfile){$c.instanceProfile='ubuntu'}
+          $ns=& $env:KUBECTL get ns $c.namespace -o json|ConvertFrom-Json;if($ns.status.phase -ne 'Active'){throw 'tenant-layersentry not Active'}
+          $existing=@((& $env:KUBECTL -n $c.namespace get $c.plural -o json|ConvertFrom-Json).items);if($existing.Count){throw "safety requires zero existing VM app CRs, found $($existing.Count)"}
+          $c|ConvertTo-Json|Set-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json') -Encoding UTF8
+          Write-Host "RESUME_PREFLIGHT=PASS nodes=$($nodes.Count) baselineArtifact=$($inv.digest) baselineRevision=$($hr.status.lastAttemptedRevision)"
+
+      - name: Switch immutable package source
+        run: |
+          $ErrorActionPreference='Stop'
+          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          $args=New-Object System.Collections.Generic.List[string];$u=$false;$r=$false
+          foreach($a in @($op.args)){
+            $s=[string]$a
+            if($s -like '--platform-source-url=*'){$args.Add("--platform-source-url=$env:PACKAGE_URL");$u=$true}
+            elseif($s -like '--platform-source-ref=*'){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST");$r=$true}
+            else{$args.Add($s)}
+          }
+          if(-not$u){$args.Add("--platform-source-url=$env:PACKAGE_URL")};if(-not$r){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST")}
+          $patch=[ordered]@{spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@([ordered]@{name='cozystack-operator';args=@($args)})}}}}
+          $f=Join-Path $env:RUNNER_TEMP 'resume-op.json';$patch|ConvertTo-Json -Depth 30|Set-Content $f -Encoding UTF8
+          & $env:KUBECTL -n cozy-system patch deploy cozystack-operator --type=strategic "--patch-file=$f"|Out-Null;if($LASTEXITCODE){throw 'operator patch failed'}
+          & $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host;if($LASTEXITCODE){throw 'operator rollout failed'}
+          $sp=[ordered]@{spec=[ordered]@{url=$env:PACKAGE_URL;ref=[ordered]@{digest=$env:RELEASE_PACKAGE_DIGEST;tag=$null;semver=$null;semverFilter=$null}}}
+          $sf=Join-Path $env:RUNNER_TEMP 'resume-src.json';$sp|ConvertTo-Json -Depth 12|Set-Content $sf -Encoding UTF8
+          foreach($n in @('cozystack-platform','cozystack-packages')){& $env:KUBECTL -n cozy-system patch ocirepository.source.toolkit.fluxcd.io $n --type=merge "--patch-file=$sf"|Out-Null;if($LASTEXITCODE){throw "source patch failed $n"}}
+          Set-Content (Join-Path $env:RUNNER_TEMP 'resume-mutated.flag') 'true'
+          $deadline=(Get-Date).AddMinutes(6)
+          do{
+            Start-Sleep 5;$ok=$true
+            foreach($n in @('cozystack-platform','cozystack-packages')){$s=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $n -o json|ConvertFrom-Json;$rr=@($s.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1);if([string]$s.spec.ref.digest -ne $env:RELEASE_PACKAGE_DIGEST -or $rr.status -ne 'True' -or [string]$s.status.artifact.revision -notmatch [regex]::Escape($env:RELEASE_PACKAGE_DIGEST)){$ok=$false}}
+          }while(-not$ok -and (Get-Date)-lt$deadline)
+          if(-not$ok){throw 'release OCI sources not Ready'}
+          Write-Host "RELEASE_SOURCE_READY=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
+
+      - name: Barrier on regenerated dashboard artifact
+        run: |
+          $ErrorActionPreference='Stop'
+          $b=Get-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-baseline.json') -Raw|ConvertFrom-Json
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          & $env:KUBECTL -n cozy-system annotate artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite|Out-Null
+          $deadline=(Get-Date).AddMinutes(8);$inv=$null;$ag=$null
+          do{
+            Start-Sleep 5
+            $ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json
+            $ready=@($ag.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            $inv=@($ag.status.inventory|Where-Object{$_.name -eq 'cozystack-cozystack-engine-oidc-dashboard'}|Select-Object -First 1)
+            $changed=($ready.status -eq 'True' -and [string]$ag.status.observedSourcesDigest -ne [string]$b.agSourcesDigest -and $inv -and [string]$inv.digest -ne [string]$b.dashboardArtifactDigest)
+          }while(-not$changed -and (Get-Date)-lt$deadline)
+          if(-not$changed){throw "ArtifactGenerator stayed stale sources=$($ag.status.observedSourcesDigest) dashboard=$($inv.digest) baselineSources=$($b.agSourcesDigest) baselineDashboard=$($b.dashboardArtifactDigest)"}
+          $expected="0.0.0+"+([string]$inv.digest).Replace('sha256:','').Substring(0,12)
+          Set-Content (Join-Path $env:RUNNER_TEMP 'resume-expected-revision.txt') $expected
+          Set-Content (Join-Path $env:RUNNER_TEMP 'resume-release-artifact-digest.txt') ([string]$inv.digest)
+          Write-Host "DASHBOARD_ARTIFACT_REGENERATED=PASS digest=$($inv.digest) revision=$expected sourcesDigest=$($ag.status.observedSourcesDigest)"
+
+      - name: Reconcile platform and wait exact chart revision
+        run: |
+          $ErrorActionPreference='Stop'
+          $expected=(Get-Content (Join-Path $env:RUNNER_TEMP 'resume-expected-revision.txt') -Raw).Trim()
+          $stamp=[DateTime]::UtcNow.ToString('o');& $env:KUBECTL -n cozy-system annotate helmrelease cozystack-platform "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite|Out-Null
+          $deadline=(Get-Date).AddMinutes(7)
+          do{Start-Sleep 5;$p=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json|ConvertFrom-Json;$pr=@($p.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while(([string]$p.status.lastHandledReconcileAt -ne $stamp -or $pr.status -ne 'True') -and (Get-Date)-lt$deadline)
+          if([string]$p.status.lastHandledReconcileAt -ne $stamp -or $pr.status -ne 'True'){throw "platform reconcile failed: $($pr.message)"}
+          $deadline=(Get-Date).AddMinutes(7)
+          do{Start-Sleep 5;$hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json|ConvertFrom-Json;$rr=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1);if([string]$hr.status.lastAttemptedRevision -ne $expected){& $env:KUBECTL -n cozy-dashboard annotate helmrelease dashboard "reconcile.fluxcd.io/requestedAt=$([DateTime]::UtcNow.ToString('o'))" --overwrite|Out-Null}}while(([string]$hr.status.lastAttemptedRevision -ne $expected -or $rr.status -ne 'True') -and (Get-Date)-lt$deadline)
+          if([string]$hr.status.lastAttemptedRevision -ne $expected -or $rr.status -ne 'True'){throw "dashboard did not consume regenerated artifact expected=$expected attempted=$($hr.status.lastAttemptedRevision) ready=$($rr.status) message=$($rr.message)"}
+          Write-Host "DASHBOARD_CHART_REVISION=PASS revision=$expected"
+
+      - name: Certify exact live console image and bundle
+        run: |
+          $ErrorActionPreference='Stop'
+          & $env:KUBECTL -n cozy-dashboard rollout status deploy/cozy-dashboard-console --timeout=300s|Out-Host;if($LASTEXITCODE){throw 'console rollout failed'}
+          $dep=& $env:KUBECTL -n cozy-dashboard get deploy cozy-dashboard-console -o json|ConvertFrom-Json
+          $image=[string](@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'console'}|Select-Object -First 1).image)
+          if($image -ne $env:IMAGE_REF){throw "LIVE_IMAGE_MISMATCH expected=$env:IMAGE_REF actual=$image"}
+          $prefix='/api/v1/namespaces/cozy-dashboard/services/http:cozy-dashboard-console:8080/proxy'
+          $health=(& $env:KUBECTL get --raw "$prefix/healthcheck"|Out-String).Trim();if($health -notmatch '(?i)ok|healthy'){throw "health unexpected: $health"}
+          $html=& $env:KUBECTL get --raw "$prefix/"|Out-String;$m=[regex]::Match($html,'src="(/assets/index-[^"]+\.js)"');if(-not$m.Success){throw 'JS asset missing'}
+          $js=& $env:KUBECTL get --raw "$prefix$($m.Groups[1].Value)"|Out-String
+          foreach($x in @('Create virtual machine','Basics','Compute','Storage','Network','Access','Review','Pending changes','Safe edit behavior')){if($js -notmatch [regex]::Escape($x)){throw "bundle marker missing: $x"}}
+          Write-Host "LIVE_VM_GUI_BUNDLE=PASS image=$image markers=9"
+
+      - name: Controller-level real VM create edit lifecycle
+        run: |
+          $ErrorActionPreference='Stop'
+          $c=Get-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json') -Raw|ConvertFrom-Json
+          $name="vm-api-$env:GITHUB_RUN_ID".ToLower();Set-Content (Join-Path $env:RUNNER_TEMP 'resume-api-name.txt') $name
+          $before=@((& $env:KUBECTL -n $c.namespace get virtualmachines.kubevirt.io -o json|ConvertFrom-Json).items|ForEach-Object{$_.metadata.name})
+          $body=[ordered]@{apiVersion='apps.cozystack.io/v1alpha1';kind=$c.kind;metadata=[ordered]@{name=$name;namespace=$c.namespace};spec=[ordered]@{runStrategy='Halted';instanceType=$c.instanceType;instanceProfile=$c.instanceProfile}}
+          $f=Join-Path $env:RUNNER_TEMP 'resume-api-create.json';$body|ConvertTo-Json -Depth 30|Set-Content $f -Encoding UTF8
+          & $env:KUBECTL create -f $f|Out-Host;if($LASTEXITCODE){throw 'VM API create failed'}
+          $deadline=(Get-Date).AddMinutes(7);$new=@()
+          do{Start-Sleep 5;$all=@((& $env:KUBECTL -n $c.namespace get virtualmachines.kubevirt.io -o json|ConvertFrom-Json).items);$new=@($all|Where-Object{$before -notcontains $_.metadata.name})}while($new.Count -ne 1 -and (Get-Date)-lt$deadline)
+          if($new.Count -ne 1){throw "expected one downstream KubeVirt VM, found $($new.Count)"}
+          $kv=[string]$new[0].metadata.name;Set-Content (Join-Path $env:RUNNER_TEMP 'resume-api-kv.txt') $kv
+          if([string]$new[0].spec.runStrategy -ne 'Halted'){throw "downstream VM not Halted: $($new[0].spec.runStrategy)"}
+          $vmi=@((& $env:KUBECTL -n $c.namespace get virtualmachineinstances.kubevirt.io -o json|ConvertFrom-Json).items|Where-Object{$_.metadata.name -eq $kv});if($vmi.Count){throw 'Halted VM unexpectedly launched'}
+          $obj=& $env:KUBECTL -n $c.namespace get $c.plural $name -o json|ConvertFrom-Json;$beforeSpec=$obj.spec
+          $replace=[ordered]@{apiVersion=[string]$obj.apiVersion;kind=[string]$obj.kind;metadata=[ordered]@{name=$name;namespace=$c.namespace;resourceVersion=[string]$obj.metadata.resourceVersion};spec=$obj.spec};$replace.spec.runStrategy='Manual'
+          $rf=Join-Path $env:RUNNER_TEMP 'resume-api-edit.json';$replace|ConvertTo-Json -Depth 50|Set-Content $rf -Encoding UTF8;& $env:KUBECTL replace -f $rf|Out-Host;if($LASTEXITCODE){throw 'VM API replace failed'}
+          $after=& $env:KUBECTL -n $c.namespace get $c.plural $name -o json|ConvertFrom-Json
+          $bp=@($beforeSpec.PSObject.Properties.Name|Sort-Object);$ap=@($after.spec.PSObject.Properties.Name|Sort-Object);if(($bp -join '|') -ne ($ap -join '|')){throw "edit field set changed before=$($bp -join ',') after=$($ap -join ',')"}
+          foreach($p in $bp){if($p -eq 'runStrategy'){continue};$a=$beforeSpec.$p|ConvertTo-Json -Depth 40 -Compress;$b=$after.spec.$p|ConvertTo-Json -Depth 40 -Compress;if($a -ne $b){throw "untouched field changed: $p"}}
+          $deadline=(Get-Date).AddMinutes(5);do{Start-Sleep 5;$vm=& $env:KUBECTL -n $c.namespace get virtualmachine.kubevirt.io $kv -o json|ConvertFrom-Json}while([string]$vm.spec.runStrategy -ne 'Manual' -and (Get-Date)-lt$deadline)
+          if([string]$vm.spec.runStrategy -ne 'Manual'){throw 'KubeVirt VM did not reconcile Manual'}
+          Write-Host "VM_API_LIFECYCLE=PASS app=$name kubevirtVM=$kv defaultsInjected=false"
+
+      - name: Set up Node.js for browser E2E
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Prepare ephemeral authenticated browser
+        run: |
+          $ErrorActionPreference='Stop'
+          $c=Get-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json') -Raw|ConvertFrom-Json
+          $sa="vm-gui-$env:GITHUB_RUN_ID".ToLower();$crb="vm-gui-$env:GITHUB_RUN_ID".ToLower();Set-Content (Join-Path $env:RUNNER_TEMP 'resume-sa.txt') $sa;Set-Content (Join-Path $env:RUNNER_TEMP 'resume-crb.txt') $crb
+          & $env:KUBECTL -n $c.namespace create sa $sa|Out-Host;if($LASTEXITCODE){throw 'browser SA failed'}
+          & $env:KUBECTL create clusterrolebinding $crb "--clusterrole=cluster-admin" "--serviceaccount=$($c.namespace):$sa"|Out-Host;if($LASTEXITCODE){throw 'browser CRB failed'}
+          $token=(& $env:KUBECTL -n $c.namespace create token $sa --duration=15m|Out-String).Trim();if(-not$token){throw 'browser token failed'};Write-Host "::add-mask::$token";Set-Content (Join-Path $env:RUNNER_TEMP 'resume-token.txt') $token -NoNewline
+          $pw=Join-Path $env:RUNNER_TEMP 'resume-pw';New-Item -ItemType Directory -Force $pw|Out-Null;Push-Location $pw;npm init -y|Out-Null;npm install --no-audit --no-fund playwright@1.55.0;if($LASTEXITCODE){throw 'Playwright install failed'};npx playwright install chromium;if($LASTEXITCODE){throw 'Chromium install failed'};Pop-Location
+          Write-Host 'BROWSER_IDENTITY=PASS ephemeral=true'
+
+      - name: Browser creates VM through guided GUI
+        run: |
+          $ErrorActionPreference='Stop'
+          $c=Get-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json') -Raw|ConvertFrom-Json;$name="vm-browser-$env:GITHUB_RUN_ID".ToLower();Set-Content (Join-Path $env:RUNNER_TEMP 'resume-browser-name.txt') $name;$token=Get-Content (Join-Path $env:RUNNER_TEMP 'resume-token.txt') -Raw
+          $pf=Start-Process $env:KUBECTL -ArgumentList @('-n','cozy-dashboard','port-forward','service/cozy-dashboard-console','18081:8080','--address=127.0.0.1') -PassThru -WindowStyle Hidden
+          try{
+            $deadline=(Get-Date).AddSeconds(45);$up=$false;do{try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:18081/healthcheck' -TimeoutSec 2;if($r.StatusCode -eq 200){$up=$true}}catch{};if(-not$up){Start-Sleep 1}}while(-not$up -and (Get-Date)-lt$deadline);if(-not$up){throw 'console port-forward unhealthy'}
+            $env:E2E_TOKEN=$token;$env:E2E_NAME=$name
+            $js=@'
+          const { chromium }=require('playwright');
+          (async()=>{const browser=await chromium.launch({headless:true});const ctx=await browser.newContext({extraHTTPHeaders:{Authorization:`Bearer ${process.env.E2E_TOKEN}`}});const p=await ctx.newPage();const errs=[];p.on('pageerror',e=>errs.push(String(e)));p.on('console',m=>{if(m.type()==='error')errs.push(m.text())});await p.addInitScript(()=>localStorage.setItem('cozystack-ui:selected-tenant','layersentry'));await p.goto('http://127.0.0.1:18081/console/new/vm-instance',{waitUntil:'networkidle',timeout:60000});await p.getByRole('heading',{name:'Create virtual machine'}).waitFor({timeout:30000});await p.locator('input[placeholder="e.g. web-01"]').fill(process.env.E2E_NAME);await p.getByLabel(/Run strategy/i).selectOption('Halted');for(const step of ['Compute','Storage','Network','Access','Review']){await p.getByRole('button',{name:/Continue/}).click();await p.getByText(step,{exact:true}).first().waitFor()}await p.getByText(process.env.E2E_NAME,{exact:true}).first().waitFor();await p.getByRole('button',{name:'Create virtual machine'}).click();await p.waitForURL(new RegExp(`/console/vminstances/${process.env.E2E_NAME}$`),{timeout:90000});if(errs.length)throw new Error(errs.join(' | '));await browser.close()})().catch(e=>{console.error(e);process.exit(1)});
+          '@
+            $s=Join-Path $env:RUNNER_TEMP 'resume-create.cjs';Set-Content $s $js -Encoding UTF8;Push-Location (Join-Path $env:RUNNER_TEMP 'resume-pw');node $s;if($LASTEXITCODE){throw 'browser create failed'};Pop-Location
+          }finally{if($pf -and -not$pf.HasExited){Stop-Process $pf.Id -Force -ErrorAction SilentlyContinue}}
+          $deadline=(Get-Date).AddMinutes(6);$app=$null;do{Start-Sleep 5;$raw=& $env:KUBECTL -n $c.namespace get $c.plural $name -o json 2>$null;if($LASTEXITCODE -eq 0){$app=$raw|ConvertFrom-Json}}while(-not$app -and (Get-Date)-lt$deadline);if(-not$app){throw 'browser-created app CR missing'};if([string]$app.spec.runStrategy -ne 'Halted'){throw 'browser VM not Halted'};$app.spec|ConvertTo-Json -Depth 50 -Compress|Set-Content (Join-Path $env:RUNNER_TEMP 'resume-browser-before.json') -Encoding UTF8
+          Write-Host "VM_BROWSER_CREATE=PASS app=$name guidedWizard=true"
+
+      - name: Browser edits VM and proves no default injection
+        run: |
+          $ErrorActionPreference='Stop'
+          $c=Get-Content (Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json') -Raw|ConvertFrom-Json;$name=(Get-Content (Join-Path $env:RUNNER_TEMP 'resume-browser-name.txt') -Raw).Trim();$token=Get-Content (Join-Path $env:RUNNER_TEMP 'resume-token.txt') -Raw
+          $pf=Start-Process $env:KUBECTL -ArgumentList @('-n','cozy-dashboard','port-forward','service/cozy-dashboard-console','18081:8080','--address=127.0.0.1') -PassThru -WindowStyle Hidden
+          try{
+            $deadline=(Get-Date).AddSeconds(45);$up=$false;do{try{$r=Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:18081/healthcheck' -TimeoutSec 2;if($r.StatusCode -eq 200){$up=$true}}catch{};if(-not$up){Start-Sleep 1}}while(-not$up -and (Get-Date)-lt$deadline);if(-not$up){throw 'edit port-forward unhealthy'}
+            $env:E2E_TOKEN=$token;$env:E2E_NAME=$name
+            $js=@'
+          const { chromium }=require('playwright');
+          (async()=>{const browser=await chromium.launch({headless:true});const ctx=await browser.newContext({extraHTTPHeaders:{Authorization:`Bearer ${process.env.E2E_TOKEN}`}});const p=await ctx.newPage();await p.addInitScript(()=>localStorage.setItem('cozystack-ui:selected-tenant','layersentry'));await p.goto(`http://127.0.0.1:18081/console/vminstances/${process.env.E2E_NAME}/edit`,{waitUntil:'networkidle',timeout:60000});await p.getByRole('heading',{name:`Edit ${process.env.E2E_NAME}`}).waitFor({timeout:30000});await p.getByLabel(/Run strategy/i).selectOption('Manual');await p.getByText('Review',{exact:true}).first().click();await p.getByText('Pending changes',{exact:true}).waitFor();await p.getByText('Safe edit behavior',{exact:true}).waitFor();await p.getByRole('button',{name:'Save changes'}).click();await p.waitForURL(new RegExp(`/console/vminstances/${process.env.E2E_NAME}$`),{timeout:90000});await browser.close()})().catch(e=>{console.error(e);process.exit(1)});
+          '@
+            $s=Join-Path $env:RUNNER_TEMP 'resume-edit.cjs';Set-Content $s $js -Encoding UTF8;Push-Location (Join-Path $env:RUNNER_TEMP 'resume-pw');node $s;if($LASTEXITCODE){throw 'browser edit failed'};Pop-Location
+          }finally{if($pf -and -not$pf.HasExited){Stop-Process $pf.Id -Force -ErrorAction SilentlyContinue}}
+          $after=& $env:KUBECTL -n $c.namespace get $c.plural $name -o json|ConvertFrom-Json;if([string]$after.spec.runStrategy -ne 'Manual'){throw 'browser edit did not persist Manual'};$before=Get-Content (Join-Path $env:RUNNER_TEMP 'resume-browser-before.json') -Raw|ConvertFrom-Json;$bp=@($before.PSObject.Properties.Name|Sort-Object);$ap=@($after.spec.PSObject.Properties.Name|Sort-Object);if(($bp -join '|') -ne ($ap -join '|')){throw "browser edit changed field set before=$($bp -join ',') after=$($ap -join ',')"};foreach($x in $bp){if($x -eq 'runStrategy'){continue};$a=$before.$x|ConvertTo-Json -Depth 40 -Compress;$b=$after.spec.$x|ConvertTo-Json -Depth 40 -Compress;if($a -ne $b){throw "browser changed untouched field $x"}}
+          Write-Host "VM_BROWSER_EDIT=PASS app=$name pendingChanges=true defaultsInjected=false"
+
+      - name: Cleanup disposable resources
+        if: always()
+        run: |
+          $ErrorActionPreference='Continue';$cf=Join-Path $env:RUNNER_TEMP 'vm-resume-contract.json';$leaks=@()
+          if(Test-Path $cf){$c=Get-Content $cf -Raw|ConvertFrom-Json;foreach($nf in @('resume-api-name.txt','resume-browser-name.txt')){$p=Join-Path $env:RUNNER_TEMP $nf;if(Test-Path $p){$n=(Get-Content $p -Raw).Trim();& $env:KUBECTL -n $c.namespace delete $c.plural $n --ignore-not-found=true --wait=true --timeout=300s|Out-Host}}
+            $deadline=(Get-Date).AddMinutes(6);do{$leaks=@();foreach($nf in @('resume-api-name.txt','resume-browser-name.txt')){$p=Join-Path $env:RUNNER_TEMP $nf;if(-not(Test-Path $p)){continue};$n=(Get-Content $p -Raw).Trim();foreach($res in @('virtualmachines.kubevirt.io','virtualmachineinstances.kubevirt.io','persistentvolumeclaims','services','secrets')){$raw=& $env:KUBECTL -n $c.namespace get $res -o json 2>$null;if($LASTEXITCODE -eq 0){$items=@(($raw|ConvertFrom-Json).items);$leaks+=@($items|Where-Object{$_.metadata.name -like "*$n*"}|ForEach-Object{"$res/$($_.metadata.name)"})}}};if($leaks.Count){Start-Sleep 5}}while($leaks.Count -and (Get-Date)-lt$deadline)}
+          $crbp=Join-Path $env:RUNNER_TEMP 'resume-crb.txt';if(Test-Path $crbp){& $env:KUBECTL delete clusterrolebinding ((Get-Content $crbp -Raw).Trim()) --ignore-not-found=true|Out-Null}
+          $sap=Join-Path $env:RUNNER_TEMP 'resume-sa.txt';if((Test-Path $sap) -and (Test-Path $cf)){$c=Get-Content $cf -Raw|ConvertFrom-Json;& $env:KUBECTL -n $c.namespace delete sa ((Get-Content $sap -Raw).Trim()) --ignore-not-found=true|Out-Null}
+          if($leaks.Count){throw "disposable resource leaks: $($leaks -join ',')"}
+          Write-Host 'VM_E2E_CLEANUP=PASS leakedResources=0'
+          $global:LASTEXITCODE=0
+
+      - name: Second reconcile durability proof
+        if: success()
+        run: |
+          $ErrorActionPreference='Stop';$artifact=(Get-Content (Join-Path $env:RUNNER_TEMP 'resume-release-artifact-digest.txt') -Raw).Trim();$expected=(Get-Content (Join-Path $env:RUNNER_TEMP 'resume-expected-revision.txt') -Raw).Trim()
+          $stamp=[DateTime]::UtcNow.ToString('o');& $env:KUBECTL -n cozy-system annotate helmrelease cozystack-platform "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite|Out-Null;$deadline=(Get-Date).AddMinutes(7);do{Start-Sleep 5;$p=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json|ConvertFrom-Json;$r=@($p.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while(([string]$p.status.lastHandledReconcileAt -ne $stamp -or $r.status -ne 'True') -and (Get-Date)-lt$deadline);if($r.status -ne 'True'){throw 'second platform reconcile failed'}
+          foreach($n in @('cozystack-platform','cozystack-packages')){$s=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $n -o json|ConvertFrom-Json;if([string]$s.spec.ref.digest -ne $env:RELEASE_PACKAGE_DIGEST){throw "$n reverted"}}
+          $ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json;$inv=@($ag.status.inventory|Where-Object{$_.name -eq 'cozystack-cozystack-engine-oidc-dashboard'}|Select-Object -First 1);if([string]$inv.digest -ne $artifact){throw 'dashboard artifact changed after platform reconcile'}
+          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json|ConvertFrom-Json;if([string]$hr.status.lastAttemptedRevision -ne $expected){throw 'dashboard revision reverted'};$dep=& $env:KUBECTL -n cozy-dashboard get deploy cozy-dashboard-console -o json|ConvertFrom-Json;$img=[string](@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'console'}|Select-Object -First 1).image);if($img -ne $env:IMAGE_REF){throw "image reverted: $img"}
+          Write-Host "FINAL_DURABILITY=PASS package=$env:RELEASE_PACKAGE_DIGEST artifact=$artifact revision=$expected image=$img"
+          Write-Host 'LAYERSENTRY_VM_GUI_PRODUCTION_CERTIFICATION=PASS'
+
+      - name: Roll back source of truth on failure
+        if: failure()
+        run: |
+          $ErrorActionPreference='Stop';$bf=Join-Path $env:RUNNER_TEMP 'vm-resume-baseline.json';if(-not(Test-Path $bf)){Write-Host 'ROLLBACK_NOT_REQUIRED baseline=false';exit 0};$b=Get-Content $bf -Raw|ConvertFrom-Json
+          $patch=[ordered]@{spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@([ordered]@{name='cozystack-operator';args=@($b.operatorArgs)})}}}};$f=Join-Path $env:RUNNER_TEMP 'resume-rb-op.json';$patch|ConvertTo-Json -Depth 30|Set-Content $f -Encoding UTF8;& $env:KUBECTL -n cozy-system patch deploy cozystack-operator --type=strategic "--patch-file=$f"|Out-Null;& $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host
+          foreach($n in @('cozystack-platform','cozystack-packages')){$sb=$b.sources.$n;$sp=[ordered]@{spec=[ordered]@{url=[string]$sb.url;ref=[ordered]@{digest=[string]$sb.digest;tag=$null;semver=$null;semverFilter=$null}}};$sf=Join-Path $env:RUNNER_TEMP "resume-rb-$n.json";$sp|ConvertTo-Json -Depth 12|Set-Content $sf -Encoding UTF8;& $env:KUBECTL -n cozy-system patch ocirepository.source.toolkit.fluxcd.io $n --type=merge "--patch-file=$sf"|Out-Null}
+          $stamp=[DateTime]::UtcNow.ToString('o');& $env:KUBECTL -n cozy-system annotate artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite|Out-Null;$deadline=(Get-Date).AddMinutes(8);do{Start-Sleep 5;$ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json;$inv=@($ag.status.inventory|Where-Object{$_.name -eq 'cozystack-cozystack-engine-oidc-dashboard'}|Select-Object -First 1);$ready=@($ag.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while(($ready.status -ne 'True' -or [string]$inv.digest -ne [string]$b.dashboardArtifactDigest) -and (Get-Date)-lt$deadline);if($ready.status -ne 'True' -or [string]$inv.digest -ne [string]$b.dashboardArtifactDigest){throw 'rollback ArtifactGenerator did not restore baseline'}
+          $stamp=[DateTime]::UtcNow.ToString('o');& $env:KUBECTL -n cozy-system annotate helmrelease cozystack-platform "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite|Out-Null;$deadline=(Get-Date).AddMinutes(7);do{Start-Sleep 5;$p=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json|ConvertFrom-Json;$pr=@($p.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while($pr.status -ne 'True' -and (Get-Date)-lt$deadline);if($pr.status -ne 'True'){throw 'rollback platform not Ready'}
+          $post=$null;if([string]$b.postRenderersJson -ne 'null'){$post=[string]$b.postRenderersJson|ConvertFrom-Json};$hp=[ordered]@{spec=[ordered]@{postRenderers=$post}};$hf=Join-Path $env:RUNNER_TEMP 'resume-rb-hr.json';$hp|ConvertTo-Json -Depth 80|Set-Content $hf -Encoding UTF8;& $env:KUBECTL -n cozy-dashboard patch helmrelease dashboard --type=merge "--patch-file=$hf"|Out-Null
+          $deadline=(Get-Date).AddMinutes(7);do{Start-Sleep 5;$hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json|ConvertFrom-Json;$rr=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)}while(($rr.status -ne 'True' -or [string]$hr.status.lastAttemptedRevision -ne [string]$b.dashboardRevision) -and (Get-Date)-lt$deadline);if($rr.status -ne 'True'){throw 'rollback dashboard not Ready'}
+          foreach($n in @('cozystack-platform','cozystack-packages')){$s=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $n -o json|ConvertFrom-Json;if([string]$s.spec.ref.digest -ne $env:BASE_PACKAGE_DIGEST){throw "$n rollback digest mismatch"}}
+          Write-Host "RESUME_ROLLBACK=PASS package=$env:BASE_PACKAGE_DIGEST artifact=$($b.dashboardArtifactDigest) revision=$($hr.status.lastAttemptedRevision)"
