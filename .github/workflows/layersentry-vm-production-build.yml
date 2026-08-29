@@ -1,5 +1,5 @@
 name: LayerSentry VM Production Build
-# Final immutable candidate builder. Enforces status-safe source-watcher recovery before publication.
+# Final immutable candidate builder. Enforces status-safe source-watcher recovery and current network inventory hardening before publication.
 
 on:
   workflow_dispatch:
