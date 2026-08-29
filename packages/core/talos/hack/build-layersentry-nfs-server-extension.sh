@@ -2,9 +2,9 @@
 set -eu
 
 OUT_DIR=${1:-../../../_out/extensions}
-ALPINE_IMAGE=${ALPINE_IMAGE:-alpine:3.22}
+ALPINE_IMAGE=${ALPINE_IMAGE:-alpine:3.22@sha256:55ae5d250caebc548793f321534bc6a8ef1d116f334f18f4ada1b2daad3251b2}
 NFS_UTILS_VERSION=${NFS_UTILS_VERSION:-2.6.4-r4}
-EXTENSION_VERSION=${EXTENSION_VERSION:-2.6.4-r4-layersentry.2}
+EXTENSION_VERSION=${EXTENSION_VERSION:-2.6.4-r4-layersentry.3}
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
@@ -16,9 +16,6 @@ PACKAGE_TAR="$TMPDIR/nfs-server-rootfs.tar"
 
 mkdir -p "$SERVICE_ROOT" "$SERVICE_DEFS" "$OUT_DIR"
 
-# Build the complete NFS userspace *inside* the signed Alpine container. Seed
-# the alternate root with Alpine's trusted keys before package resolution, then
-# export a normal tar so the runner never receives root-owned working files.
 docker run --rm \
   -e NFS_UTILS_VERSION="$NFS_UTILS_VERSION" \
   -v "$TMPDIR:/work" \
@@ -26,33 +23,17 @@ docker run --rm \
   sh -euc '
     mkdir -p /pkg-root/etc/apk/keys
     cp -a /etc/apk/keys/. /pkg-root/etc/apk/keys/
-
-    apk add \
-      --root /pkg-root \
-      --initdb \
-      --no-cache \
-      --no-scripts \
+    apk add --root /pkg-root --initdb --no-cache --no-scripts \
       --repositories-file /etc/apk/repositories \
-      busybox \
-      "nfs-utils=${NFS_UTILS_VERSION}"
-
-    # Alternate-root initialization can create device nodes/cache that Talos
-    # extensions neither need nor permit. Strip them and remove world-write bits
-    # from regular files/directories; symlink mode bits are not permissions.
+      busybox "nfs-utils=${NFS_UTILS_VERSION}"
     rm -rf /pkg-root/dev /pkg-root/proc /pkg-root/sys /pkg-root/run \
            /pkg-root/tmp /pkg-root/var/tmp /pkg-root/var/cache/apk
     find /pkg-root -xdev \( -type f -o -type d \) -perm -0002 -exec chmod o-w {} +
-
     tar -C /pkg-root -cf /work/nfs-server-rootfs.tar .
   '
 
 tar -C "$SERVICE_ROOT" -xf "$PACKAGE_TAR"
 mkdir -p "$SERVICE_ROOT/usr/local/sbin" "$SERVICE_ROOT/etc"
-
-# The exports file is deliberately controller-owned. The ISO starts the NFS
-# engine but exports nothing until LayerSentry writes an explicit policy under
-# /var/lib/layersentry/nfs-server/exports. This avoids exposing disks simply by
-# booting the image.
 rm -f "$SERVICE_ROOT/etc/exports"
 ln -s /run/layersentry-nfs/exports "$SERVICE_ROOT/etc/exports"
 
@@ -64,9 +45,13 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 mkdir -p /run/layersentry-nfs /var/lib/nfs /var/lib/nfs/rpc_pipefs /proc/fs/nfsd
 touch /run/layersentry-nfs/exports
 
-# nfsd is a pseudo filesystem used to control the in-kernel NFS server. The
-# extension service is privileged; mount it in this service namespace if Talos
-# has not already made it visible.
+# Universal-image safety: do not bind RPC/NFS ports merely because the host has
+# NFS capability. LayerSentry must first reconcile export policy and create the
+# controller-owned activation marker.
+while [ ! -f /run/layersentry-nfs/enabled ]; do
+  sleep 2
+done
+
 if ! grep -qs ' /proc/fs/nfsd nfsd ' /proc/mounts; then
   mount -t nfsd nfsd /proc/fs/nfsd
 fi
@@ -78,20 +63,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Fixed statd/mountd ports keep NFSv3 operation predictable. NFSv4 uses
-# TCP/2049 directly. Host ingress filtering is explicitly accept in the
-# LayerSentry machine config; external fabric ACLs remain site policy.
 rpcbind -f -w &
 RPCBIND_PID=$!
 rpc.statd -F -p 662 -o 2020 &
 STATD_PID=$!
-
 rpc.nfsd 16 --port 2049
 exportfs -ra
-
-# Foreground mountd is the supervised process. After the LayerSentry controller
-# updates the controller-owned exports file, it can apply policy with exportfs
-# -ra inside ext-layersentry-nfs-server.
 exec rpc.mountd -F -p 20048
 EOF
 chmod 0755 "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
@@ -111,29 +88,20 @@ container:
     - source: /dev
       destination: /dev
       type: bind
-      options:
-        - rshared
-        - rbind
-        - rw
+      options: [rshared, rbind, rw]
     - source: /var/mnt
       destination: /var/mnt
       type: bind
-      options:
-        - rshared
-        - rbind
-        - rw
+      options: [rshared, rbind, rw]
     - source: /var/lib/layersentry/nfs-server
       destination: /run/layersentry-nfs
       type: bind
-      options:
-        - rshared
-        - rbind
-        - rw
+      options: [rshared, rbind, rw]
   security:
     maskedPaths: []
     readonlyPaths: []
     writeableRootfs: true
-    writeableSysfs: true
+    writeableSysfs: false
     rootfsPropagation: shared
 restart: always
 EOF
@@ -145,29 +113,38 @@ metadata:
   version: "${EXTENSION_VERSION}"
   author: LayerSentry
   description: |
-    LayerSentry NFS server/export service based on nfs-utils and the Talos nfsd module.
-    Supports controller-managed NFS exports without hard-coded default shares.
+    Controller-activated NFS server/export service based on nfs-utils and the
+    custom-kernel nfsd extension. No RPC/NFS listener or export is activated by
+    image boot alone.
   compatibility:
     talos:
       version: ">= v1.13.0"
 EOF
 
-# Release-blocking assertions for complete NFS server userspace.
-for binary in \
-  usr/sbin/exportfs \
-  usr/sbin/rpc.nfsd \
-  usr/sbin/rpc.mountd \
-  sbin/rpc.statd; do
+cat > "$OUT_DIR/layersentry-nfs-server.sbom.spdx.json" <<EOF
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "layersentry-nfs-server-${EXTENSION_VERSION}",
+  "documentNamespace": "https://layersentry.invalid/sbom/nfs-server/${EXTENSION_VERSION}",
+  "creationInfo": {"created": "2026-08-30T00:00:00Z", "creators": ["Organization: LayerSentry"]},
+  "packages": [
+    {"name": "nfs-utils", "SPDXID": "SPDXRef-nfs-utils", "versionInfo": "${NFS_UTILS_VERSION}", "downloadLocation": "NOASSERTION", "filesAnalyzed": false},
+    {"name": "alpine-base", "SPDXID": "SPDXRef-alpine", "versionInfo": "3.22", "downloadLocation": "NOASSERTION", "filesAnalyzed": false}
+  ]
+}
+EOF
+
+for binary in usr/sbin/exportfs usr/sbin/rpc.nfsd usr/sbin/rpc.mountd sbin/rpc.statd; do
   test -x "$SERVICE_ROOT/$binary"
 done
-
 test -x "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
 test -s "$SERVICE_DEFS/layersentry-nfs-server.yaml"
 test -s "$EXT_ROOT/manifest.yaml"
+test -s "$OUT_DIR/layersentry-nfs-server.sbom.spdx.json"
+grep -Fq 'while [ ! -f /run/layersentry-nfs/enabled ]' "$SERVICE_ROOT/usr/local/sbin/layersentry-nfs-server"
 
-# Validate Talos' basic extension rootfs restrictions. Symlinks commonly have
-# 0777 mode by definition; only regular files/directories are checked for a
-# world-write bit.
 if find "$EXT_ROOT/rootfs" \( -type b -o -type c -o -type p -o -type s \) -print | grep -q .; then
   echo "ERROR: special file found in LayerSentry NFS server extension" >&2
   exit 1
@@ -178,13 +155,8 @@ if find "$EXT_ROOT/rootfs" \( -type f -o -type d \) -perm -0002 -print | grep -q
 fi
 
 OUT="$OUT_DIR/layersentry-nfs-server.tar"
-tar \
-  --sort=name \
-  --mtime='UTC 2026-08-29' \
-  --owner=0 --group=0 --numeric-owner \
-  -C "$EXT_ROOT" \
-  -cf "$OUT" manifest.yaml rootfs
-
+tar --sort=name --mtime='UTC 2026-08-30' --owner=0 --group=0 --numeric-owner \
+  -C "$EXT_ROOT" -cf "$OUT" manifest.yaml rootfs
 sha256sum "$OUT" > "$OUT.sha256"
 echo "built $OUT"
 cat "$OUT.sha256"
