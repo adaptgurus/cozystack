@@ -81,6 +81,10 @@ spec:
               mountPath: /usr/share/nginx/html/storage-fabric/index.html
               subPath: index.html
               readOnly: true
+            - name: storage-fabric-wizard
+              mountPath: /usr/share/nginx/html/storage-fabric/wizard.js
+              subPath: wizard.js
+              readOnly: true
             - name: linstor-client-tls
               mountPath: /etc/linstor/client
               readOnly: true
@@ -95,6 +99,9 @@ spec:
         - name: storage-fabric-ui
           configMap:
             name: linstor-gui-storage-fabric
+        - name: storage-fabric-wizard
+          configMap:
+            name: linstor-gui-storage-fabric-wizard
         - name: linstor-client-tls
           secret:
             secretName: {{ .Values.linstor.clientSecret }}
