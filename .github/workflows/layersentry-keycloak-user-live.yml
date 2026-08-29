@@ -16,31 +16,153 @@ defaults:
     shell: powershell
 
 jobs:
-  inspect-keycloak-user-api:
-    name: Inspect native Keycloak admin group mapping on TESTSER
+  provision-keycloak-gui-admin:
+    name: Provision and validate Keycloak GUI admin on TESTSER
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
       KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+      GUI_USER_RESOURCE: layersentry-gui-admin
+      GUI_PASSWORD_SECRET: layersentry-gui-admin-password
+      GUI_USER_NAMESPACE: cozy-system
     steps:
-      - name: Validate Keycloak and inspect admin group/user resources
+      - name: Provision native KeycloakRealmUser without exposing password
         run: |
           $ErrorActionPreference = 'Stop'
           foreach ($hr in @('keycloak-operator','keycloak','keycloak-configure')) {
             & $env:KUBECTL wait --for=condition=Ready "helmrelease/$hr" -n cozy-keycloak --timeout=120s
             if ($LASTEXITCODE -ne 0) { throw "Keycloak HelmRelease $hr is not Ready" }
           }
-          Write-Host '=== Realm groups ==='
-          $groups = (& $env:KUBECTL get keycloakrealmgroups.v1.edp.epam.com -A -o json | ConvertFrom-Json)
-          foreach ($g in @($groups.items)) {
-            Write-Host ("GROUP ns={0} resource={1} name={2} realm={3}/{4} path={5} status={6}" -f $g.metadata.namespace,$g.metadata.name,$g.spec.name,$g.spec.realmRef.kind,$g.spec.realmRef.name,$g.spec.path,$g.status.value)
+          & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui HelmRelease is not Ready' }
+
+          $group = (& $env:KUBECTL get keycloakrealmgroups.v1.edp.epam.com cozystack-cluster-admin -n cozy-system -o json | ConvertFrom-Json)
+          if ($group.status.value -ne 'OK') { throw "cozystack-cluster-admin group status is $($group.status.value), expected OK" }
+          if ($group.spec.realmRef.name -ne 'keycloakrealm-cozy') { throw 'admin group is not attached to keycloakrealm-cozy' }
+
+          $secretRaw = (& $env:KUBECTL get secret $env:GUI_PASSWORD_SECRET -n $env:GUI_USER_NAMESPACE --ignore-not-found -o json | Out-String).Trim()
+          if (-not $secretRaw) {
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            $bytes = New-Object byte[] 24
+            $rng.GetBytes($bytes)
+            $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+            $builder = New-Object System.Text.StringBuilder
+            foreach ($b in $bytes) { [void]$builder.Append($alphabet[$b % $alphabet.Length]) }
+            $password = 'Ls9!' + $builder.ToString()
+            $secretObject = [ordered]@{
+              apiVersion = 'v1'
+              kind = 'Secret'
+              metadata = [ordered]@{
+                name = $env:GUI_PASSWORD_SECRET
+                namespace = $env:GUI_USER_NAMESPACE
+                labels = [ordered]@{
+                  'app.kubernetes.io/managed-by' = 'layersentry-live-certification'
+                  'layersentry.io/purpose' = 'linstor-gui-keycloak-login'
+                }
+              }
+              type = 'Opaque'
+              stringData = [ordered]@{ password = $password }
+            }
+            $secretFile = Join-Path $env:RUNNER_TEMP 'layersentry-gui-admin-secret.json'
+            $secretObject | ConvertTo-Json -Depth 20 | Set-Content -Path $secretFile -Encoding UTF8
+            & $env:KUBECTL apply -f $secretFile | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'failed to create GUI admin password Secret' }
+          } else {
+            $secretObj = $secretRaw | ConvertFrom-Json
+            if (-not $secretObj.data.password) { throw 'existing GUI password Secret has no password key' }
+            $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secretObj.data.password))
           }
-          $adminGroups = @($groups.items | Where-Object { $_.metadata.name -eq 'cozystack-cluster-admin' -or $_.spec.name -eq 'cozystack-cluster-admin' -or $_.spec.path -match 'cozystack-cluster-admin' })
-          if ($adminGroups.Count -eq 0) { throw 'cozystack-cluster-admin KeycloakRealmGroup was not found' }
-          Write-Host '=== Existing realm users (password fields excluded) ==='
-          $users = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com -A -o json | ConvertFrom-Json)
-          foreach ($u in @($users.items)) {
-            Write-Host ("USER ns={0} resource={1} username={2} groups={3} realm={4}/{5} status={6} failures={7}" -f $u.metadata.namespace,$u.metadata.name,$u.spec.username,(@($u.spec.groups) -join ','),$u.spec.realmRef.kind,$u.spec.realmRef.name,$u.status.value,$u.status.failureCount)
+          if ($password.Length -lt 20) { throw 'generated/retrieved password is unexpectedly short' }
+
+          $userObject = [ordered]@{
+            apiVersion = 'v1.edp.epam.com/v1'
+            kind = 'KeycloakRealmUser'
+            metadata = [ordered]@{
+              name = $env:GUI_USER_RESOURCE
+              namespace = $env:GUI_USER_NAMESPACE
+              labels = [ordered]@{
+                'app.kubernetes.io/managed-by' = 'layersentry-live-certification'
+                'layersentry.io/purpose' = 'linstor-gui-keycloak-login'
+              }
+            }
+            spec = [ordered]@{
+              username = $env:GUI_USERNAME
+              enabled = $true
+              emailVerified = $true
+              groups = @('cozystack-cluster-admin')
+              realmRef = [ordered]@{ kind = 'ClusterKeycloakRealm'; name = 'keycloakrealm-cozy' }
+              passwordSecret = [ordered]@{ name = $env:GUI_PASSWORD_SECRET; key = 'password'; temporary = $false }
+            }
           }
-          Write-Host 'KEYCLOAK_NATIVE_USER_API=PASS'
+          $userFile = Join-Path $env:RUNNER_TEMP 'layersentry-gui-admin-user.json'
+          $userObject | ConvertTo-Json -Depth 20 | Set-Content -Path $userFile -Encoding UTF8
+          & $env:KUBECTL apply -f $userFile | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'failed to apply KeycloakRealmUser' }
+
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            $user = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com $env:GUI_USER_RESOURCE -n $env:GUI_USER_NAMESPACE -o json | ConvertFrom-Json)
+            $failures = 0
+            if ($null -ne $user.status.failureCount) { $failures = [int]$user.status.failureCount }
+            if (($user.status.value -eq 'OK') -and ($failures -eq 0)) { break }
+            if ($failures -gt 0) { throw "KeycloakRealmUser operator failureCount=$failures status=$($user.status.value)" }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+          if (($user.status.value -ne 'OK') -or ($failures -ne 0)) { throw "KeycloakRealmUser did not reconcile: status=$($user.status.value) failureCount=$failures" }
+          if ($user.spec.username -ne $env:GUI_USERNAME) { throw 'operator user username does not match expected login' }
+          if ('cozystack-cluster-admin' -notin @($user.spec.groups)) { throw 'operator user is not assigned to cozystack-cluster-admin' }
+          Write-Host "KEYCLOAK_USER_RECONCILE=PASS username=$env:GUI_USERNAME group=cozystack-cluster-admin realm=cozy status=$($user.status.value)"
+
+          $passwordB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($password))
+          "GUI_PASSWORD_B64=$passwordB64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate password with real Keycloak token exchange and admin group claim
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:GUI_PASSWORD_B64))
+          $clientSecretB64 = (& $env:KUBECTL get secret linstor-gui-client -n cozy-linstor -o jsonpath='{.data.client-secret-key}' | Out-String).Trim()
+          if (-not $clientSecretB64) { throw 'linstor-gui client secret key is absent' }
+          $clientSecret = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($clientSecretB64))
+          $keycloakIngress = (& $env:KUBECTL get ingress -n cozy-keycloak -o json | ConvertFrom-Json).items | Where-Object { $_.spec.rules[0].host -like 'keycloak.*' } | Select-Object -First 1
+          if (-not $keycloakIngress) { throw 'Keycloak ingress was not found' }
+          $keycloakHost = $keycloakIngress.spec.rules[0].host
+          $tokenUrl = "https://$keycloakHost/realms/cozy/protocol/openid-connect/token"
+          $tokenFile = Join-Path $env:RUNNER_TEMP 'layersentry-gui-admin-token.json'
+          $httpCode = (& curl.exe -k -sS -o $tokenFile -w '%{http_code}' -X POST $tokenUrl --data-urlencode 'grant_type=password' --data-urlencode 'client_id=linstor-gui' --data-urlencode "client_secret=$clientSecret" --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak token endpoint request failed' }
+          if ($httpCode -ne '200') { throw "Keycloak rejected the configured username/password: HTTP $httpCode" }
+          $tokenResponse = Get-Content $tokenFile -Raw | ConvertFrom-Json
+          if (-not $tokenResponse.access_token) { throw 'Keycloak returned no access_token for configured credentials' }
+          $jwtParts = $tokenResponse.access_token.Split('.')
+          if ($jwtParts.Count -lt 2) { throw 'Keycloak access token is malformed' }
+          $payload = $jwtParts[1].Replace('-','+').Replace('_','/')
+          switch ($payload.Length % 4) { 2 { $payload += '==' }; 3 { $payload += '=' } }
+          $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json
+          if ('cozystack-cluster-admin' -notin @($claims.groups)) { throw "access token does not contain cozystack-cluster-admin; groups=$(@($claims.groups) -join ',')" }
+          if ($claims.preferred_username -ne $env:GUI_USERNAME) { throw "token username is $($claims.preferred_username), expected $env:GUI_USERNAME" }
+          Write-Host "KEYCLOAK_PASSWORD_LOGIN=PASS username=$env:GUI_USERNAME tokenHttp=200 group=cozystack-cluster-admin"
+
+          $guiHost = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o jsonpath='{.spec.rules[0].host}' | Out-String).Trim()
+          $headers = Join-Path $env:RUNNER_TEMP 'linstor-gui-headers.txt'
+          & curl.exe -k -sS -D $headers -o NUL --max-time 20 "https://$guiHost/"
+          if ($LASTEXITCODE -ne 0) { throw 'LINSTOR GUI endpoint is unreachable' }
+          $rawHeaders = Get-Content $headers -Raw
+          $status = [regex]::Match($rawHeaders, 'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $location = ([regex]::Match($rawHeaders, '(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($status -notin @('302','303','307')) { throw "expected unauthenticated GUI auth redirect, got HTTP $status" }
+          if ($location -notmatch '(?i)(oauth2|realms/cozy)') { throw "GUI auth redirect is unexpected: $location" }
+          Write-Host "LINSTOR_GUI_AUTH_BOUNDARY=PASS url=https://$guiHost/ unauthenticatedStatus=$status"
+
+      - name: Return password encrypted to session public key
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:GUI_PASSWORD_B64))
+          $publicKeyXml = '<RSAKeyValue><Modulus>0+tDKsEo09bjBFBV5bKroJoPEcgNplRxEiN6lIM6fhgKEzEcTUB08wjcs8xAKzmq5kf3sGjzSyon0MXlIJVBSyihm0Y4kj1OkJCzndIX8Gu08QXTixyGC89CHpv6IcSu1y53mOGFyuiDsRacbiIt/fH0OKZ16UMyRMb/e+zi1mso4hoTDvWu4dWTAyMI0MQKVgeE0M9hJu82GkvuicttrmXPXFN2r6YGM6Tl7j5tFVIpM6X10f1cu+ZK7VLZ2J0MefqrZaBd+LCfuMrPJGs4FxNYN4BpQRvPDv2pkxObd850mmJbTgIuaxMhXWj/LCoLvLPnn82/VZUizjY2u0/NMQ==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
+          $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider 2048
+          $rsa.FromXmlString($publicKeyXml)
+          $cipher = $rsa.Encrypt([Text.Encoding]::UTF8.GetBytes($password), $true)
+          $cipherB64 = [Convert]::ToBase64String($cipher)
+          Write-Host "LAYERSENTRY_CREDENTIAL_CIPHERTEXT=$cipherB64"
+          Write-Host "LAYERSENTRY_CREDENTIAL_METADATA username=$env:GUI_USERNAME realm=cozy group=cozystack-cluster-admin"
