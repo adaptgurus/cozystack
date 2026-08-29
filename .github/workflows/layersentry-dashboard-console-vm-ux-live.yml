@@ -1,4 +1,4 @@
-name: LayerSentry Dashboard VM UX Live
+name: LayerSentry Dashboard VM UX Production Certification
 
 on:
   workflow_dispatch:
@@ -22,9 +22,9 @@ env:
 
 jobs:
   publish:
-    name: Publish immutable LayerSentry console image
+    name: Source gate, publish and smoke-test immutable console
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     outputs:
       image_ref: ${{ steps.image.outputs.image_ref }}
       digest: ${{ steps.image.outputs.digest }}
@@ -43,6 +43,36 @@ jobs:
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           test -s packages/system/dashboard/images/console/Containerfile
           test -s packages/system/dashboard/images/console/apps/console/src/components/VMInstanceExperience.tsx
+          test -s packages/system/dashboard/images/console/apps/console/src/components/VMInstanceExperience.test.ts
+          test -s packages/system/dashboard/images/console/apps/console/src/routes/ApplicationOrderPage.tsx
+          echo "SOURCE_PROVENANCE=PASS sha=${GITHUB_SHA}"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: packages/system/dashboard/images/console/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: packages/system/dashboard/images/console/pnpm-lock.yaml
+
+      - name: Install exact console dependencies
+        working-directory: packages/system/dashboard/images/console
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Run production console source gate
+        working-directory: packages/system/dashboard/images/console
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          pnpm test
+          pnpm --filter @cozystack/console build
+          echo "SOURCE_VM_UX_GATE=PASS"
 
       - name: Login to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -51,7 +81,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish console image
+      - name: Build and publish attested console image
         id: image
         shell: bash
         run: |
@@ -81,11 +111,35 @@ jobs:
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
           echo "CONSOLE_IMAGE_REF=$image_ref"
 
+      - name: Smoke-test the exact published image
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE_REF"
+          cid="$(docker run -d --rm -p 127.0.0.1:18080:8080 "$IMAGE_REF")"
+          cleanup() { docker rm -f "$cid" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthcheck | grep -Eiq 'healthy|ok'; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthcheck | grep -Eiq 'healthy|ok'
+          html="$(curl -fsS http://127.0.0.1:18080/)"
+          grep -F '<div id="root"></div>' <<<"$html" >/dev/null
+          echo "IMMUTABLE_IMAGE_SMOKE=PASS image=$IMAGE_REF"
+
+      - name: Remove isolated BuildKit builder
+        if: always()
+        shell: bash
+        run: docker buildx rm layersentry-console-builder >/dev/null 2>&1 || true
+
   certify-testser:
     name: Persist and certify console on TESTSER
     needs: publish
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         shell: powershell
@@ -94,7 +148,7 @@ jobs:
       KUBECTL: C:\hci-tools\kubectl.exe
       IMAGE_REF: ${{ needs.publish.outputs.image_ref }}
     steps:
-      - name: Preflight dashboard and preserve existing post-renderers
+      - name: Preflight cluster and capture exact rollback baseline
         run: |
           $ErrorActionPreference='Stop'
           if (-not (Test-Path $env:KUBECONFIG)) { throw 'TESTSER kubeconfig missing' }
@@ -102,14 +156,70 @@ jobs:
           if ($env:IMAGE_REF -notmatch '^ghcr\.io/adaptgurus/cozystack/cozystack-ui@sha256:[0-9a-f]{64}$') {
             throw "refusing non-immutable or unexpected image ref: $env:IMAGE_REF"
           }
+          $nodes=@((& $env:KUBECTL get nodes -o json | ConvertFrom-Json).items)
+          if($nodes.Count -lt 3){throw "expected production-like three-node lab, found $($nodes.Count) nodes"}
+          $notReady=@($nodes | Where-Object { (@($_.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1).status) -ne 'True' })
+          if($notReady.Count -gt 0){throw "cluster has non-Ready nodes: $($notReady.metadata.name -join ',')"}
+
           $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
           if(-not $hr){throw 'cozy-dashboard/dashboard HelmRelease missing'}
           $dep=& $env:KUBECTL -n cozy-dashboard get deployment cozy-dashboard-console -o json | ConvertFrom-Json
           if(-not $dep){throw 'cozy-dashboard-console Deployment missing'}
           $console=@($dep.spec.template.spec.containers) | Where-Object {$_.name -eq 'console'} | Select-Object -First 1
           if(-not $console){throw 'console container missing from cozy-dashboard-console'}
-          Write-Host "PREVIOUS_CONSOLE_IMAGE=$($console.image)"
-          Write-Host "HELMRELEASE_POSTRENDERERS=$(@($hr.spec.postRenderers).Count)"
+
+          $hasPostRenderers=$null -ne $hr.spec.postRenderers
+          $baseline=[ordered]@{
+            hasPostRenderers=$hasPostRenderers
+            postRenderers=if($hasPostRenderers){@($hr.spec.postRenderers)}else{$null}
+            consoleImage=[string]$console.image
+          }
+          $baselinePath=Join-Path $env:RUNNER_TEMP 'vm-ux-dashboard-baseline.json'
+          $baseline | ConvertTo-Json -Depth 60 | Set-Content -Path $baselinePath -Encoding UTF8
+          Write-Host "LAB_PREFLIGHT=PASS nodes=$($nodes.Count) previousImage=$($console.image) postRenderers=$(@($hr.spec.postRenderers).Count)"
+
+      - name: Discover live VM application contract before mutation
+        run: |
+          $ErrorActionPreference='Stop'
+          $defs=@((& $env:KUBECTL get applicationdefinitions.cozystack.io -o json | ConvertFrom-Json).items)
+          $vm=@($defs | Where-Object {$_.metadata.name -eq 'vm-instance'})
+          if($vm.Count -ne 1){
+            $candidates=@($defs | Where-Object {
+              $_.metadata.name -match '(?i)vm|virtual' -or
+              $_.spec.application.kind -match '(?i)vm|virtual' -or
+              $_.spec.application.singular -match '(?i)vm|virtual'
+            })
+            Write-Host "VM_DEFINITION_CANDIDATES=$($candidates.Count)"
+            foreach($c in $candidates){Write-Host "candidate name=$($c.metadata.name) kind=$($c.spec.application.kind) plural=$($c.spec.application.plural) singular=$($c.spec.application.singular)"}
+            throw "expected exactly one ApplicationDefinition named vm-instance; found $($vm.Count)"
+          }
+          $ad=$vm[0]
+          if(-not $ad.spec.application.kind -or -not $ad.spec.application.plural -or -not $ad.spec.application.openAPISchema){throw 'vm-instance ApplicationDefinition is incomplete'}
+          $schema=[string]$ad.spec.application.openAPISchema | ConvertFrom-Json
+          $required=@($schema.required)
+          $properties=@($schema.properties.psobject.Properties.Name)
+          $tenantNs='tenant-layersentry'
+          $ns=(& $env:KUBECTL get namespace $tenantNs -o json | ConvertFrom-Json)
+          if(-not $ns -or $ns.status.phase -ne 'Active'){throw "$tenantNs namespace is not Active"}
+          $existingRaw=& $env:KUBECTL -n $tenantNs get $ad.spec.application.plural -o json 2>&1
+          if($LASTEXITCODE -ne 0){throw "cannot list VM application plural $($ad.spec.application.plural): $existingRaw"}
+          $existing=@(($existingRaw | ConvertFrom-Json).items)
+
+          $contract=[ordered]@{
+            definition=$ad.metadata.name
+            kind=$ad.spec.application.kind
+            plural=$ad.spec.application.plural
+            singular=$ad.spec.application.singular
+            tenantNamespace=$tenantNs
+            required=$required
+            properties=$properties
+            existingCount=$existing.Count
+          }
+          $contractPath=Join-Path $env:RUNNER_TEMP 'vm-ux-live-contract.json'
+          $contract | ConvertTo-Json -Depth 20 | Set-Content -Path $contractPath -Encoding UTF8
+          Write-Host "VM_APPLICATION_CONTRACT=PASS definition=$($ad.metadata.name) kind=$($ad.spec.application.kind) plural=$($ad.spec.application.plural) required=$($required -join ',') properties=$($properties -join ',') existing=$($existing.Count)"
+          foreach($item in ($existing | Select-Object -First 3)){Write-Host "EXISTING_VM_APP name=$($item.metadata.name) spec=$($item.spec | ConvertTo-Json -Depth 12 -Compress)"}
+          Write-Host "VM_OPENAPI_SCHEMA=$($schema | ConvertTo-Json -Depth 30 -Compress)"
 
       - name: Persist exact console image through dashboard HelmRelease
         run: |
@@ -117,52 +227,30 @@ jobs:
           $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
           $existing=@()
           if($null -ne $hr.spec.postRenderers){$existing=@($hr.spec.postRenderers)}
-
           $filtered=New-Object System.Collections.ArrayList
           foreach($pr in $existing){
             $isOurPatch=$false
             if($pr.kustomize -and $pr.kustomize.patches){
               foreach($p in @($pr.kustomize.patches)){
-                if($p.target -and $p.target.kind -eq 'Deployment' -and $p.target.name -eq 'cozy-dashboard-console' -and [string]$p.patch -match 'cozystack-ui@sha256:'){
-                  $isOurPatch=$true
-                }
+                if($p.target -and $p.target.kind -eq 'Deployment' -and $p.target.name -eq 'cozy-dashboard-console' -and [string]$p.patch -match 'cozystack-ui@sha256:'){$isOurPatch=$true}
               }
             }
             if(-not $isOurPatch){[void]$filtered.Add($pr)}
           }
-
           $renderedPatch=[ordered]@{
-            apiVersion='apps/v1'
-            kind='Deployment'
-            metadata=[ordered]@{name='cozy-dashboard-console'}
-            spec=[ordered]@{
-              template=[ordered]@{
-                spec=[ordered]@{
-                  containers=@(
-                    [ordered]@{name='console';image=$env:IMAGE_REF}
-                  )
-                }
-              }
-            }
+            apiVersion='apps/v1';kind='Deployment';metadata=[ordered]@{name='cozy-dashboard-console'}
+            spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@([ordered]@{name='console';image=$env:IMAGE_REF})}}}
           } | ConvertTo-Json -Depth 20
-
-          $ourRenderer=[ordered]@{
-            kustomize=[ordered]@{
-              patches=@(
-                [ordered]@{
-                  target=[ordered]@{group='apps';version='v1';kind='Deployment';name='cozy-dashboard-console'}
-                  patch=$renderedPatch
-                }
-              )
-            }
-          }
+          $ourRenderer=[ordered]@{kustomize=[ordered]@{patches=@([ordered]@{
+            target=[ordered]@{group='apps';version='v1';kind='Deployment';name='cozy-dashboard-console'};patch=$renderedPatch
+          })}}
           [void]$filtered.Add($ourRenderer)
-
           $hrPatch=[ordered]@{spec=[ordered]@{postRenderers=@($filtered)}}
           $patchFile=Join-Path $env:RUNNER_TEMP 'dashboard-console-image-postrenderer.json'
-          $hrPatch | ConvertTo-Json -Depth 40 | Set-Content -Path $patchFile -Encoding UTF8
+          $hrPatch | ConvertTo-Json -Depth 50 | Set-Content -Path $patchFile -Encoding UTF8
           & $env:KUBECTL patch helmrelease dashboard -n cozy-dashboard --type=merge "--patch-file=$patchFile"
           if($LASTEXITCODE -ne 0){throw 'failed to persist console image postRenderer'}
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'vm-ux-dashboard-mutated.flag') -Value 'true'
           Write-Host "DASHBOARD_CONSOLE_POSTRENDERER=PASS totalPostRenderers=$($filtered.Count)"
 
       - name: Reconcile and verify exact image rollout
@@ -171,10 +259,7 @@ jobs:
           $stamp=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
           & $env:KUBECTL annotate helmrelease dashboard -n cozy-dashboard "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
           if($LASTEXITCODE -ne 0){throw 'failed to request dashboard HelmRelease reconcile'}
-
-          $deadline=(Get-Date).AddMinutes(5)
-          $handled=''
-          $ready=$null
+          $deadline=(Get-Date).AddMinutes(5);$handled='';$ready=$null
           do{
             $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
             $handled=[string]$hr.status.lastHandledReconcileAt
@@ -184,7 +269,6 @@ jobs:
           }while((Get-Date) -lt $deadline)
           if($handled -ne $stamp){throw "Flux did not handle dashboard reconcile; handled=$handled requested=$stamp"}
           if($ready.status -ne 'True'){throw "dashboard HelmRelease not Ready: $($ready.message)"}
-
           & $env:KUBECTL -n cozy-dashboard rollout status deployment/cozy-dashboard-console --timeout=180s
           if($LASTEXITCODE -ne 0){throw 'console rollout did not become Ready'}
           $image=(& $env:KUBECTL -n cozy-dashboard get deployment cozy-dashboard-console -o jsonpath='{.spec.template.spec.containers[?(@.name=="console")].image}' | Out-String).Trim()
@@ -197,17 +281,16 @@ jobs:
           $prefix='/api/v1/namespaces/cozy-dashboard/services/http:cozy-dashboard-console:8080/proxy'
           $health=(& $env:KUBECTL get --raw "$prefix/healthcheck" | Out-String).Trim()
           if($health -notmatch '(?i)ok|healthy'){throw "console healthcheck unexpected: $health"}
-
           $html=(& $env:KUBECTL get --raw "$prefix/" | Out-String)
           if($html -notmatch '<div id="root"></div>'){throw 'console root HTML missing React root'}
           $m=[regex]::Match($html,'src="(/assets/index-[^"]+\.js)"')
           if(-not $m.Success){throw 'console main JavaScript asset not found'}
           $asset=$m.Groups[1].Value
           $js=(& $env:KUBECTL get --raw "$prefix$asset" | Out-String)
-          foreach($marker in @('Create virtual machine','Pending changes','Safe edit behavior')){
+          foreach($marker in @('Create virtual machine','Basics','Compute','Storage','Network','Access','Review','Pending changes','Safe edit behavior')){
             if($js -notmatch [regex]::Escape($marker)){throw "deployed console bundle missing VM UX marker: $marker"}
           }
-          Write-Host "DASHBOARD_VM_UX_BUNDLE=PASS asset=$asset markers=3"
+          Write-Host "DASHBOARD_VM_UX_BUNDLE=PASS asset=$asset markers=10"
 
       - name: Prove image survives a second Helm reconciliation
         run: |
@@ -227,4 +310,36 @@ jobs:
           & $env:KUBECTL -n cozy-dashboard rollout status deployment/cozy-dashboard-console --timeout=180s | Out-Host
           $image=(& $env:KUBECTL -n cozy-dashboard get deployment cozy-dashboard-console -o jsonpath='{.spec.template.spec.containers[?(@.name=="console")].image}' | Out-String).Trim()
           if($image -ne $env:IMAGE_REF){throw "DURABILITY_FAIL Helm reconcile reverted console image: $image"}
-          Write-Host "DASHBOARD_VM_UX_LAB_CERTIFICATION=PASS image=$image fluxReconcile=true"
+          Write-Host "DASHBOARD_VM_UX_DEPLOYMENT_CERTIFICATION=PASS image=$image fluxReconcile=true"
+
+      - name: Roll back dashboard exactly if certification fails
+        if: failure()
+        run: |
+          $ErrorActionPreference='Continue'
+          $flag=Join-Path $env:RUNNER_TEMP 'vm-ux-dashboard-mutated.flag'
+          if(-not (Test-Path $flag)){Write-Host 'DASHBOARD_VM_UX_ROLLBACK=NOT_REQUIRED mutation=false';exit 0}
+          $ErrorActionPreference='Stop'
+          $baselinePath=Join-Path $env:RUNNER_TEMP 'vm-ux-dashboard-baseline.json'
+          if(-not (Test-Path $baselinePath)){throw 'rollback baseline missing after dashboard mutation'}
+          $baseline=Get-Content $baselinePath -Raw | ConvertFrom-Json
+          if($baseline.hasPostRenderers){$restore=[ordered]@{spec=[ordered]@{postRenderers=@($baseline.postRenderers)}}}
+          else{$restore=[ordered]@{spec=[ordered]@{postRenderers=$null}}}
+          $restoreFile=Join-Path $env:RUNNER_TEMP 'dashboard-console-rollback.json'
+          $restore | ConvertTo-Json -Depth 60 | Set-Content -Path $restoreFile -Encoding UTF8
+          & $env:KUBECTL patch helmrelease dashboard -n cozy-dashboard --type=merge "--patch-file=$restoreFile" | Out-Host
+          if($LASTEXITCODE -ne 0){throw 'failed to restore dashboard HelmRelease baseline'}
+          $stamp=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+          & $env:KUBECTL annotate helmrelease dashboard -n cozy-dashboard "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          $deadline=(Get-Date).AddMinutes(5)
+          do{
+            $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+            $handled=[string]$hr.status.lastHandledReconcileAt
+            $ready=@($hr.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)
+            if($handled -eq $stamp -and $ready.status -eq 'True'){break}
+            Start-Sleep -Seconds 5
+          }while((Get-Date) -lt $deadline)
+          if($handled -ne $stamp -or $ready.status -ne 'True'){throw 'rollback Flux reconcile did not complete Ready'}
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/cozy-dashboard-console --timeout=180s | Out-Host
+          $image=(& $env:KUBECTL -n cozy-dashboard get deployment cozy-dashboard-console -o jsonpath='{.spec.template.spec.containers[?(@.name=="console")].image}' | Out-String).Trim()
+          if($image -ne [string]$baseline.consoleImage){throw "rollback image mismatch expected=$($baseline.consoleImage) actual=$image"}
+          Write-Host "DASHBOARD_VM_UX_ROLLBACK=PASS image=$image fluxReconcile=true"
