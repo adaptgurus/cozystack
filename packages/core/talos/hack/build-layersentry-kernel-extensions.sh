@@ -17,9 +17,6 @@ git clone --filter=blob:none https://github.com/siderolabs/extensions.git "$EXT_
 git -C "$EXT_DIR" checkout --detach "$EXTENSIONS_COMMIT"
 test "$(git -C "$EXT_DIR" rev-parse HEAD)" = "$EXTENSIONS_COMMIT"
 
-# These extensions carry kernel modules. Rebuild them against the same custom
-# pkgs tree/signing key as the LayerSentry kernel. Userspace/firmware-only
-# extensions remain digest-pinned official Sidero artifacts.
 KERNEL_EXTENSIONS="amdgpu bnx2-bnx2x i915 drbd zfs nfsd nvidia-open-gpu-kernel-modules-production nvidia-gdrdrv-device"
 
 export_extension() {
@@ -34,25 +31,21 @@ export_extension() {
     TARGET_ARGS="--tag=${local_image} --load"
 
   docker image inspect "$local_image" >/dev/null
-  cid=$(docker create "$local_image")
-  trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' RETURN
+  cid=$(docker create "$local_image" /bin/true)
   docker export "$cid" > "$raw_tar"
   docker rm "$cid" >/dev/null
-  trap - RETURN
 
   test -s "$raw_tar"
-  tar -tf "$raw_tar" | grep -Fxq 'manifest.yaml'
+  tar -tf "$raw_tar" | sed 's#^\./##' | grep -Fxq 'manifest.yaml'
 }
 
 for target in $KERNEL_EXTENSIONS; do
   export_extension "$target"
 done
 
-# Upstream v1.13.6 ZFS starts by force-importing every discoverable pool. That
-# behavior is deliberately removed for the universal LayerSentry image: local
-# HCI disks and external SAN LUNs must never be claimed solely because a ZFS
-# label is visible. The ZFS module and tools remain available for explicit
-# LayerSentry storage-controller operations.
+# The stock v1.13.6 ZFS extension runs `zpool import -fal` on boot. Remove only
+# that service definition; retain the custom-kernel ZFS module and userspace so
+# explicit LayerSentry storage reconciliation can manage approved pools.
 ZFS_TAR="$OUT_DIR/layersentry-zfs.tar"
 ZFS_ROOT="$WORK_DIR/zfs-safe"
 mkdir -p "$ZFS_ROOT"
@@ -62,8 +55,8 @@ if find "$ZFS_ROOT/rootfs/usr/local/etc/containers" -maxdepth 1 -type f -name '*
   echo 'unsafe automatic ZFS service definition survived sanitization' >&2
   exit 1
 fi
-# Keep tools/modules but make the policy explicit in the released extension.
-cat > "$ZFS_ROOT/LAYERSENTRY_STORAGE_OWNERSHIP_POLICY.txt" <<'EOF'
+mkdir -p "$ZFS_ROOT/rootfs/usr/local/share/layersentry"
+cat > "$ZFS_ROOT/rootfs/usr/local/share/layersentry/storage-ownership-policy.txt" <<'EOF'
 LayerSentry universal storage ownership policy:
 - never import, format, export, or claim a disk/LUN because it is merely visible;
 - ZFS pool lifecycle must be explicitly reconciled by LayerSentry;
@@ -71,10 +64,8 @@ LayerSentry universal storage ownership policy:
 - the upstream automatic `zpool import -fal` service is intentionally absent.
 EOF
 tar --sort=name --mtime='UTC 2026-08-30' --owner=0 --group=0 --numeric-owner \
-  -C "$ZFS_ROOT" -cf "$ZFS_TAR" .
+  -C "$ZFS_ROOT" -cf "$ZFS_TAR" manifest.yaml rootfs
 
-# Release-blocking proof that every rebuilt kernel extension has a manifest and
-# module-bearing extensions actually contain .ko files from the custom build.
 for target in amdgpu bnx2-bnx2x i915 drbd zfs nfsd nvidia-open-gpu-kernel-modules-production; do
   tarball="$OUT_DIR/layersentry-${target}.tar"
   test -s "$tarball"
@@ -93,6 +84,7 @@ fi
 
 (
   cd "$OUT_DIR"
+  # shellcheck disable=SC2046
   sha256sum $(printf 'layersentry-%s.tar ' $KERNEL_EXTENSIONS) > layersentry-kernel-extensions.sha256
 )
 
