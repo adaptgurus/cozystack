@@ -1,0 +1,223 @@
+name: LayerSentry Storage Backend Inventory Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-backend-inventory-lab.yml
+
+concurrency:
+  group: layersentry-storage-backend-inventory-lab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  inventory:
+    name: Publish read-only storage backend inventory
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+
+    steps:
+      - name: Verify read-only inventory prerequisites
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing branch $env:GITHUB_REF_NAME"
+          }
+          foreach ($path in @($env:KUBECTL, $env:KUBECONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+          Write-Host 'STORAGE_BACKEND_INVENTORY_MODE=READ_ONLY'
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+
+      - name: Collect LINSTOR and Blockstor state read-only
+        id: collect
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Get-KubeJson([string]$Resource) {
+            $raw = (& $env:KUBECTL get $Resource -A -o json 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              throw "read-only query failed for ${Resource}: $raw"
+            }
+            return ($raw | ConvertFrom-Json)
+          }
+
+          $linstorClusters = Get-KubeJson 'linstorclusters.piraeus.io'
+          $linstorNodePools = Get-KubeJson 'nodestorpool.internal.linstor.linbit.com'
+          $linstorNodes = Get-KubeJson 'nodes.internal.linstor.linbit.com'
+          $blockstorPools = Get-KubeJson 'storagepools.blockstor.cozystack.io'
+          $blockstorNodes = Get-KubeJson 'nodes.blockstor.cozystack.io'
+          $blockstorResources = Get-KubeJson 'resources.blockstor.cozystack.io'
+
+          $clusterItems = @($linstorClusters.items)
+          $cluster = if ($clusterItems.Count -gt 0) { $clusterItems[0] } else { $null }
+          $clusterConditions = @()
+          if ($null -ne $cluster -and $null -ne $cluster.status -and $null -ne $cluster.status.conditions) {
+            $clusterConditions = @($cluster.status.conditions | ForEach-Object {
+              [ordered]@{
+                type = [string]$_.type
+                status = [string]$_.status
+                reason = [string]$_.reason
+                message = [string]$_.message
+              }
+            })
+          }
+          $clusterReachable = @($clusterConditions | Where-Object { $_.status -eq 'True' }).Count -gt 0
+
+          $allLinstorPools = @($linstorNodePools.items)
+          $linstorDataPools = @($allLinstorPools | Where-Object {
+            [string]$_.spec.driver_name -ne 'DISKLESS' -and
+            [string]$_.spec.pool_name -notmatch '(?i)diskless'
+          } | ForEach-Object {
+            [ordered]@{
+              node = [string]$_.spec.node_name
+              pool = [string]$_.spec.pool_name
+              driver = [string]$_.spec.driver_name
+              freeSpaceManager = [string]$_.spec.free_space_mgr_dsp_name
+            }
+          })
+
+          $allBlockstorNodes = @($blockstorNodes.items)
+          $blockstorNodeRows = @($allBlockstorNodes | ForEach-Object {
+            $readyCondition = @($_.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -First 1)
+            [ordered]@{
+              node = [string]$_.metadata.name
+              connectionStatus = [string]$_.status.connectionStatus
+              readyStatus = if ($readyCondition.Count -gt 0) { [string]$readyCondition[0].status } else { '' }
+              readyReason = if ($readyCondition.Count -gt 0) { [string]$readyCondition[0].reason } else { '' }
+              readyMessage = if ($readyCondition.Count -gt 0) { [string]$readyCondition[0].message } else { '' }
+            }
+          })
+          $blockstorOnline = @($blockstorNodeRows | Where-Object { $_.connectionStatus -eq 'ONLINE' }).Count
+          $blockstorOffline = @($blockstorNodeRows | Where-Object { $_.connectionStatus -ne 'ONLINE' }).Count
+
+          $report = [ordered]@{
+            schemaVersion = 'storage-backend.layersentry.io/v1alpha1'
+            generatedAt = [DateTime]::UtcNow.ToString('o')
+            sourceCommit = $env:GITHUB_SHA
+            sourceRun = $env:GITHUB_RUN_ID
+            readOnlyObservation = $true
+            initializationAllowed = $false
+            linstor = [ordered]@{
+              clusterCount = $clusterItems.Count
+              nodeCount = @($linstorNodes.items).Count
+              dataPoolCount = $linstorDataPools.Count
+              clusterReachable = $clusterReachable
+              capacity = if ($null -ne $cluster) { [string]$cluster.status.capacity } else { '' }
+              availableCapacityBytes = if ($null -ne $cluster -and $null -ne $cluster.status.availableCapacityBytes) { [int64]$cluster.status.availableCapacityBytes } else { 0 }
+              freeCapacityBytes = if ($null -ne $cluster -and $null -ne $cluster.status.freeCapacityBytes) { [int64]$cluster.status.freeCapacityBytes } else { 0 }
+              conditions = $clusterConditions
+              pools = $linstorDataPools
+            }
+            blockstor = [ordered]@{
+              storagePoolCount = @($blockstorPools.items).Count
+              resourceCount = @($blockstorResources.items).Count
+              nodeCount = $allBlockstorNodes.Count
+              onlineNodes = $blockstorOnline
+              offlineNodes = $blockstorOffline
+              nodes = $blockstorNodeRows
+            }
+          }
+
+          $reportPath = Join-Path $env:RUNNER_TEMP 'layersentry-storage-backend-inventory.json'
+          $json = $report | ConvertTo-Json -Depth 20
+          [IO.File]::WriteAllText($reportPath, $json, (New-Object Text.UTF8Encoding($false)))
+
+          Write-Host '===== STORAGE BACKEND INVENTORY ====='
+          Write-Host "LINSTOR_CLUSTER_REACHABLE=$clusterReachable"
+          Write-Host "LINSTOR_NODE_COUNT=$(@($linstorNodes.items).Count)"
+          Write-Host "LINSTOR_DATA_POOL_COUNT=$($linstorDataPools.Count)"
+          Write-Host "LINSTOR_CAPACITY=$($report.linstor.capacity)"
+          Write-Host "LINSTOR_AVAILABLE_CAPACITY_BYTES=$($report.linstor.availableCapacityBytes)"
+          Write-Host "LINSTOR_FREE_CAPACITY_BYTES=$($report.linstor.freeCapacityBytes)"
+          foreach ($pool in $linstorDataPools) {
+            Write-Host "LINSTOR_POOL node=$($pool.node) pool=$($pool.pool) driver=$($pool.driver)"
+          }
+          Write-Host "BLOCKSTOR_STORAGE_POOL_COUNT=$($report.blockstor.storagePoolCount)"
+          Write-Host "BLOCKSTOR_RESOURCE_COUNT=$($report.blockstor.resourceCount)"
+          Write-Host "BLOCKSTOR_NODE_COUNT=$($report.blockstor.nodeCount)"
+          Write-Host "BLOCKSTOR_ONLINE_NODES=$blockstorOnline"
+          Write-Host "BLOCKSTOR_OFFLINE_NODES=$blockstorOffline"
+          foreach ($node in $blockstorNodeRows) {
+            Write-Host "BLOCKSTOR_NODE node=$($node.node) connection=$($node.connectionStatus) ready=$($node.readyStatus) reason=$($node.readyReason)"
+          }
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+
+          @(
+            '## LayerSentry Storage Backend Inventory',
+            '',
+            'Collection mode: **read-only**',
+            '',
+            "LINSTOR reachable: **$clusterReachable**",
+            '',
+            "LINSTOR data pools: **$($linstorDataPools.Count)**",
+            '',
+            "LINSTOR reported capacity: **$($report.linstor.capacity)**",
+            '',
+            "Blockstor storage pools: **$($report.blockstor.storagePoolCount)**",
+            '',
+            "Blockstor online nodes: **$blockstorOnline / $($allBlockstorNodes.Count)**",
+            '',
+            'Initialization allowed: **false**'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+          "report_path=$reportPath" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: Publish backend inventory to Storage Management API surface
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $reportPath = '${{ steps.collect.outputs.report_path }}'
+          if (-not (Test-Path $reportPath)) { throw "missing report $reportPath" }
+
+          & $env:KUBECTL get namespace cozy-system -o name | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'cozy-system namespace is unavailable' }
+
+          $manifest = (& $env:KUBECTL -n cozy-system create configmap layersentry-storage-backend-inventory "--from-file=inventory.json=$reportPath" --dry-run=client -o yaml 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'failed to render storage backend inventory ConfigMap' }
+          $manifest | & $env:KUBECTL apply -f - | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to publish storage backend inventory ConfigMap' }
+
+          & $env:KUBECTL -n cozy-system label configmap layersentry-storage-backend-inventory app.kubernetes.io/part-of=layersentry layersentry.io/storage-backend-inventory=true --overwrite | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to label storage backend inventory ConfigMap' }
+
+          $published = (& $env:KUBECTL -n cozy-system get configmap layersentry-storage-backend-inventory -o json | ConvertFrom-Json)
+          $payload = $published.data.'inventory.json' | ConvertFrom-Json
+          if ([string]$payload.sourceCommit -ne $env:GITHUB_SHA) {
+            throw "published sourceCommit $($payload.sourceCommit) does not match $env:GITHUB_SHA"
+          }
+          if (-not [bool]$payload.readOnlyObservation) {
+            throw 'safety violation: backend inventory is not marked read-only'
+          }
+          if ([bool]$payload.initializationAllowed) {
+            throw 'safety violation: backend inventory unexpectedly enables initialization'
+          }
+          Write-Host "STORAGE_BACKEND_INVENTORY_CONFIGMAP=PASS linstorPools=$($payload.linstor.dataPoolCount) blockstorPools=$($payload.blockstor.storagePoolCount)"
+
+      - name: Enforce non-destructive boundary
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Get-Content '${{ steps.collect.outputs.report_path }}' -Raw | ConvertFrom-Json
+          if ([bool]$report.initializationAllowed) {
+            throw 'safety violation: backend inventory must never authorize initialization'
+          }
+          Write-Host 'STORAGE_BACKEND_INVENTORY=READ_ONLY'
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+          Write-Host 'NO_IMPORT_ACTION_TAKEN=true'
+          Write-Host 'NO_MOUNT_ACTION_TAKEN=true'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
