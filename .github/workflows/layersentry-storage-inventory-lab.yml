@@ -1,0 +1,178 @@
+name: LayerSentry Storage Inventory Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-inventory-lab.yml
+
+concurrency:
+  group: layersentry-storage-inventory-lab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  inventory:
+    name: Certify persistent identity of HCI data disks
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      TALOSCTL: C:\hci-tools\talosctl.exe
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      DATA_DISK: sdb
+
+    steps:
+      - name: Read-only Talos disk identity certification
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing branch $env:GITHUB_REF_NAME"
+          }
+          foreach ($path in @($env:TALOSCTL, $env:TALOSCONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+
+          function Get-Scalar([string]$Yaml, [string]$Key) {
+            $match = [regex]::Match($Yaml, "(?m)^\s*" + [regex]::Escape($Key) + ":\s*(.*?)\s*$")
+            if (-not $match.Success) { return '' }
+            $value = $match.Groups[1].Value.Trim().Trim('"').Trim("'")
+            if ($value -in @('', 'null', '~', '<nil>', 'unknown')) { return '' }
+            return $value
+          }
+
+          function Get-ByIdAliases([string]$Yaml) {
+            return @([regex]::Matches($Yaml, '/dev/disk/by-id/[^\s"'']+') |
+              ForEach-Object { $_.Value.TrimEnd(',', ']') } |
+              Where-Object { $_ -notmatch '-part[0-9]+$' -and $_ -notmatch '/by-id/wwn-0x0+$' } |
+              Sort-Object -Unique)
+          }
+
+          function Has-ExistingData([string]$DiscoveredYaml, [string]$DiskId) {
+            # A child partition is existing layout/data regardless of filesystem.
+            if ($DiscoveredYaml -match "(?m)^\s*id:\s*$([regex]::Escape($DiskId))[p]?[0-9]+\s*$") {
+              return $true
+            }
+
+            # Talos reports a discovered format (gpt, xfs, ext4, LVM2_member, etc.)
+            # on the whole-disk DiscoveredVolume when metadata is already present.
+            $docs = [regex]::Split($DiscoveredYaml, '(?m)^---\s*$')
+            foreach ($doc in $docs) {
+              if ($doc -notmatch "(?m)^\s*id:\s*$([regex]::Escape($DiskId))\s*$") { continue }
+              $discovered = Get-Scalar $doc 'discovered'
+              $filesystem = Get-Scalar $doc 'filesystem'
+              if ($discovered -or $filesystem) { return $true }
+            }
+            return $false
+          }
+
+          $records = @()
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== $node /dev/$env:DATA_DISK ====="
+
+            $diskYaml = (& $env:TALOSCTL -n $node -e $node get disk $env:DATA_DISK -o yaml 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              $records += [pscustomobject]@{
+                Node = $node; Device = "/dev/$env:DATA_DISK"; Size = '';
+                Identity = ''; Status = 'BLOCKED'; Reason = 'disk-resource-unreadable'
+              }
+              continue
+            }
+            Write-Host $diskYaml
+
+            $systemYaml = (& $env:TALOSCTL -n $node -e $node get systemdisk -o yaml 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "systemdisk discovery failed on $node" }
+
+            $volumesYaml = (& $env:TALOSCTL -n $node -e $node get discoveredvolumes -o yaml 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "discoveredvolumes discovery failed on $node" }
+
+            $devPath = Get-Scalar $diskYaml 'dev_path'
+            $size = Get-Scalar $diskYaml 'pretty_size'
+            if (-not $size) { $size = Get-Scalar $diskYaml 'size' }
+            $readonly = (Get-Scalar $diskYaml 'readonly').ToLowerInvariant()
+            $wwid = Get-Scalar $diskYaml 'wwid'
+            $serial = Get-Scalar $diskYaml 'serial'
+            $aliases = @(Get-ByIdAliases $diskYaml)
+
+            $identity = ''
+            if ($wwid -and $wwid -notmatch '^(0x)?0+$') {
+              $identity = "wwid:$($wwid.ToLowerInvariant())"
+            } elseif ($aliases.Count -gt 0) {
+              $identity = "by-id:$([IO.Path]::GetFileName($aliases[0]))"
+            } elseif ($serial -and $serial -notmatch '^(0x)?0+$') {
+              $identity = "serial:$serial"
+            }
+
+            $reasons = @()
+            if ($devPath -ne "/dev/$env:DATA_DISK") { $reasons += "unexpected-dev-path:$devPath" }
+            if (-not $identity) { $reasons += 'no-stable-hardware-identity' }
+            if ($readonly -eq 'true') { $reasons += 'read-only-device' }
+            if ($systemYaml -match "(?m)^\s*disk:\s*$([regex]::Escape($env:DATA_DISK))\s*$" -or
+                $systemYaml -match [regex]::Escape("/dev/$env:DATA_DISK")) {
+              $reasons += 'os-system-disk'
+            }
+            if (Has-ExistingData $volumesYaml $env:DATA_DISK) {
+              $reasons += 'existing-partition-or-signature'
+            }
+
+            $records += [pscustomobject]@{
+              Node = $node
+              Device = $devPath
+              Size = $size
+              Identity = $identity
+              Status = $(if ($reasons.Count -eq 0) { 'CANDIDATE' } else { 'BLOCKED' })
+              Reason = ($reasons -join ',')
+            }
+          }
+
+          # Persistent identity must also be unique across nodes. Duplicate serials or
+          # WWIDs are unsafe because a controller must never resolve two disks to one ID.
+          $duplicates = @($records |
+            Where-Object { $_.Identity } |
+            Group-Object Identity |
+            Where-Object { $_.Count -gt 1 } |
+            Select-Object -ExpandProperty Name)
+          foreach ($record in $records) {
+            if ($record.Identity -and $duplicates -contains $record.Identity) {
+              $record.Status = 'BLOCKED'
+              $record.Reason = (@($record.Reason, 'duplicate-stable-identity') |
+                Where-Object { $_ } ) -join ','
+            }
+          }
+
+          Write-Host '===== STORAGE IDENTITY CERTIFICATION ====='
+          $records | Format-Table Node,Device,Size,Identity,Status,Reason -AutoSize
+
+          @(
+            '## LayerSentry Storage Identity Certification',
+            '',
+            '| Node | Device | Size | Stable identity | Status | Reason |',
+            '|---|---|---:|---|---|---|'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          foreach ($record in $records) {
+            $id = if ($record.Identity) { $record.Identity } else { 'NONE' }
+            $reason = if ($record.Reason) { $record.Reason } else { '-' }
+            "| $($record.Node) | $($record.Device) | $($record.Size) | $id | $($record.Status) | $reason |" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
+          $blocked = @($records | Where-Object { $_.Status -ne 'CANDIDATE' })
+          if ($blocked.Count -gt 0) {
+            Write-Host "STORAGE_IDENTITY_CERTIFICATION=BLOCKED"
+            Write-Host "STORAGE_INITIALIZATION_ALLOWED=false"
+            throw "$($blocked.Count) of $($records.Count) data disks failed the persistent identity/data-safety gate"
+          }
+
+          Write-Host 'STORAGE_IDENTITY_CERTIFICATION=PASS'
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+          Write-Host 'IDENTITY_GATE_NOTE=Identity certification alone never authorizes destructive initialization.'
