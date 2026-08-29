@@ -31,10 +31,12 @@ jobs:
           }
           $ps=& $env:KUBECTL get packagesource.cozystack.io cozystack.cozystack-engine -o json|ConvertFrom-Json
           Write-Host "PACKAGESOURCE name=$($ps.metadata.name) generation=$($ps.metadata.generation) observed=$($ps.status.observedGeneration) sourceKind=$($ps.spec.sourceRef.kind) sourceName=$($ps.spec.sourceRef.name) sourceNS=$($ps.spec.sourceRef.namespace) sourcePath=$($ps.spec.sourceRef.path)"
+          Write-Host "PACKAGESOURCE_SPEC=$($ps.spec|ConvertTo-Json -Depth 30 -Compress)"
           Write-Host "PACKAGESOURCE_STATUS=$($ps.status|ConvertTo-Json -Depth 12 -Compress)"
           $ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json
           $agr=@($ag.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
           Write-Host "ARTIFACTGENERATOR name=$($ag.metadata.name) generation=$($ag.metadata.generation) observed=$($ag.status.observedGeneration) ready=$($agr.status) reason=$($agr.reason) message=$($agr.message)"
+          Write-Host "ARTIFACTGENERATOR_SPEC=$($ag.spec|ConvertTo-Json -Depth 40 -Compress)"
           Write-Host "ARTIFACTGENERATOR_STATUS=$($ag.status|ConvertTo-Json -Depth 15 -Compress)"
           $ea=& $env:KUBECTL -n cozy-system get externalartifact.source.extensions.fluxcd.io cozystack-cozystack-engine-oidc-dashboard -o json|ConvertFrom-Json
           $ear=@($ea.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
