@@ -1,0 +1,200 @@
+name: LayerSentry VM Production Build
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-vm-production-build.yml
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: layersentry-vm-production-build
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/adaptgurus/cozystack
+  IMAGE_TAG: layersentry-production-${{ github.sha }}
+  PUBLISH_VERSIONED: '0'
+  PUBLISH_FLOATING: '0'
+  WRITE_CACHE: '0'
+
+jobs:
+  build-pin-certification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact production candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install pinned Flux and yq
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLUX_VERSION=v2.6.4
+          A="flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo "/tmp/$A" "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/$A"
+          curl -fsSLo /tmp/flux-checksums "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_checksums.txt"
+          grep " $A$" /tmp/flux-checksums | sed "s#  $A#  /tmp/$A#" >/tmp/flux.expected
+          sha256sum -c /tmp/flux.expected
+          tar -xzf "/tmp/$A" -C /tmp flux
+          sudo install -m 0755 /tmp/flux /usr/local/bin/flux
+          YQ_VERSION=v4.47.2
+          curl -fsSLo /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo 'f0b855c0c2d07a3fd5027e22b0d7b96a8e87bb68dbd4e72b0dd711e3a5379ee5  /tmp/yq' >/tmp/yq.expected
+          sha256sum -c /tmp/yq.expected
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          flux version --client
+          yq --version
+
+      - name: Revalidate repaired operator before image build
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'reasonRecoveredLostReady = "RecoveredLostReady"' internal/operator/packagesource_ready_repair.go >/dev/null
+          grep -F 'proveArtifactGeneratorCurrentSuccess' internal/operator/packagesource_ready_repair_test.go >/dev/null
+          go test ./internal/operator -count=1
+          echo "OPERATOR_REPAIR_TEST_GATE=PASS sha=${GITHUB_SHA}"
+
+      - name: Build immutable dashboard and repaired operator, then package together
+        id: build
+        shell: bash
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          make -C packages/system/dashboard image
+          make -C packages/core/installer image-operator image-packages
+
+          operator_image="$(yq -r '.cozystackOperator.image' packages/core/installer/values.yaml)"
+          source_url="$(yq -r '.cozystackOperator.platformSourceUrl' packages/core/installer/values.yaml)"
+          source_ref="$(yq -r '.cozystackOperator.platformSourceRef' packages/core/installer/values.yaml)"
+          dashboard_image="$(yq -r '.console.image' packages/system/dashboard/values.yaml)"
+          case "$operator_image" in ghcr.io/adaptgurus/cozystack/cozystack-operator:*@sha256:*) ;; *) echo "::error::bad operator image $operator_image"; exit 1;; esac
+          case "$dashboard_image" in ghcr.io/adaptgurus/cozystack/cozystack-ui:*@sha256:*) ;; *) echo "::error::bad dashboard image $dashboard_image"; exit 1;; esac
+          test "$source_url" = 'oci://ghcr.io/adaptgurus/cozystack/cozystack-packages'
+          case "$source_ref" in digest=sha256:*) ;; *) echo "::error::bad source ref $source_ref"; exit 1;; esac
+          package_digest="${source_ref#digest=}"
+
+          echo "operator_image=$operator_image" >> "$GITHUB_OUTPUT"
+          echo "dashboard_image=$dashboard_image" >> "$GITHUB_OUTPUT"
+          echo "package_digest=$package_digest" >> "$GITHUB_OUTPUT"
+          echo "PRODUCTION_OPERATOR_IMAGE=$operator_image"
+          echo "PRODUCTION_DASHBOARD_IMAGE=$dashboard_image"
+          echo "PRODUCTION_PACKAGE_DIGEST=$package_digest"
+
+      - name: Verify exact immutable package contents
+        shell: bash
+        env:
+          OPERATOR_IMAGE: ${{ steps.build.outputs.operator_image }}
+          DASHBOARD_IMAGE: ${{ steps.build.outputs.dashboard_image }}
+          PACKAGE_DIGEST: ${{ steps.build.outputs.package_digest }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pkg && mkdir -p /tmp/pkg
+          flux pull artifact "oci://ghcr.io/adaptgurus/cozystack/cozystack-packages@${PACKAGE_DIGEST}" --output /tmp/pkg
+          grep -F "image: ${OPERATOR_IMAGE}" /tmp/pkg/core/installer/values.yaml >/dev/null
+          grep -F "image: ${DASHBOARD_IMAGE}" /tmp/pkg/system/dashboard/values.yaml >/dev/null
+          grep -F -- '--scope=openid email profile' /tmp/pkg/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- '--scope=openid email profile offline_access' /tmp/pkg/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          helm template dashboard /tmp/pkg/system/dashboard --set-string '_cluster.root-host=offline.invalid' >/tmp/dashboard.yaml
+          grep -F "image: ${DASHBOARD_IMAGE}" /tmp/dashboard.yaml >/dev/null
+          echo "IMMUTABLE_PRODUCTION_PACKAGE=PASS digest=${PACKAGE_DIGEST} operator=${OPERATOR_IMAGE} dashboard=${DASHBOARD_IMAGE}"
+
+      - name: Pin production certification to this immutable build
+        shell: bash
+        env:
+          OPERATOR_IMAGE: ${{ steps.build.outputs.operator_image }}
+          DASHBOARD_IMAGE: ${{ steps.build.outputs.dashboard_image }}
+          PACKAGE_DIGEST: ${{ steps.build.outputs.package_digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os,re
+          p=Path('.github/workflows/layersentry-dashboard-vm-ux-force-cert.yml')
+          s=p.read_text()
+          def sub1(pattern,repl,flags=0):
+              global s
+              s2,n=re.subn(pattern,repl,s,count=1,flags=flags)
+              if n!=1: raise SystemExit(f'certification patch anchor failed: {pattern!r} count={n}')
+              s=s2
+          def rep1(old,new):
+              global s
+              n=s.count(old)
+              if n!=1: raise SystemExit(f'certification exact anchor failed count={n}: {old[:100]!r}')
+              s=s.replace(old,new,1)
+
+          marker='      - .github/layersentry-vm-cert-trigger\n'
+          if marker not in s:
+              rep1('      - .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml\n',
+                   '      - .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml\n'+marker)
+
+          sub1(r'^  RELEASE_PACKAGE_DIGEST: sha256:[0-9a-f]+$', '  RELEASE_PACKAGE_DIGEST: '+os.environ['PACKAGE_DIGEST'], re.M)
+          sub1(r'^  IMAGE_REF: .+$', '  IMAGE_REF: '+os.environ['DASHBOARD_IMAGE'], re.M)
+          if not re.search(r'^  OPERATOR_IMAGE:',s,re.M):
+              rep1('  IMAGE_REF: '+os.environ['DASHBOARD_IMAGE']+'\n',
+                   '  IMAGE_REF: '+os.environ['DASHBOARD_IMAGE']+'\n  OPERATOR_IMAGE: '+os.environ['OPERATOR_IMAGE']+'\n')
+          else:
+              sub1(r'^  OPERATOR_IMAGE: .+$','  OPERATOR_IMAGE: '+os.environ['OPERATOR_IMAGE'],re.M)
+
+          rep1('operatorArgs=@($op.args);agSourcesDigest=', 'operatorArgs=@($op.args);operatorImage=[string]$op.image;agSourcesDigest=')
+          rep1("containers=@([ordered]@{name='cozystack-operator';args=@($args)})",
+               "containers=@([ordered]@{name='cozystack-operator';image=$env:OPERATOR_IMAGE;args=@($args)})")
+          rep1("if($LASTEXITCODE){throw 'operator rollout failed'}\n\n          $sp=",
+               "if($LASTEXITCODE){throw 'operator rollout failed'}\n          $liveOp=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json\n          $liveOpImage=[string](@($liveOp.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1).image)\n          if($liveOpImage -ne $env:OPERATOR_IMAGE){throw \"operator image pin failed expected=$env:OPERATOR_IMAGE actual=$liveOpImage\"}\n          Write-Host \"IMMUTABLE_OPERATOR_IMAGE=PASS image=$liveOpImage\"\n\n          $sp=")
+
+          rep1("containers=@([ordered]@{name='cozystack-operator';args=@($b.operatorArgs)})",
+               "containers=@([ordered]@{name='cozystack-operator';image=[string]$b.operatorImage;args=@($b.operatorArgs)})")
+          rep1("& $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host\n          foreach($n in @('cozystack-platform','cozystack-packages')){",
+               "& $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host\n          $rbOp=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json;$rbOpImage=[string](@($rbOp.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1).image)\n          if($rbOpImage -ne [string]$b.operatorImage){throw \"rollback operator image mismatch expected=$($b.operatorImage) actual=$rbOpImage\"}\n          foreach($n in @('cozystack-platform','cozystack-packages')){")
+
+          durability_anchor="          $dep=& $env:KUBECTL -n cozy-dashboard get deploy cozy-dashboard-console -o json|ConvertFrom-Json;$image=[string](@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'console'}|Select-Object -First 1).image)\n"
+          durability_insert="          $opDep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json;$opImage=[string](@($opDep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1).image)\n          if($opImage -ne $env:OPERATOR_IMAGE){throw \"operator image reverted: $opImage\"}\n"+durability_anchor
+          rep1(durability_anchor,durability_insert)
+          rep1("Write-Host \"FINAL_DURABILITY=PASS package=$env:RELEASE_PACKAGE_DIGEST artifact=$artifact revision=$expected image=$image\"",
+               "Write-Host \"FINAL_DURABILITY=PASS package=$env:RELEASE_PACKAGE_DIGEST artifact=$artifact revision=$expected operator=$opImage image=$image\"")
+          p.write_text(s)
+          PY
+
+          grep -F "RELEASE_PACKAGE_DIGEST: ${PACKAGE_DIGEST}" .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml >/dev/null
+          grep -F "IMAGE_REF: ${DASHBOARD_IMAGE}" .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml >/dev/null
+          grep -F "OPERATOR_IMAGE: ${OPERATOR_IMAGE}" .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml >/dev/null
+          grep -F '.github/layersentry-vm-cert-trigger' .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml >/dev/null
+
+      - name: Commit certification pins and remove one-shot build workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/layersentry-vm-production-build.yml
+          git add .github/workflows/layersentry-dashboard-vm-ux-force-cert.yml
+          git config user.name "adaptgurus"
+          git config user.email "73125939+adaptgurus@users.noreply.github.com"
+          git commit -m "ci(layersentry): pin repaired operator VM production certification"
+          git fetch origin layersentry-platform
+          git rebase origin/layersentry-platform
+          git push origin HEAD:layersentry-platform
