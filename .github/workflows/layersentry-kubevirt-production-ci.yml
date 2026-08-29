@@ -39,8 +39,14 @@ jobs:
 
       - name: Lint and render KubeVirt chart
         run: |
-          helm lint packages/system/kubevirt
-          helm template kubevirt packages/system/kubevirt > /tmp/kubevirt-rendered.yaml
+          CLUSTER_ARGS=(
+            --set-string '_cluster.root-host=ci.invalid'
+            --set-string '_cluster.expose-services='
+            --set-string '_cluster.expose-ingress=tenant-root'
+            --set-string '_cluster.gateway-enabled=false'
+          )
+          helm lint packages/system/kubevirt "${CLUSTER_ARGS[@]}"
+          helm template kubevirt packages/system/kubevirt "${CLUSTER_ARGS[@]}" > /tmp/kubevirt-rendered.yaml
 
       - name: Enforce KubeVirt v1.8.4 production safety contract
         shell: python
@@ -71,7 +77,7 @@ jobs:
           for gate in ("HotplugVolumes", "ExpandDisks", "CPUManager", "VMExport"):
               if f"- {gate}" not in static_gates:
                   raise SystemExit(f"required non-GA KubeVirt capability gate missing: {gate}")
-          for obsolete_ga_gate in ("LiveMigration", "AutoResourceLimitsGate", "GPU"):
+          for obsolete_ga_gate in ("LiveMigration", "AutoResourceLimitsGate", """GPU"""):
               if f"- {obsolete_ga_gate}" in static_gates:
                   raise SystemExit(f"GA KubeVirt v1.8.4 gate must not be listed: {obsolete_ga_gate}")
 
