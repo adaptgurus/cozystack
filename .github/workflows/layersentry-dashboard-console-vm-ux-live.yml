@@ -57,6 +57,8 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx version
+          docker buildx create --name layersentry-console-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
           image="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
           metadata="${RUNNER_TEMP}/console-build-metadata.json"
           docker buildx build \
