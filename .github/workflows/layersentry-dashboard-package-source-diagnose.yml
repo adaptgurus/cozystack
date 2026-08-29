@@ -1,0 +1,69 @@
+name: LayerSentry Dashboard Package Source Diagnose
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-package-source-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Inspect live platform OCI source ownership safely
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not (Test-Path $env:KUBECTL)){throw "kubectl missing: $env:KUBECTL"}
+          if(-not (Test-Path $env:KUBECONFIG)){throw "kubeconfig missing: $env:KUBECONFIG"}
+
+          $pkg=& $env:KUBECTL get package.cozystack.io cozystack.cozystack-engine -o json | ConvertFrom-Json
+          if(-not $pkg){throw 'cozystack.cozystack-engine Package missing'}
+          Write-Host "PACKAGE sourceRef=$($pkg.spec.sourceRef) version=$($pkg.spec.version) variant=$($pkg.spec.variant)"
+          Write-Host "PACKAGE sourceKindLabel=$($pkg.metadata.labels.'cozystack.io/package-source-resource-kind') sourceNameLabel=$($pkg.metadata.labels.'cozystack.io/package-source-resource-name')"
+
+          $all=& $env:KUBECTL get ocirepositories.source.toolkit.fluxcd.io -A -o json | ConvertFrom-Json
+          $matches=@($all.items | Where-Object {$_.metadata.name -eq 'cozystack-packages'})
+          if($matches.Count -eq 0){throw 'OCIRepository cozystack-packages not found'}
+          foreach($src in $matches){
+            Write-Host '===== OCI SOURCE ====='
+            Write-Host "ns=$($src.metadata.namespace) name=$($src.metadata.name) generation=$($src.metadata.generation) resourceVersion=$($src.metadata.resourceVersion)"
+            Write-Host "url=$($src.spec.url) interval=$($src.spec.interval) provider=$($src.spec.provider)"
+            Write-Host "refTag=$($src.spec.ref.tag) refDigest=$($src.spec.ref.digest) refSemver=$($src.spec.ref.semver) refSemverFilter=$($src.spec.ref.semverFilter)"
+            Write-Host "ownerRefs=$((@($src.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name+'/controller='+$_.controller)}) -join ';')"
+            Write-Host "labels=$((@($src.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+            Write-Host "annotations=$((@($src.metadata.annotations.PSObject.Properties)|Where-Object{$_.Name -notmatch '(?i)token|secret|password'}|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+            foreach($mf in @($src.metadata.managedFields)){
+              Write-Host "managedField manager=$($mf.manager) operation=$($mf.operation) apiVersion=$($mf.apiVersion) time=$($mf.time) subresource=$($mf.subresource)"
+            }
+            $ready=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            Write-Host "ready=$($ready.status) reason=$($ready.reason) message=$($ready.message)"
+            Write-Host "artifactDigest=$($src.status.artifact.digest) artifactRevision=$($src.status.artifact.revision) artifactUrl=$($src.status.artifact.url)"
+          }
+
+          Write-Host '===== OPERATOR DEPLOYMENT SAFE SUMMARY ====='
+          $ops=& $env:KUBECTL get deployments -A -o json | ConvertFrom-Json
+          foreach($d in @($ops.items | Where-Object {$_.metadata.name -match '(?i)cozystack.*operator|operator.*cozystack'})){
+            Write-Host "operator ns=$($d.metadata.namespace) name=$($d.metadata.name) image=$((@($d.spec.template.spec.containers)|ForEach-Object{$_.image}) -join ',')"
+            foreach($c in @($d.spec.template.spec.containers)){
+              @($c.args) | Where-Object {$_ -match '(?i)source|package|platform'} | ForEach-Object {Write-Host "operatorArg=$_"}
+              foreach($e in @($c.env)){
+                if($e.name -match '(?i)SOURCE|PACKAGE|PLATFORM'){
+                  if($e.value){Write-Host "operatorEnv $($e.name)=$($e.value)"}
+                  elseif($e.valueFrom){Write-Host "operatorEnv $($e.name)=<valueFrom>"}
+                }
+              }
+            }
+          }
+          Write-Host 'PACKAGE_SOURCE_DIAGNOSE=PASS'
