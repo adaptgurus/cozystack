@@ -1,0 +1,446 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linstor-gui-storage-fabric
+  labels:
+    {{- include "linstor-gui.labels" . | nindent 4 }}
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta name="color-scheme" content="light dark">
+      <title>LayerSentry Storage Fabric</title>
+      <style>
+        :root {
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color-scheme: light dark;
+          --bg: #0b1020;
+          --panel: #121a2d;
+          --panel-soft: #17223a;
+          --text: #eef3ff;
+          --muted: #9eabc4;
+          --line: #293650;
+          --accent: #67e8f9;
+          --good: #5ee6a8;
+          --warn: #f6c65b;
+          --bad: #ff7b8a;
+          --shadow: 0 18px 50px rgba(0,0,0,.22);
+        }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          min-height: 100vh;
+          background:
+            radial-gradient(circle at top right, rgba(103,232,249,.10), transparent 34rem),
+            linear-gradient(180deg, #0b1020 0%, #0d1425 100%);
+          color: var(--text);
+        }
+        a { color: inherit; }
+        button { font: inherit; }
+        .shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
+        .topbar {
+          display: flex; gap: 20px; align-items: center; justify-content: space-between;
+          margin-bottom: 24px;
+        }
+        .brand { display: flex; align-items: center; gap: 13px; }
+        .logo {
+          width: 42px; height: 42px; border-radius: 13px;
+          display: grid; place-items: center;
+          background: linear-gradient(145deg, rgba(103,232,249,.28), rgba(103,232,249,.07));
+          border: 1px solid rgba(103,232,249,.36);
+          box-shadow: inset 0 0 30px rgba(103,232,249,.08);
+          font-weight: 800; letter-spacing: -.04em;
+        }
+        .brand h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
+        .brand p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+        .top-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+        .button {
+          border: 1px solid var(--line);
+          background: rgba(255,255,255,.035);
+          color: var(--text);
+          border-radius: 10px;
+          padding: 9px 13px;
+          text-decoration: none;
+          cursor: pointer;
+          transition: .16s ease;
+        }
+        .button:hover:not(:disabled) { border-color: #51617d; transform: translateY(-1px); }
+        .button.primary {
+          border-color: rgba(103,232,249,.4);
+          background: rgba(103,232,249,.10);
+          color: #bff8ff;
+        }
+        .button:disabled { cursor: not-allowed; opacity: .42; }
+        .hero {
+          display: grid; grid-template-columns: 1fr auto; gap: 20px;
+          align-items: center; padding: 22px;
+          border: 1px solid var(--line); background: rgba(18,26,45,.85);
+          border-radius: 16px; box-shadow: var(--shadow); margin-bottom: 18px;
+        }
+        .hero h2 { margin: 0 0 7px; font-size: 25px; letter-spacing: -.03em; }
+        .hero p { color: var(--muted); margin: 0; max-width: 800px; line-height: 1.5; }
+        .mode {
+          min-width: 190px; padding: 13px 15px; border-radius: 12px;
+          border: 1px solid rgba(246,198,91,.34);
+          background: rgba(246,198,91,.07);
+        }
+        .mode strong { display: block; color: var(--warn); font-size: 13px; text-transform: uppercase; letter-spacing: .08em; }
+        .mode span { display: block; color: var(--muted); margin-top: 4px; font-size: 12px; }
+        .status-grid {
+          display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px;
+          margin-bottom: 18px;
+        }
+        .card {
+          border: 1px solid var(--line); border-radius: 14px;
+          background: rgba(18,26,45,.82); padding: 18px;
+        }
+        .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .07em; text-transform: uppercase; }
+        .metric { margin-top: 10px; display: flex; align-items: baseline; gap: 8px; }
+        .metric strong { font-size: 25px; letter-spacing: -.04em; }
+        .metric span { color: var(--muted); font-size: 12px; }
+        .state { display: inline-flex; align-items: center; gap: 7px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+        .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--muted); }
+        .dot.good { background: var(--good); box-shadow: 0 0 14px rgba(94,230,168,.5); }
+        .dot.warn { background: var(--warn); }
+        .dot.bad { background: var(--bad); }
+        .protocols {
+          display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px;
+          margin-bottom: 18px;
+        }
+        .protocol-card {
+          border: 1px solid var(--line); border-radius: 14px;
+          background: rgba(18,26,45,.82); overflow: hidden;
+        }
+        .protocol-head { padding: 18px; border-bottom: 1px solid var(--line); }
+        .protocol-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .protocol-title h3 { margin: 0; font-size: 17px; }
+        .pill {
+          border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px;
+          font-size: 11px; color: var(--muted); white-space: nowrap;
+        }
+        .protocol-copy { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+        .protocol-body { padding: 14px 18px 18px; }
+        .protocol-count { font-size: 30px; font-weight: 750; letter-spacing: -.05em; }
+        .protocol-actions { margin-top: 14px; display: flex; gap: 8px; }
+        .resource-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+        .resource {
+          border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+          background: rgba(255,255,255,.025); overflow-wrap: anywhere;
+        }
+        .resource strong { display: block; font-size: 12px; font-weight: 650; }
+        .resource span { color: var(--muted); font-size: 11px; }
+        .empty { color: var(--muted); font-size: 12px; margin-top: 11px; }
+        .lower-grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 14px; }
+        .section-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+        .section-title h3 { margin: 0; font-size: 15px; }
+        .check-list { display: grid; gap: 9px; }
+        .check {
+          display: grid; grid-template-columns: 10px 1fr auto; gap: 10px; align-items: center;
+          border-bottom: 1px solid rgba(41,54,80,.75); padding: 9px 0;
+        }
+        .check:last-child { border-bottom: 0; }
+        .check b { font-size: 12px; }
+        .check small { color: var(--muted); font-size: 11px; }
+        .notice {
+          border: 1px solid rgba(246,198,91,.28); background: rgba(246,198,91,.06);
+          border-radius: 11px; padding: 13px; color: #f5dfaa; font-size: 12px; line-height: 1.5;
+        }
+        .error {
+          display: none; margin-bottom: 18px; padding: 12px 14px; border-radius: 11px;
+          border: 1px solid rgba(255,123,138,.35); background: rgba(255,123,138,.08);
+          color: #ffc1c8; font-size: 12px; white-space: pre-wrap;
+        }
+        .footer { color: var(--muted); font-size: 11px; margin-top: 18px; text-align: right; }
+        @media (max-width: 1050px) {
+          .status-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+          .protocols { grid-template-columns: 1fr; }
+          .lower-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 680px) {
+          .shell { padding: 16px; }
+          .topbar, .hero { display: block; }
+          .top-actions { justify-content: flex-start; margin-top: 14px; }
+          .hero .mode { margin-top: 16px; }
+          .status-grid { grid-template-columns: 1fr; }
+        }
+      </style>
+    </head>
+    <body>
+      <main class="shell">
+        <header class="topbar">
+          <div class="brand">
+            <div class="logo" aria-hidden="true">LS</div>
+            <div>
+              <h1>LayerSentry Storage Fabric</h1>
+              <p>LINSTOR Gateway control plane</p>
+            </div>
+          </div>
+          <nav class="top-actions" aria-label="Storage actions">
+            <a class="button" href="/">LINSTOR Console</a>
+            <button id="refresh" class="button primary" type="button">Refresh status</button>
+          </nav>
+        </header>
+
+        <section class="hero">
+          <div>
+            <h2>Unified storage protocol visibility</h2>
+            <p>Inspect Gateway health and discover iSCSI, NFS and NVMe-oF resources from one screen. The console uses the authenticated same-origin Gateway proxy and never exposes the internal Gateway service address to the browser.</p>
+          </div>
+          <div class="mode">
+            <strong id="mode-title">Safe mode</strong>
+            <span id="mode-copy">Read-only discovery</span>
+          </div>
+        </section>
+
+        <div id="error" class="error" role="alert"></div>
+
+        <section class="status-grid" aria-label="Platform status">
+          <article class="card">
+            <div class="eyebrow">Gateway</div>
+            <div class="metric"><strong id="gateway-status">Checking</strong></div>
+            <div class="state"><span id="gateway-dot" class="dot"></span><span id="gateway-detail">Connecting…</span></div>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Gateway version</div>
+            <div class="metric"><strong id="gateway-version">—</strong></div>
+            <div class="state"><span class="dot good"></span><span>Pinned control plane</span></div>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Protocols</div>
+            <div class="metric"><strong id="protocol-ready">0 / 3</strong></div>
+            <div class="state"><span id="protocol-dot" class="dot"></span><span>Read-only API checks</span></div>
+          </article>
+          <article class="card">
+            <div class="eyebrow">Provisioning</div>
+            <div class="metric"><strong id="provisioning-state">Locked</strong></div>
+            <div class="state"><span id="provisioning-dot" class="dot warn"></span><span id="provisioning-summary">Safety gate active</span></div>
+          </article>
+        </section>
+
+        <section class="protocols" aria-label="Storage protocols">
+          <article class="protocol-card" data-protocol="iscsi">
+            <div class="protocol-head">
+              <div class="protocol-title"><h3>iSCSI</h3><span id="iscsi-state" class="pill">Checking</span></div>
+              <p class="protocol-copy">Block storage targets for standard enterprise initiators.</p>
+            </div>
+            <div class="protocol-body">
+              <div id="iscsi-count" class="protocol-count">—</div>
+              <div class="eyebrow">Targets discovered</div>
+              <ul id="iscsi-list" class="resource-list"></ul>
+              <div class="protocol-actions"><button class="button create-action" type="button" disabled>Create target</button></div>
+            </div>
+          </article>
+
+          <article class="protocol-card" data-protocol="nfs">
+            <div class="protocol-head">
+              <div class="protocol-title"><h3>NFS</h3><span id="nfs-state" class="pill">Checking</span></div>
+              <p class="protocol-copy">Shared file exports backed by LINSTOR-managed resources.</p>
+            </div>
+            <div class="protocol-body">
+              <div id="nfs-count" class="protocol-count">—</div>
+              <div class="eyebrow">Exports discovered</div>
+              <ul id="nfs-list" class="resource-list"></ul>
+              <div class="protocol-actions"><button class="button create-action" type="button" disabled>Create export</button></div>
+            </div>
+          </article>
+
+          <article class="protocol-card" data-protocol="nvme">
+            <div class="protocol-head">
+              <div class="protocol-title"><h3>NVMe-oF</h3><span id="nvme-state" class="pill">Checking</span></div>
+              <p class="protocol-copy">Low-latency NVMe over Fabrics target discovery.</p>
+            </div>
+            <div class="protocol-body">
+              <div id="nvme-count" class="protocol-count">—</div>
+              <div class="eyebrow">Targets discovered</div>
+              <ul id="nvme-list" class="resource-list"></ul>
+              <div class="protocol-actions"><button class="button create-action" type="button" disabled>Create target</button></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="lower-grid">
+          <article class="card">
+            <div class="section-title">
+              <h3>Readiness gates</h3>
+              <span class="pill">Fail closed</span>
+            </div>
+            <div class="check-list">
+              <div class="check"><span class="dot good"></span><div><b>Gateway API</b><br><small>Health and protocol discovery endpoints</small></div><small id="gate-api">Checking</small></div>
+              <div class="check"><span class="dot good"></span><div><b>LINSTOR controller trust</b><br><small>Gateway-to-controller mTLS remains enforced</small></div><small>Verified</small></div>
+              <div class="check"><span class="dot warn"></span><div><b>Persistent disk identity</b><br><small>Stable WWID / by-id certification required before destructive provisioning</small></div><small>Required</small></div>
+              <div class="check"><span class="dot warn"></span><div><b>Gateway agent data plane</b><br><small>DRBD Reactor and protocol target services must pass node certification</small></div><small>Required</small></div>
+            </div>
+          </article>
+          <aside class="card">
+            <div class="section-title"><h3>Safety boundary</h3></div>
+            <div class="notice" id="lock-reason"></div>
+            <p class="empty">Create, update and delete operations are blocked at nginx while safe mode is active. This remains true even if a client bypasses the disabled GUI controls.</p>
+          </aside>
+        </section>
+
+        <div class="footer">Auto-refresh every 30 seconds · Last update: <span id="last-update">never</span></div>
+      </main>
+
+      <script>
+        (() => {
+          "use strict";
+
+          const provisioningEnabled = {{ .Values.gateway.provisioningEnabled }};
+          const provisioningDisabledReason = {{ .Values.gateway.provisioningDisabledReason | toJson }};
+          const endpoints = {
+            iscsi: "/gateway/api/v2/iscsi",
+            nfs: "/gateway/api/v2/nfs",
+            nvme: "/gateway/api/v2/nvme-of"
+          };
+
+          const $ = (id) => document.getElementById(id);
+          const errorBox = $("error");
+
+          function setText(id, value) {
+            const node = $(id);
+            if (node) node.textContent = value;
+          }
+
+          function setPill(id, label, ok) {
+            const node = $(id);
+            node.textContent = label;
+            node.style.color = ok ? "var(--good)" : "var(--bad)";
+            node.style.borderColor = ok ? "rgba(94,230,168,.3)" : "rgba(255,123,138,.3)";
+          }
+
+          function resourceName(item, fallback) {
+            if (!item || typeof item !== "object") return fallback;
+            return item.iqn || item.nqn || item.name || item.resource_name || item.resourceName || fallback;
+          }
+
+          function resourceDetail(item) {
+            if (!item || typeof item !== "object") return "Discovered by Gateway";
+            const status = item.status && typeof item.status === "object" ? (item.status.state || item.status.service || "") : (item.status || "");
+            const primary = item.primary || (item.status && item.status.primary) || "";
+            const bits = [];
+            if (status) bits.push(String(status));
+            if (primary) bits.push("primary " + String(primary));
+            return bits.length ? bits.join(" · ") : "Discovered by Gateway";
+          }
+
+          function renderResources(protocol, data) {
+            const list = $(protocol + "-list");
+            list.replaceChildren();
+            const items = Array.isArray(data) ? data : [];
+            setText(protocol + "-count", String(items.length));
+            if (items.length === 0) {
+              const li = document.createElement("li");
+              li.className = "empty";
+              li.textContent = "No resources currently configured.";
+              list.appendChild(li);
+              return;
+            }
+            items.slice(0, 5).forEach((item, index) => {
+              const li = document.createElement("li");
+              li.className = "resource";
+              const name = document.createElement("strong");
+              const detail = document.createElement("span");
+              name.textContent = resourceName(item, protocol.toUpperCase() + " resource " + (index + 1));
+              detail.textContent = resourceDetail(item);
+              li.append(name, detail);
+              list.appendChild(li);
+            });
+            if (items.length > 5) {
+              const li = document.createElement("li");
+              li.className = "empty";
+              li.textContent = "+" + (items.length - 5) + " more";
+              list.appendChild(li);
+            }
+          }
+
+          async function fetchJson(path) {
+            const response = await fetch(path, {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { "Accept": "application/json" },
+              cache: "no-store"
+            });
+            if (!response.ok) {
+              throw new Error(path + " returned HTTP " + response.status);
+            }
+            return response.json();
+          }
+
+          async function refresh() {
+            errorBox.style.display = "none";
+            errorBox.textContent = "";
+            $("refresh").disabled = true;
+
+            let readyProtocols = 0;
+            let apiHealthy = false;
+
+            try {
+              const status = await fetchJson("/gateway/api/v2/status");
+              apiHealthy = status && status.status === "ok";
+              setText("gateway-status", apiHealthy ? "Online" : "Degraded");
+              setText("gateway-version", status && status.version ? String(status.version) : "Unknown");
+              setText("gateway-detail", apiHealthy ? "API responding normally" : "Unexpected status response");
+              $("gateway-dot").className = "dot " + (apiHealthy ? "good" : "bad");
+            } catch (error) {
+              setText("gateway-status", "Offline");
+              setText("gateway-version", "—");
+              setText("gateway-detail", "Gateway API unavailable");
+              $("gateway-dot").className = "dot bad";
+              errorBox.textContent = String(error.message || error);
+              errorBox.style.display = "block";
+            }
+
+            const results = await Promise.allSettled(Object.entries(endpoints).map(async ([protocol, path]) => {
+              const data = await fetchJson(path);
+              return { protocol, data };
+            }));
+
+            for (const result of results) {
+              if (result.status === "fulfilled") {
+                const { protocol, data } = result.value;
+                renderResources(protocol, data);
+                setPill(protocol + "-state", "Ready", true);
+                readyProtocols += 1;
+              } else {
+                const message = String(result.reason && result.reason.message ? result.reason.message : result.reason);
+                const protocol = Object.keys(endpoints).find((key) => message.includes(endpoints[key]));
+                if (protocol) {
+                  renderResources(protocol, []);
+                  setPill(protocol + "-state", "Unavailable", false);
+                }
+                if (errorBox.textContent) errorBox.textContent += "\n";
+                errorBox.textContent += message;
+                errorBox.style.display = "block";
+              }
+            }
+
+            setText("protocol-ready", readyProtocols + " / 3");
+            $("protocol-dot").className = "dot " + (readyProtocols === 3 ? "good" : readyProtocols ? "warn" : "bad");
+            setText("gate-api", apiHealthy && readyProtocols === 3 ? "Passed" : "Attention");
+            setText("last-update", new Date().toLocaleString());
+            $("refresh").disabled = false;
+          }
+
+          setText("lock-reason", provisioningEnabled ? "Provisioning is enabled by chart configuration." : provisioningDisabledReason);
+          setText("provisioning-state", provisioningEnabled ? "Enabled" : "Locked");
+          setText("provisioning-summary", provisioningEnabled ? "Mutating API methods permitted" : "Safety gate active");
+          $("provisioning-dot").className = "dot " + (provisioningEnabled ? "good" : "warn");
+          setText("mode-title", provisioningEnabled ? "Provisioning enabled" : "Safe mode");
+          setText("mode-copy", provisioningEnabled ? "API mutations permitted" : "Read-only discovery");
+          document.querySelectorAll(".create-action").forEach((button) => {
+            button.disabled = true;
+            button.title = provisioningEnabled
+              ? "Provisioning API is enabled, but create workflows require the certified LayerSentry provisioning form."
+              : provisioningDisabledReason;
+          });
+
+          $("refresh").addEventListener("click", refresh);
+          refresh();
+          window.setInterval(refresh, 30000);
+        })();
+      </script>
+    </body>
+    </html>
