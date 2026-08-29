@@ -350,6 +350,21 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
     [visibleFields],
   )
 
+  // RJSF also applies defaults internally during mount. Edit mode must disable
+  // that second path as well as our explicit default-emission effect above;
+  // otherwise merely opening an older VM with a newer schema can dirty its spec.
+  const defaultFormStateBehavior = useMemo(
+    () => applyDefaults
+      ? undefined
+      : {
+          arrayMinItems: { populate: "never" as const },
+          emptyObjectFields: "skipDefaults" as const,
+          allOf: "skipDefaults" as const,
+          constAsDefaults: "never" as const,
+        },
+    [applyDefaults],
+  )
+
   return (
     <div className="rjsf-container">
       <Form
@@ -363,6 +378,7 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
         templates={templatesWithoutSubmit}
         widgets={customWidgets}
         fields={customFields}
+        experimental_defaultFormStateBehavior={defaultFormStateBehavior}
         onChange={(e) => onChange(e.formData)}
         liveValidate={false}
         showErrorList={false}
