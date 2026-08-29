@@ -1,0 +1,132 @@
+name: LayerSentry Storage Fabric GUI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-fabric-gui.yml
+      - packages/system/linstor-gui/**
+      - packages/system/linstor-gateway/**
+
+permissions:
+  contents: read
+
+jobs:
+  gui-static-gate:
+    name: Render and safety-check Storage Fabric GUI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Render safe-mode GUI
+        run: |
+          set -euo pipefail
+          helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --show-only templates/configmap-nginx.yaml \
+            --show-only templates/configmap-storage-fabric.yaml \
+            --show-only templates/deployment.yaml \
+            >/tmp/storage-fabric-gui.yaml
+
+          grep -q 'name: linstor-gui-storage-fabric' /tmp/storage-fabric-gui.yaml
+          grep -q 'mountPath: /usr/share/nginx/html/storage-fabric/index.html' /tmp/storage-fabric-gui.yaml
+          grep -q 'location \^~ /gateway/' /tmp/storage-fabric-gui.yaml
+          grep -q 'proxy_pass http://linstor-gateway.cozy-linstor.svc:8337/' /tmp/storage-fabric-gui.yaml
+          grep -q 'ProvisioningLocked' /tmp/storage-fabric-gui.yaml
+          grep -q 'LayerSentry Storage Fabric' /tmp/storage-fabric-gui.yaml
+          grep -q '/gateway/api/v2/status' /tmp/storage-fabric-gui.yaml
+          grep -q '/gateway/api/v2/iscsi' /tmp/storage-fabric-gui.yaml
+          grep -q '/gateway/api/v2/nfs' /tmp/storage-fabric-gui.yaml
+          grep -q '/gateway/api/v2/nvme-of' /tmp/storage-fabric-gui.yaml
+          grep -q 'const provisioningEnabled = false' /tmp/storage-fabric-gui.yaml
+
+      - name: Prove mutation guard is explicit opt-in
+        run: |
+          set -euo pipefail
+          helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --set gateway.provisioningEnabled=true \
+            --show-only templates/configmap-nginx.yaml \
+            --show-only templates/configmap-storage-fabric.yaml \
+            >/tmp/storage-fabric-gui-enabled.yaml
+
+          if grep -q 'ProvisioningLocked' /tmp/storage-fabric-gui-enabled.yaml; then
+            echo 'safe-mode nginx mutation guard remained after explicit opt-in'
+            exit 1
+          fi
+          grep -q 'const provisioningEnabled = true' /tmp/storage-fabric-gui-enabled.yaml
+
+      - name: Reject invalid Gateway endpoint configuration
+        run: |
+          set -euo pipefail
+          if helm template linstor-gui packages/system/linstor-gui \
+            --namespace cozy-linstor \
+            --set gateway.endpoint=linstor-gateway.cozy-linstor.svc:8337 \
+            --show-only templates/configmap-nginx.yaml >/tmp/invalid.yaml 2>/tmp/invalid.err; then
+            echo 'invalid Gateway endpoint unexpectedly rendered'
+            exit 1
+          fi
+          grep -q 'gateway.endpoint must be an http:// or https:// URL' /tmp/invalid.err
+
+  live-read-only-dependency:
+    name: Verify live Gateway dependency on TESTSER
+    needs: gui-static-gate
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Verify Gateway API used by the GUI
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          if (-not (Test-Path $env:KUBECTL)) { throw "kubectl missing: $env:KUBECTL" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          $nodes = @((& $env:KUBECTL get nodes -o json | ConvertFrom-Json).items)
+          if ($LASTEXITCODE -ne 0 -or $nodes.Count -ne 3) { throw 'expected exactly three readable Kubernetes nodes' }
+          foreach ($node in $nodes) {
+            $ready = @($node.status.conditions | Where-Object { $_.type -eq 'Ready' })[0]
+            if ($null -eq $ready -or $ready.status -ne 'True') { throw "node $($node.metadata.name) is not Ready" }
+          }
+
+          $gateway = & $env:KUBECTL get deployment linstor-gateway-phase1 -n cozy-linstor -o json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $gateway.status.readyReplicas -lt 1) { throw 'live Gateway Phase 1 is not Ready' }
+
+          $stdout = Join-Path $env:RUNNER_TEMP 'storage-fabric-gui-portforward.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'storage-fabric-gui-portforward.err'
+          Remove-Item $stdout,$stderr -ErrorAction SilentlyContinue
+          $pf = Start-Process -FilePath $env:KUBECTL -ArgumentList @(
+            'port-forward','-n','cozy-linstor','service/linstor-gateway-phase1','18337:8337'
+          ) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 3
+          if ($pf.HasExited) {
+            Get-Content $stdout,$stderr -ErrorAction SilentlyContinue
+            throw 'Gateway port-forward failed'
+          }
+
+          try {
+            $status = Invoke-RestMethod -Uri 'http://127.0.0.1:18337/api/v2/status' -TimeoutSec 10
+            if ($status.status -ne 'ok' -or $status.version -ne '2.3.0') {
+              throw 'Gateway status/version validation failed'
+            }
+
+            foreach ($path in @('/api/v2/iscsi','/api/v2/nfs','/api/v2/nvme-of')) {
+              $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18337$path" -TimeoutSec 15
+              if ([int]$response.StatusCode -ne 200) { throw "read-only endpoint failed: $path" }
+            }
+          } finally {
+            if (-not $pf.HasExited) { Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+          Write-Host 'STORAGE_FABRIC_GUI_DEPENDENCY=PASS'
+          Write-Host 'GATEWAY_MUTATING_API_CALLS=NONE'
+          Write-Host 'DESTRUCTIVE_STORAGE_ACTIONS=NONE'
