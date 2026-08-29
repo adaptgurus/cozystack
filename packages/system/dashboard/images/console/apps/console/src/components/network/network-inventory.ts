@@ -145,16 +145,20 @@ function isCapabilityEvidence(value: unknown): value is CapabilityEvidence {
 }
 
 function isSriovEvidence(value: unknown): value is SriovEvidence {
-  if (!isRecord(value) || !isCapabilityEvidence(value)) return false
-  if (!isNullableNonNegativeInteger(value.totalVfs) || !isNullableNonNegativeInteger(value.configuredVfs)) return false
-  if (value.totalVfs !== null && value.configuredVfs !== null && value.configuredVfs > value.totalVfs) return false
-  if (value.supported === true && (value.totalVfs === null || value.totalVfs <= 0)) return false
+  if (!isRecord(value)) return false
+  const record: UnknownRecord = value
+  if (!isCapabilityEvidence(record)) return false
+  if (!isNullableNonNegativeInteger(record.totalVfs) || !isNullableNonNegativeInteger(record.configuredVfs)) return false
+  if (record.totalVfs !== null && record.configuredVfs !== null && record.configuredVfs > record.totalVfs) return false
+  if (record.supported === true && (record.totalVfs === null || record.totalVfs <= 0)) return false
   return true
 }
 
 function isRdmaEvidence(value: unknown): value is RdmaEvidence {
-  if (!isRecord(value) || !isCapabilityEvidence(value) || !isStringArray(value.devices)) return false
-  if (value.supported === true && value.devices.length === 0) return false
+  if (!isRecord(value)) return false
+  const record: UnknownRecord = value
+  if (!isCapabilityEvidence(record) || !isStringArray(record.devices)) return false
+  if (record.supported === true && record.devices.length === 0) return false
   return true
 }
 
