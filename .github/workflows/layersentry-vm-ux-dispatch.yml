@@ -1,0 +1,33 @@
+name: LayerSentry VM UX Certification Dispatch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-vm-ux-dispatch.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch final VM UX certification on current branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/actions/workflows/layersentry-dashboard-vm-ux-final-cert.yml/dispatches" \
+            -d "{\"ref\":\"${REF}\"}"
+          echo "VM_UX_FINAL_CERT_DISPATCH=PASS ref=${REF}"
