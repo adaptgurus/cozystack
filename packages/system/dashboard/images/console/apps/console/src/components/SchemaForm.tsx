@@ -204,6 +204,18 @@ interface SchemaFormProps {
    * flows.
    */
   immutableMode?: "enforce" | "off"
+  /**
+   * Restrict the root object presentation to these fields while keeping the
+   * complete schema and form data mounted. This is used by guided workflows
+   * that split one CRD schema into product-friendly sections.
+   */
+  visibleFields?: string[]
+  /**
+   * Whether JSON-schema defaults should be emitted into formData. Create flows
+   * normally want defaults; edit flows can disable this to avoid silently
+   * changing an existing resource just because a newer schema gained defaults.
+   */
+  applyDefaults?: boolean
 }
 
 export interface SchemaFormHandle {
@@ -223,6 +235,8 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
   onChange,
   children,
   immutableMode,
+  visibleFields,
+  applyDefaults = true,
 }: SchemaFormProps, ref) {
   const formRef = useRef<Form>(null)
   useImperativeHandle(
@@ -262,12 +276,13 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
   // getDefaultFormState would re-emit defaults computed from the stale initial
   // formData and wipe whatever the user already typed.
   useEffect(() => {
+    if (!applyDefaults) return
     if (!schema || Object.keys(schema).length === 0) return
     if (emittedSchemaRef.current === schema) return
     emittedSchemaRef.current = schema
     const defaults = getDefaultFormState(validator, schema, formDataRef.current ?? {}, schema)
     onChangeRef.current(defaults)
-  }, [schema])
+  }, [schema, applyDefaults])
 
   const immutablePaths = useMemo<ImmutablePath[]>(
     () => (immutableMode === "enforce" ? findImmutablePaths(parsedSchema) : []),
@@ -330,6 +345,11 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
     }
   }, [])
 
+  const formContext = useMemo(
+    () => visibleFields ? { cozystackVisibleFields: visibleFields } : undefined,
+    [visibleFields],
+  )
+
   return (
     <div className="rjsf-container">
       <Form
@@ -338,6 +358,7 @@ export const SchemaForm = forwardRef<SchemaFormHandle, SchemaFormProps>(function
         schema={schema}
         uiSchema={uiSchema}
         formData={formData}
+        formContext={formContext}
         validator={validator}
         templates={templatesWithoutSubmit}
         widgets={customWidgets}
