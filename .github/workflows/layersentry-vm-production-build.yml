@@ -200,7 +200,10 @@ jobs:
 
           durability_anchor="          $dep=& $env:KUBECTL -n cozy-dashboard get deploy cozy-dashboard-console -o json|ConvertFrom-Json;$image=[string](@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'console'}|Select-Object -First 1).image)\n"
           durability_insert="          $opDep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json;$opImage=[string](@($opDep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1).image)\n          if($opImage -ne $env:OPERATOR_IMAGE){throw \"operator image reverted: $opImage\"}\n"+durability_anchor
-          rep1(durability_anchor,durability_insert)
+          pos=s.rfind(durability_anchor)
+          if pos < 0:
+              raise SystemExit('final durability anchor not found')
+          s=s[:pos]+durability_insert+s[pos+len(durability_anchor):]
           rep1("Write-Host \"FINAL_DURABILITY=PASS package=$env:RELEASE_PACKAGE_DIGEST artifact=$artifact revision=$expected image=$image\"",
                "Write-Host \"FINAL_DURABILITY=PASS package=$env:RELEASE_PACKAGE_DIGEST artifact=$artifact revision=$expected operator=$opImage image=$image\"")
           p.write_text(s)
