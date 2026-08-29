@@ -1,0 +1,84 @@
+suite: LayerSentry Storage Fabric GUI
+templates:
+  - templates/deployment.yaml
+  - templates/configmap-nginx.yaml
+  - templates/configmap-storage-fabric.yaml
+
+tests:
+  - it: mounts the Storage Fabric console into the hardened GUI pod
+    template: templates/deployment.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: storage-fabric-ui
+            configMap:
+              name: linstor-gui-storage-fabric
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: storage-fabric-ui
+            mountPath: /usr/share/nginx/html/storage-fabric/index.html
+            subPath: index.html
+            readOnly: true
+
+  - it: exposes Gateway through a same-origin proxy and blocks mutations by default
+    template: templates/configmap-nginx.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "location \\^~ /gateway/"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "proxy_pass http://linstor-gateway.cozy-linstor.svc:8337/"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "ProvisioningLocked"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "GET\\|HEAD\\|OPTIONS"
+
+  - it: removes the nginx mutation guard only when provisioning is explicitly enabled
+    template: templates/configmap-nginx.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    set:
+      gateway.provisioningEnabled: true
+    asserts:
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: "ProvisioningLocked"
+
+  - it: renders a self-contained dashboard with all Gateway discovery endpoints
+    template: templates/configmap-storage-fabric.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "LayerSentry Storage Fabric"
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "/gateway/api/v2/status"
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "/gateway/api/v2/iscsi"
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "/gateway/api/v2/nfs"
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "/gateway/api/v2/nvme-of"
+      - matchRegex:
+          path: data["index.html"]
+          pattern: "const provisioningEnabled = false"
