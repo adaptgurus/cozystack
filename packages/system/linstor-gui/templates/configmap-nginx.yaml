@@ -8,6 +8,9 @@ mTLS-protected controller path.
 {{- end -}}
 {{- $endpoint := trimPrefix "https://" .Values.linstor.endpoint -}}
 {{- $endpointHost := (splitList ":" $endpoint) | first -}}
+{{- if not (or (hasPrefix "http://" .Values.gateway.endpoint) (hasPrefix "https://" .Values.gateway.endpoint)) -}}
+{{- fail "gateway.endpoint must be an http:// or https:// URL" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -55,7 +58,33 @@ data:
         proxy_ssl_server_name  on;
         proxy_ssl_name         {{ $endpointHost }};
 
-        # Static UI assets
+        # LayerSentry Storage Fabric console. Keep the URL stable and
+        # independent from the upstream LINSTOR GUI SPA routing.
+        location = /storage-fabric {
+          return 302 /storage-fabric/;
+        }
+
+        location ^~ /storage-fabric/ {
+          try_files $uri $uri/ /storage-fabric/index.html;
+        }
+
+        # Same-origin proxy to LINSTOR Gateway. The browser is never given
+        # the internal service address. While provisioningEnabled=false,
+        # nginx enforces the safety boundary even if a browser bypasses the UI.
+        location ^~ /gateway/ {
+          default_type application/json;
+          {{- if not .Values.gateway.provisioningEnabled }}
+          if ($request_method !~ ^(GET|HEAD|OPTIONS)$) {
+            return 403 '{"code":"ProvisioningLocked","message":{{ .Values.gateway.provisioningDisabledReason | toJson }}}';
+          }
+          {{- end }}
+          proxy_http_version 1.1;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_pass {{ trimSuffix "/" .Values.gateway.endpoint }}/;
+        }
+
+        # Static upstream LINSTOR GUI assets
         location / {
           try_files $uri $uri/ /index.html;
         }
@@ -83,9 +112,6 @@ data:
         # GUI uses (e.g. __gui__mode) keeps working as expected.
         location ~ ^/v1/key-value-store/__gui__(settings|users)(/|$) {
           default_type application/json;
-          # `if ... return` is the one documented-safe use of `if` in
-          # nginx (see "If is Evil"), so it's fine here. We allow GET/HEAD
-          # for the SPA's read path and reject every mutating method.
           if ($request_method !~ ^(GET|HEAD)$) {
             return 403 '{"ret_code":-1,"message":"linstor-gui in-app authentication is disabled by cozystack: authentication is enforced at the Ingress via Keycloak."}';
           }
@@ -103,9 +129,6 @@ data:
 
         location = /healthz {
           access_log off;
-          # default_type must come BEFORE `return` — `add_header` after a
-          # `return` is silently dropped by nginx because the response is
-          # already finalized.
           default_type text/plain;
           return 200 'ok';
         }
