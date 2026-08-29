@@ -7,6 +7,7 @@ on:
       - layersentry-platform
     paths:
       - packages/system/linstor-gui/**
+      - packages/system/dashboard/**
       - packages/core/installer/**
       - packages/core/platform/**
       - .github/workflows/layersentry-platform-packages-publish.yml
@@ -88,19 +89,37 @@ jobs:
           echo "PLATFORM_SOURCE_REF=${source_ref}"
           echo "PLATFORM_SOURCE_COMMIT=${GITHUB_SHA}"
 
-      - name: Verify published chart contains corrected LINSTOR GUI OAuth scope
+      - name: Verify published OAuth package sources
         shell: bash
         run: |
           set -euo pipefail
           rm -rf /tmp/layersentry-packages
           mkdir -p /tmp/layersentry-packages
           flux pull artifact "oci://${REGISTRY}/cozystack-packages:${IMAGE_TAG}" --output /tmp/layersentry-packages
-          gatekeeper=/tmp/layersentry-packages/system/linstor-gui/templates/gatekeeper.yaml
-          test -s "$gatekeeper"
-          grep -F -- '--scope=openid email profile groups' "$gatekeeper" >/dev/null
-          if grep -F -- '--scope=openid email profile groups offline_access' "$gatekeeper" >/dev/null; then
+
+          linstor_gatekeeper=/tmp/layersentry-packages/system/linstor-gui/templates/gatekeeper.yaml
+          test -s "$linstor_gatekeeper"
+          grep -F -- '--scope=openid email profile groups' "$linstor_gatekeeper" >/dev/null
+          if grep -F -- '--scope=openid email profile groups offline_access' "$linstor_gatekeeper" >/dev/null; then
             echo '::error::Published LINSTOR GUI chart still requests offline_access'
             exit 1
           fi
-          echo "PUBLISHED_PACKAGE_SCOPE_GATE=PASS"
+
+          dashboard_gatekeeper=/tmp/layersentry-packages/system/dashboard/templates/gatekeeper.yaml
+          dashboard_client=/tmp/layersentry-packages/system/dashboard/templates/keycloakclient.yaml
+          test -s "$dashboard_gatekeeper"
+          test -s "$dashboard_client"
+          grep -F -- '--scope=openid email profile' "$dashboard_gatekeeper" >/dev/null
+          if grep -F -- '--scope=openid email profile offline_access' "$dashboard_gatekeeper" >/dev/null; then
+            echo '::error::Published dashboard chart still requests offline_access'
+            exit 1
+          fi
+          if grep -F -- 'optionalClientScopes: ["offline_access"]' "$dashboard_client" >/dev/null; then
+            echo '::error::Published dashboard Keycloak client still enables offline_access'
+            exit 1
+          fi
+
+          echo 'PUBLISHED_LINSTOR_SCOPE_GATE=PASS'
+          echo 'PUBLISHED_DASHBOARD_SCOPE_GATE=PASS'
+          echo 'PUBLISHED_DASHBOARD_KEYCLOAK_SCOPE_GATE=PASS'
           echo "PUBLISHED_PACKAGE_DIGEST=${{ steps.publish.outputs.digest }}"
