@@ -3,9 +3,10 @@ templates:
   - templates/deployment.yaml
   - templates/configmap-nginx.yaml
   - templates/configmap-storage-fabric.yaml
+  - templates/configmap-storage-fabric-wizard.yaml
 
 tests:
-  - it: mounts the Storage Fabric console into the hardened GUI pod
+  - it: mounts the Storage Fabric console and wizard into the hardened GUI pod
     template: templates/deployment.yaml
     release:
       name: linstor-gui
@@ -23,6 +24,19 @@ tests:
             name: storage-fabric-ui
             mountPath: /usr/share/nginx/html/storage-fabric/index.html
             subPath: index.html
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: storage-fabric-wizard
+            configMap:
+              name: linstor-gui-storage-fabric-wizard
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: storage-fabric-wizard
+            mountPath: /usr/share/nginx/html/storage-fabric/wizard.js
+            subPath: wizard.js
             readOnly: true
 
   - it: exposes Gateway through a same-origin proxy and blocks mutations by default
@@ -44,7 +58,7 @@ tests:
           path: data["nginx.conf"]
           pattern: "GET\\|HEAD\\|OPTIONS"
 
-  - it: removes the nginx mutation guard only when provisioning is explicitly enabled
+  - it: keeps mutations locked when only administrative opt-in is enabled
     template: templates/configmap-nginx.yaml
     release:
       name: linstor-gui
@@ -52,9 +66,30 @@ tests:
     set:
       gateway.provisioningEnabled: true
     asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "ProvisioningLocked"
+
+  - it: unlocks Gateway writes only after all certifications and requires the wizard header
+    template: templates/configmap-nginx.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    set:
+      gateway.provisioningEnabled: true
+      gateway.safety.persistentDiskIdentityCertified: true
+      gateway.safety.agentDataPlaneCertified: true
+      gateway.safety.certificationReference: TEST-CERT-1
+    asserts:
       - notMatchRegex:
           path: data["nginx.conf"]
           pattern: "ProvisioningLocked"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "ProvisioningConfirmationRequired"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "POST\\|PUT\\|PATCH\\|DELETE"
 
   - it: renders a self-contained dashboard with all Gateway discovery endpoints
     template: templates/configmap-storage-fabric.yaml
@@ -79,6 +114,22 @@ tests:
       - matchRegex:
           path: data["index.html"]
           pattern: "/gateway/api/v2/nvme-of"
+
+  - it: renders all three guided provisioning endpoints
+    template: templates/configmap-storage-fabric-wizard.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
       - matchRegex:
-          path: data["index.html"]
-          pattern: "const provisioningEnabled = false"
+          path: data["wizard.js"]
+          pattern: "Create iSCSI target"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "Create NFS export"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "Create NVMe/TCP target"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "X-LayerSentry-Provisioning"
