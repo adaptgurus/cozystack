@@ -70,10 +70,8 @@ jobs:
           Write-Host '===== CLASSIC LINSTOR ====='
           & $env:KUBECTL get deployment,pod,svc -n cozy-linstor -o wide
           if ($LASTEXITCODE -ne 0) { throw 'cannot read cozy-linstor resources' }
-          & $env:KUBECTL get svc linstor-controller -n cozy-linstor -o json
-          if ($LASTEXITCODE -ne 0) { throw 'linstor-controller service is missing' }
-
           $svc = & $env:KUBECTL get svc linstor-controller -n cozy-linstor -o json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $null -eq $svc) { throw 'linstor-controller service is missing' }
           $ports = @($svc.spec.ports | ForEach-Object { [int]$_.port })
           if ($ports -notcontains 3370) { throw "linstor-controller does not expose internal port 3370; ports=$($ports -join ',')" }
 
@@ -166,7 +164,7 @@ jobs:
                         mountPath: /work
                 containers:
                   - name: gateway
-                    image: alpine:3.22.1
+                    image: debian:bookworm-slim
                     command: ["/work/linstor-gateway"]
                     args:
                       - server
@@ -244,18 +242,31 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or ($version -join "`n") -notmatch '2\.3\.0') { throw 'Gateway version validation failed' }
           $version
 
-          Write-Host '===== GATEWAY STATUS ====='
-          $status = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- wget -qO- http://127.0.0.1:8337/status
-          if ($LASTEXITCODE -ne 0) { throw 'Gateway /status failed' }
-          $status
-          if (($status -join "`n") -notmatch '2\.3\.0') { throw 'Gateway /status does not report v2.3.0' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'linstor-gateway-portforward.out'
+          $stderr = Join-Path $env:RUNNER_TEMP 'linstor-gateway-portforward.err'
+          Remove-Item $stdout,$stderr -ErrorAction SilentlyContinue
+          $pf = Start-Process -FilePath $env:KUBECTL -ArgumentList @('port-forward','-n','cozy-linstor','service/linstor-gateway-phase1','18337:8337') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Start-Sleep -Seconds 3
+          if ($pf.HasExited) {
+            Get-Content $stdout,$stderr -ErrorAction SilentlyContinue
+            throw 'Gateway port-forward failed to start'
+          }
+          try {
+            Write-Host '===== GATEWAY STATUS ====='
+            $status = Invoke-RestMethod -Uri 'http://127.0.0.1:18337/status' -TimeoutSec 10
+            $statusJson = $status | ConvertTo-Json -Compress -Depth 10
+            Write-Host $statusJson
+            if ($statusJson -notmatch '2\.3\.0') { throw 'Gateway /status does not report v2.3.0' }
 
-          $readOnlyPaths = @('/api/v2/iscsi','/api/v2/nfs','/api/v2/nvme-of')
-          foreach ($path in $readOnlyPaths) {
-            Write-Host "===== READ ONLY $path ====="
-            $body = & $env:KUBECTL exec -n cozy-linstor deployment/linstor-gateway-phase1 -c gateway -- wget -qO- "http://127.0.0.1:8337$path"
-            if ($LASTEXITCODE -ne 0) { throw "Gateway read-only endpoint failed: $path" }
-            $body
+            $readOnlyPaths = @('/api/v2/iscsi','/api/v2/nfs','/api/v2/nvme-of')
+            foreach ($path in $readOnlyPaths) {
+              Write-Host "===== READ ONLY $path ====="
+              $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18337$path" -TimeoutSec 15
+              if ([int]$response.StatusCode -ne 200) { throw "Gateway read-only endpoint returned $($response.StatusCode): $path" }
+              Write-Host $response.Content
+            }
+          } finally {
+            if (-not $pf.HasExited) { Stop-Process -Id $pf.Id -Force -ErrorAction SilentlyContinue }
           }
           Write-Host 'GATEWAY_CONTROL_PLANE=PASS'
           Write-Host 'GATEWAY_MUTATING_API_CALLS=NONE'

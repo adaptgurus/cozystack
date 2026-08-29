@@ -9,10 +9,13 @@ RUN apk add --no-cache ca-certificates curl && \
     echo "${LINSTOR_GATEWAY_SHA256}  /tmp/linstor-gateway" | sha256sum -c - && \
     chmod 0755 /tmp/linstor-gateway
 
-FROM alpine:3.22.1
-RUN apk add --no-cache ca-certificates && \
-    addgroup -g 65532 -S gateway && \
-    adduser -u 65532 -S -D -H -G gateway gateway
+# Upstream v2.3.0 is linked against glibc, so use a glibc runtime rather than
+# musl-based Alpine. Running the binary in Alpine fails before main() with the
+# dynamic-loader style error "no such file or directory".
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=fetch /tmp/linstor-gateway /usr/local/bin/linstor-gateway
 USER 65532:65532
 EXPOSE 8337
