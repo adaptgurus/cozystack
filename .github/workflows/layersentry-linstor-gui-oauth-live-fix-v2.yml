@@ -1,0 +1,157 @@
+name: LayerSentry LINSTOR GUI OAuth Live Fix V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-oauth-live-fix-v2.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  fix-and-certify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Apply corrected live OAuth scope
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui HelmRelease is not Ready' }
+
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          $args = @($dep.spec.template.spec.containers[0].args)
+          $idx = -1
+          for ($i=0; $i -lt $args.Count; $i++) {
+            if ($args[$i] -like '--scope=*') { $idx = $i; break }
+          }
+          if ($idx -lt 0) { throw 'missing gatekeeper --scope argument' }
+          Write-Host "Before: $($args[$idx])"
+          $args[$idx] = '--scope=openid email profile groups'
+
+          $patchObj = [ordered]@{
+            spec = [ordered]@{
+              template = [ordered]@{
+                spec = [ordered]@{
+                  containers = @(
+                    [ordered]@{
+                      name = 'auth-proxy'
+                      args = $args
+                    }
+                  )
+                }
+              }
+            }
+          }
+          $patchFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-oauth-scope-patch.json'
+          $patchObj | ConvertTo-Json -Depth 20 | Set-Content -Path $patchFile -Encoding UTF8
+          & $env:KUBECTL patch deployment linstor-gui-gatekeeper -n cozy-linstor --type=strategic "--patch-file=$patchFile"
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl strategic patch failed' }
+
+          & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor --timeout=180s
+          if ($LASTEXITCODE -ne 0) { throw 'gatekeeper rollout failed' }
+          $newDep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          $newArgs = @($newDep.spec.template.spec.containers[0].args)
+          $scope = @($newArgs | Where-Object { $_ -like '--scope=*' })
+          if ($scope.Count -ne 1) { throw "expected one scope argument, found $($scope.Count)" }
+          if ($scope[0] -ne '--scope=openid email profile groups') { throw "wrong live scope: $($scope[0])" }
+          Write-Host "LIVE_OAUTH_SCOPE_FIX=PASS scope=$($scope[0])"
+
+      - name: Full browser OAuth certification
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pwdB64 = (& $env:KUBECTL get secret layersentry-gui-admin-password -n cozy-system -o jsonpath='{.data.password}' | Out-String).Trim()
+          if (-not $pwdB64) { throw 'GUI admin password Secret is missing' }
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pwdB64))
+          Write-Output "::add-mask::$pwdB64"
+          Write-Output "::add-mask::$password"
+
+          $guiHostName = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o jsonpath='{.spec.rules[0].host}' | Out-String).Trim()
+          $guiUrl = "https://$guiHostName/"
+          $jar = Join-Path $env:RUNNER_TEMP 'oauth-browser.cookies'
+
+          $h1f = Join-Path $env:RUNNER_TEMP 'oauth-root.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h1f -o NUL --max-time 30 $guiUrl
+          if ($LASTEXITCODE -ne 0) { throw 'GUI initial request failed' }
+          $h1 = Get-Content $h1f -Raw
+          $s1 = [regex]::Match($h1,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc1 = ([regex]::Match($h1,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s1 -notin @('302','303','307')) { throw "initial GUI status is $s1, expected redirect" }
+          if (-not $loc1) { throw 'initial redirect Location missing' }
+          if ((Get-Content $jar -Raw) -notmatch 'kc-access_csrf') { throw 'oauth2-proxy CSRF cookie was not created' }
+          Write-Host 'BROWSER_OAUTH_1=PASS csrfCookie=true'
+
+          $h2f = Join-Path $env:RUNNER_TEMP 'oauth-login.headers'
+          $b2f = Join-Path $env:RUNNER_TEMP 'oauth-login.html'
+          & curl.exe -k -sS -c $jar -b $jar -D $h2f -o $b2f --max-time 30 $loc1
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak login page request failed' }
+          $h2 = Get-Content $h2f -Raw
+          $s2 = [regex]::Match($h2,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($s2 -ne '200') { throw "Keycloak login page returned $s2" }
+          $html = Get-Content $b2f -Raw
+          $m = [regex]::Match($html,'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if (-not $m.Success) { $m = [regex]::Match($html,'<form[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+          if (-not $m.Success) { throw 'Keycloak login form action not found' }
+          $action = [Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+          if ($action.StartsWith('/')) {
+            $u = [Uri]$loc1
+            $action = "$($u.Scheme)://$($u.Authority)$action"
+          }
+          Write-Host 'BROWSER_OAUTH_2=PASS loginPage=200'
+
+          $h3f = Join-Path $env:RUNNER_TEMP 'oauth-submit.headers'
+          $b3f = Join-Path $env:RUNNER_TEMP 'oauth-submit.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h3f -o $b3f --max-time 30 -X POST $action --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'credentialId='
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak login submit failed' }
+          $h3 = Get-Content $h3f -Raw
+          $s3 = [regex]::Match($h3,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc3 = ([regex]::Match($h3,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s3 -notin @('302','303')) { throw "Keycloak credential submit returned $s3 instead of redirect" }
+          if ($loc3 -notlike "https://$guiHostName/oauth2/callback*") { throw "unexpected callback URL: $loc3" }
+          Write-Host 'BROWSER_OAUTH_3=PASS credentialsAccepted=true'
+
+          $h4f = Join-Path $env:RUNNER_TEMP 'oauth-callback.headers'
+          $b4f = Join-Path $env:RUNNER_TEMP 'oauth-callback.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h4f -o $b4f --max-time 30 $loc3
+          if ($LASTEXITCODE -ne 0) { throw 'OAuth callback request failed' }
+          $h4 = Get-Content $h4f -Raw
+          $s4 = [regex]::Match($h4,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc4 = ([regex]::Match($h4,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s4 -eq '500') { throw 'OAuth callback still returns HTTP 500' }
+          if ($s4 -notin @('302','303')) { throw "OAuth callback returned $s4, expected successful redirect" }
+          if ((Get-Content $jar -Raw) -notmatch "`tkc-access`t") { throw 'authenticated kc-access cookie not created' }
+          Write-Host "BROWSER_OAUTH_4=PASS callbackHttp=$s4 sessionCookie=true"
+
+          if (-not $loc4) { $loc4='/' }
+          if ($loc4.StartsWith('/')) { $finalUrl="https://$guiHostName$loc4" } else { $finalUrl=$loc4 }
+          $h5f = Join-Path $env:RUNNER_TEMP 'oauth-final.headers'
+          $b5f = Join-Path $env:RUNNER_TEMP 'oauth-final.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h5f -o $b5f --max-time 30 $finalUrl
+          if ($LASTEXITCODE -ne 0) { throw 'authenticated GUI request failed' }
+          $s5 = [regex]::Match((Get-Content $h5f -Raw),'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($s5 -ne '200') { throw "authenticated GUI returned HTTP $s5" }
+          $finalBody = Get-Content $b5f -Raw
+          if ($finalBody -match '(?i)Internal Server Error|Oops! Something went wrong') { throw 'final GUI response is still an error page' }
+          Write-Host "LINSTOR_GUI_BROWSER_LOGIN=PASS username=$env:GUI_USERNAME authenticatedHttp=200 callback500=false url=$guiUrl"
+
+      - name: Post-fix error check
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logs = (& $env:KUBECTL logs deployment/linstor-gui-gatekeeper -n cozy-linstor --since=2m 2>&1 | Out-String)
+          $bad = @($logs -split "`r?`n" | Where-Object { $_ -match '(?i)Offline tokens not allowed|Error redeeming code.*invalid_grant' })
+          if ($bad.Count -gt 0) {
+            $bad | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+            throw 'offline-token OAuth exchange errors are still occurring'
+          }
+          Write-Host 'LINSTOR_GUI_OAUTH_POSTCHECK=PASS'
