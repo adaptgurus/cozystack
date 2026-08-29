@@ -1,0 +1,67 @@
+name: LayerSentry VM Package Probe
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-vm-package-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-vm-package-probe
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      RELEASE_PACKAGE_DIGEST: sha256:8afe4d30a7b6b88fe101c12001f1ada9e458f470636f2150b2d79ad5c8be0007
+    steps:
+      - name: Probe exact package digest without changing active sources
+        run: |
+          $ErrorActionPreference='Stop'
+          $name='layersentry-vm-package-probe'
+          & $env:KUBECTL -n cozy-system delete ocirepository.source.toolkit.fluxcd.io $name --ignore-not-found=true --wait=true | Out-Null
+          $base=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-packages -o json | ConvertFrom-Json
+          $obj=[ordered]@{
+            apiVersion='source.toolkit.fluxcd.io/v1beta2'
+            kind='OCIRepository'
+            metadata=[ordered]@{name=$name;namespace='cozy-system'}
+            spec=$base.spec
+          }
+          $obj.spec.ref=[ordered]@{digest=$env:RELEASE_PACKAGE_DIGEST}
+          if($obj.spec.PSObject.Properties.Name -contains 'interval'){$obj.spec.interval='30s'}
+          $f=Join-Path $env:RUNNER_TEMP 'vm-package-probe.json'
+          $obj|ConvertTo-Json -Depth 50|Set-Content $f -Encoding UTF8
+          try {
+            & $env:KUBECTL apply -f $f | Out-Host
+            if($LASTEXITCODE){throw 'probe source apply failed'}
+            $deadline=(Get-Date).AddMinutes(4)
+            do {
+              Start-Sleep 5
+              $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+              $ready=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+              $conds=@($src.status.conditions|ForEach-Object{"$($_.type)=$($_.status):$($_.reason):$($_.message)"}) -join ' | '
+              Write-Host "PROBE state digest=$($src.spec.ref.digest) revision=$($src.status.artifact.revision) artifactDigest=$($src.status.artifact.digest) conditions=$conds"
+              if($ready.status -eq 'True' -and [string]$src.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST)){
+                Write-Host "VM_PACKAGE_ARTIFACT_PROBE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
+                exit 0
+              }
+              if($ready.status -eq 'False' -and $ready.reason -match 'Failed|Error|Invalid|Authentication|NotFound|Verification'){
+                throw "artifact probe failed early: $conds"
+              }
+            } while((Get-Date)-lt$deadline)
+            throw "artifact probe timed out: $conds"
+          } finally {
+            & $env:KUBECTL -n cozy-system delete ocirepository.source.toolkit.fluxcd.io $name --ignore-not-found=true --wait=true | Out-Host
+          }
