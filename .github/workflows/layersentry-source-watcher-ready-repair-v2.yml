@@ -1,0 +1,91 @@
+name: LayerSentry Source Watcher Ready Repair V2
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-source-watcher-ready-repair-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-source-watcher-ready-repair-v2
+  cancel-in-progress: false
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: layersentry-platform
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Reuse reviewed repair patch with pinned API correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -ryaml <<'RUBY'
+          path = '.github/workflows/layersentry-source-watcher-ready-repair-dev.yml'
+          doc = YAML.load_file(path)
+          steps = doc.fetch('jobs').fetch('patch-test-commit').fetch('steps')
+          step = steps.find { |s| s['name'] == 'Apply proof-based lost Ready repair' }
+          abort 'reviewed repair step missing' unless step && step['run']
+          script = step['run']
+
+          old_guard = 'if ag.Spec.PathPattern != "" || len(ag.Spec.OutputArtifacts) == 0 {'
+          new_guard = 'if len(ag.Spec.OutputArtifacts) == 0 {'
+          abort 'PathPattern guard anchor missing' unless script.include?(old_guard)
+          script.sub!(old_guard, new_guard)
+
+          old_comment = <<~TXT.chomp
+          	// PackageSource-generated AGs use fixed output names. Dynamic pathPattern
+          	// expansion does not have a one-to-one spec/inventory cardinality, so do
+          	// not auto-repair it without a stronger proof model.
+          TXT
+          new_comment = <<~TXT.chomp
+          	// PackageSource-generated ArtifactGenerators in the pinned v2.0.3 API
+          	// use fixed OutputArtifacts, which gives a one-to-one proof surface.
+          TXT
+          abort 'PathPattern comment anchor missing' unless script.include?(old_comment)
+          script.sub!(old_comment, new_comment)
+
+          old_test = <<~TXT
+          	t.Run("dynamic pathPattern is never auto repaired", func(t *testing.T){
+          		bad:=ag.DeepCopy(); bad.Spec.PathPattern="@src/{app}/**"
+          		r:=&PackageSourceReconciler{Client:newClient(bad.DeepCopy(),src.DeepCopy(),ea.DeepCopy()),Scheme:readyRepairScheme(t)}
+          		ok,err:=r.proveArtifactGeneratorCurrentSuccess(context.Background(),bad); if err!=nil||ok {t.Fatalf("proven=%v err=%v want false",ok,err)}
+          	})
+          TXT
+          abort 'PathPattern test anchor missing' unless script.include?(old_test)
+          script.sub!(old_test, '')
+
+          File.write('/tmp/apply-ready-repair.sh', "set -euo pipefail\n" + script)
+          RUBY
+          bash /tmp/apply-ready-repair.sh
+
+      - name: Commit tested repair without validation workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/layersentry-source-watcher-ready-repair-dev.yml
+          git rm .github/workflows/layersentry-source-watcher-ready-repair-v2.yml
+          git add internal/operator/packagesource_reconciler.go internal/operator/packagesource_ready_repair.go internal/operator/packagesource_ready_repair_test.go
+          git config user.name "adaptgurus"
+          git config user.email "73125939+adaptgurus@users.noreply.github.com"
+          git commit -m "fix(operator): recover proven source-watcher lost Ready"
+          for attempt in 1 2 3; do
+            git fetch origin layersentry-platform
+            git rebase origin/layersentry-platform
+            go test ./internal/operator -count=1
+            if git push origin HEAD:layersentry-platform; then
+              exit 0
+            fi
+          done
+          echo "failed to push tested repair after concurrent updates" >&2
+          exit 1
