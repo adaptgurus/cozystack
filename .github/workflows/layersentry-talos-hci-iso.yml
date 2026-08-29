@@ -1,10 +1,9 @@
-name: LayerSentry HCI Talos Production Hold
+name: LayerSentry HCI Talos Production Release
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - layersentry-platform
+    branches: [layersentry-platform]
     paths:
       - 'packages/core/talos/**'
       - 'packages/system/cilium/values.yaml'
@@ -15,23 +14,255 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
+  packages: write
+
+env:
+  TALOS_VERSION: v1.13.6
+  TALOS_COMMIT: 04318854eb64c90e99308b844b45b26b0077489e
+  PKGS_COMMIT: d8c80cc52d6c60a25c7ab2a80fa78814c08a04da
+  EXTENSIONS_COMMIT: f16e62f2d5927589f62643332dae9c07489cbf47
+  LOCAL_REGISTRY: 127.0.0.1:5005
+  BUILD_TAG: v1.13.6-layersentry-prod1
+  RELEASE_REVISION: r5
 
 jobs:
-  production-hold:
-    name: Block superseded r4 ISO publication
+  build-release:
+    name: Build install-test and publish LayerSentry HCI Talos
     if: github.ref_name == 'layersentry-platform'
     runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
-      - name: Checkout layersentry-platform
+      - name: Checkout exact branch HEAD
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Enforce production rebuild hold
+
+      - name: Enforce release source and production hold
         shell: bash
         run: |
           set -euo pipefail
-          test -f packages/core/talos/PRODUCTION_REBUILD_HOLD.md
-          echo '::error::LayerSentry Talos r4 is superseded. Production ISO rebuild hold is active; publication is intentionally blocked.'
+          test "$GITHUB_REF_NAME" = layersentry-platform
+          if [ -e packages/core/talos/PRODUCTION_REBUILD_HOLD.md ]; then
+            echo '::error::Production rebuild hold is still active'
+            exit 1
+          fi
+          test "$(awk '/^version:/ {print $2; exit}' packages/core/talos/images/talos/profiles/installer.yaml)" = "$TALOS_VERSION"
+          grep -Fq "$TALOS_COMMIT" packages/core/talos/hack/build-layersentry-custom-talos.sh
+          grep -Fq "$PKGS_COMMIT" packages/core/talos/hack/build-layersentry-custom-talos.sh
+          grep -Fq "$EXTENSIONS_COMMIT" packages/core/talos/hack/build-layersentry-kernel-extensions.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5005"]
+              http = true
+              insecure = true
+
+      - name: Start pinned ephemeral registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name layersentry-registry --network host \
+            -e REGISTRY_HTTP_ADDR=0.0.0.0:5005 \
+            registry:3.1.1@sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5005/v2/ >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs layersentry-registry
           exit 1
+
+      - name: Build exact custom Talos kernel and signed module packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          TALOS_VERSION="$TALOS_VERSION" TALOS_COMMIT="$TALOS_COMMIT" PKGS_COMMIT="$PKGS_COMMIT" \
+            LOCAL_REGISTRY="$LOCAL_REGISTRY" BUILD_TAG="$BUILD_TAG" \
+            packages/core/talos/hack/build-layersentry-custom-talos.sh
+
+      - name: Build custom-kernel extensions ISO and installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _out/assets _out/extensions _out/evidence _out/release
+          mkdir -p _out/assets _out/extensions
+          base_installer="${LOCAL_REGISTRY}/layersentry/talos/installer-base:${BUILD_TAG}"
+          imager="${LOCAL_REGISTRY}/layersentry/talos/imager:${BUILD_TAG}"
+          make -C packages/core/talos layersentry-production-assets \
+            TALOS_VERSION="$TALOS_VERSION" LOCAL_REGISTRY="$LOCAL_REGISTRY" BUILD_TAG="$BUILD_TAG" \
+            PKGS_PREFIX="${LOCAL_REGISTRY}/layersentry/pkgs" \
+            BASE_INSTALLER_IMAGE="$base_installer" IMAGER_IMAGE="$imager"
+          test -s _out/assets/metal-amd64.iso
+          test -s _out/assets/metal-amd64-installer.tar
+
+      - name: Validate production profile and extension merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          TALOS_VERSION="$TALOS_VERSION" LOCAL_REGISTRY="$LOCAL_REGISTRY" BUILD_TAG="$BUILD_TAG" \
+            packages/core/talos/hack/validate-layersentry-production-profile.sh
+
+      - name: Prove mandatory official userspace binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile=packages/core/talos/images/talos/profiles/iso.yaml
+          inspect_extension() {
+            name=$1
+            shift
+            ref=$(awk -v n="/${name}:" '$0 ~ /imageRef:/ && index($0,n){print $3; exit}' "$profile")
+            test -n "$ref"
+            docker pull "$ref" >/dev/null
+            cid=$(docker create "$ref" /bin/true)
+            docker export "$cid" | tar -tf - | sed 's#^\./##' > "/tmp/${name}.files"
+            docker rm "$cid" >/dev/null
+            for pattern in "$@"; do
+              grep -Eq "$pattern" "/tmp/${name}.files" || {
+                echo "::error::${name} missing required binary pattern ${pattern}"
+                exit 1
+              }
+            done
+          }
+          inspect_extension iscsi-tools '/iscsiadm$' '/iscsid$' '/iscsi-iname$'
+          inspect_extension multipath-tools '/multipath$' '/multipathd$'
+          inspect_extension nfs-utils '/mount\.nfs$'
+          inspect_extension nvme-cli '/nvme$'
+          inspect_extension lldpd '/lldpd$'
+          inspect_extension trident-iscsi-tools '/lsscsi$'
+
+      - name: Install QEMU UEFI tools and exact talosctl
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf gzip
+          curl --fail --location --retry 4 \
+            "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
+            -o /tmp/talosctl
+          chmod +x /tmp/talosctl
+          /tmp/talosctl version --client
+          /tmp/talosctl gen config --help | grep -F -- '--install-image'
+
+      - name: BIOS boot UEFI install and disk-only persistence test
+        shell: bash
+        run: |
+          set -euo pipefail
+          TALOSCTL=/tmp/talosctl BUILD_TAG="$BUILD_TAG" LOCAL_REGISTRY="$LOCAL_REGISTRY" \
+            packages/core/talos/hack/boot-test-layersentry-production-iso.sh \
+            _out/assets/metal-amd64.iso _out/assets/metal-amd64-installer.tar
+
+      - name: Publish immutable installer OCI to GHCR
+        id: installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          version=${TALOS_VERSION#v}
+          ghcr_ref="ghcr.io/${owner}/layersentry-talos-installer:v${version}-${RELEASE_REVISION}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$ghcr_ref" >/dev/null 2>&1; then
+            echo "::error::Immutable installer tag already exists: $ghcr_ref"
+            exit 1
+          fi
+          local_ref="${LOCAL_REGISTRY}/layersentry/installer:${BUILD_TAG}"
+          docker image inspect "$local_ref" >/dev/null
+          docker tag "$local_ref" "$ghcr_ref"
+          docker push "$ghcr_ref"
+          docker pull "$ghcr_ref" >/dev/null
+          digest_ref=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ghcr_ref" | grep "^ghcr.io/${owner}/layersentry-talos-installer@sha256:" | head -1)
+          test -n "$digest_ref"
+          echo "ref=$ghcr_ref" >> "$GITHUB_OUTPUT"
+          echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$digest_ref"
+
+      - name: Package production release evidence
+        id: package
+        env:
+          INSTALLER_REF: ${{ steps.installer.outputs.ref }}
+          INSTALLER_DIGEST_REF: ${{ steps.installer.outputs.digest_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${TALOS_VERSION#v}
+          base="layersentry-hci-talos-${version}-amd64"
+          tag="layersentry-hci-talos-v${version}-${RELEASE_REVISION}"
+          out=_out/release
+          mkdir -p "$out"
+          cp _out/assets/metal-amd64.iso "$out/${base}.iso"
+          cp _out/assets/metal-amd64-installer.tar "$out/${base}-installer.tar"
+          cp packages/core/talos/images/talos/profiles/iso.yaml "$out/${base}-profile.yaml"
+          cp packages/core/talos/images/talos/profiles/installer.yaml "$out/${base}-installer-profile.yaml"
+          cp packages/core/talos/layersentry-hci-machine-config.yaml "$out/${base}-machine-config.yaml"
+          cp packages/core/talos/LAYERSENTRY_HCI_IMAGE_AUDIT.md "$out/${base}-audit.md"
+          cp _out/extensions/layersentry-kernel-extensions.sha256 "$out/${base}-kernel-extensions.sha256"
+          cp _out/extensions/*.sbom.spdx.json "$out/"
+          tar -C _out/evidence -czf "$out/${base}-boot-install-evidence.tar.gz" .
+          {
+            echo "Talos version: $TALOS_VERSION"
+            echo "Talos commit: $TALOS_COMMIT"
+            echo "pkgs commit: $PKGS_COMMIT"
+            echo "extensions commit: $EXTENSIONS_COMMIT"
+            echo "LayerSentry commit: $GITHUB_SHA"
+            echo "Kernel: 6.18.38-talos"
+            echo "Kernel delta: CONFIG_INFINIBAND_ISER=m"
+            echo "Installer OCI tag: $INSTALLER_REF"
+            echo "Installer OCI digest: $INSTALLER_DIGEST_REF"
+            echo "Secure Boot: not certified by this release"
+            echo "Hardware FC/iSER/RDMA/RoCE/SR-IOV/GPU: physical certification required"
+          } > "$out/${base}-provenance.txt"
+          printf '%s\n' "$INSTALLER_DIGEST_REF" > "$out/${base}-installer-reference.txt"
+          (cd "$out" && sha256sum "${base}.iso" > "${base}.sha256")
+          (cd "$out" && sha256sum "${base}-installer.tar" > "${base}-installer.sha256")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "out=$out" >> "$GITHUB_OUTPUT"
+          cat "$out/${base}.sha256"
+          cat "$out/${base}-installer.sha256"
+
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.package.outputs.tag }}
+          OUT: ${{ steps.package.outputs.out }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Immutable production release already exists: $TAG"
+            exit 1
+          fi
+          cat > /tmp/release-notes.md <<EOF
+          LayerSentry HCI/dHCI Talos ${TALOS_VERSION} production candidate built from \`layersentry-platform\`.
+
+          Release gates: exact custom iSER kernel; custom-signed DRBD/ZFS/NFSD/GPU kernel extensions; no ZFS force-import service; dormant NFS/iSCSI target services; digest-pinned official extensions; BIOS ISO boot; UEFI installation; disk-only reboot with ISO detached; custom module load; complete extension inventory; and checksum verification.
+
+          The paired installer OCI digest in the release is mandatory for installation/upgrade parity. Secure Boot and hardware-dependent FC/iSER/RDMA/RoCE/NVMe-RDMA/NVMe-FC/SR-IOV/VFIO/GPU behavior require physical lab certification before those hardware paths are declared certified.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "LayerSentry HCI Talos ${TALOS_VERSION} ${RELEASE_REVISION}" \
+            --notes-file /tmp/release-notes.md --latest=false "$OUT"/*
+
+      - name: Re-download and verify published bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.package.outputs.tag }}
+          BASE: ${{ steps.package.outputs.base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/layersentry-release-verify
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir /tmp/layersentry-release-verify \
+            --pattern "${BASE}.iso" --pattern "${BASE}.sha256" \
+            --pattern "${BASE}-installer.tar" --pattern "${BASE}-installer.sha256"
+          (cd /tmp/layersentry-release-verify && sha256sum -c "${BASE}.sha256")
+          (cd /tmp/layersentry-release-verify && sha256sum -c "${BASE}-installer.sha256")
+          tag_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha')
+          test "$tag_sha" = "$GITHUB_SHA"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,url,assets
