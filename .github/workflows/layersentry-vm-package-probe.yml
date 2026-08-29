@@ -34,8 +34,8 @@ jobs:
           & $env:KUBECTL -n cozy-system delete ocirepository.source.toolkit.fluxcd.io $name --ignore-not-found=true --wait=true | Out-Null
           $base=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-packages -o json | ConvertFrom-Json
           $obj=[ordered]@{
-            apiVersion='source.toolkit.fluxcd.io/v1beta2'
-            kind='OCIRepository'
+            apiVersion=[string]$base.apiVersion
+            kind=[string]$base.kind
             metadata=[ordered]@{name=$name;namespace='cozy-system'}
             spec=$base.spec
           }
@@ -52,13 +52,13 @@ jobs:
               $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
               $ready=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
               $conds=@($src.status.conditions|ForEach-Object{"$($_.type)=$($_.status):$($_.reason):$($_.message)"}) -join ' | '
-              Write-Host "PROBE state digest=$($src.spec.ref.digest) revision=$($src.status.artifact.revision) artifactDigest=$($src.status.artifact.digest) conditions=$conds"
+              Write-Host "PROBE state apiVersion=$($src.apiVersion) digest=$($src.spec.ref.digest) revision=$($src.status.artifact.revision) artifactDigest=$($src.status.artifact.digest) conditions=$conds"
               if($ready.status -eq 'True' -and [string]$src.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST)){
                 Write-Host "VM_PACKAGE_ARTIFACT_PROBE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
                 exit 0
               }
-              if($ready.status -eq 'False' -and $ready.reason -match 'Failed|Error|Invalid|Authentication|NotFound|Verification'){
-                throw "artifact probe failed early: $conds"
+              if($ready.status -eq 'False'){
+                throw "artifact probe failed: $conds"
               }
             } while((Get-Date)-lt$deadline)
             throw "artifact probe timed out: $conds"
