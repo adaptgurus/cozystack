@@ -1,0 +1,142 @@
+name: LayerSentry Storage GUI OIDC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-gui-oidc.yml
+
+concurrency:
+  group: layersentry-storage-gui-oidc
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  gui-auth:
+    name: Enable and verify Keycloak-protected LINSTOR GUI
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+
+    steps:
+      - name: Verify current platform and LINSTOR
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          & $env:KUBECTL wait --for=condition=Ready nodes --all --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'nodes are not Ready' }
+          $linstor = (& $env:KUBECTL get package.cozystack.io cozystack.linstor -o json | ConvertFrom-Json)
+          $ready = @($linstor.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+          if (($ready.Count -eq 0) -or ($ready[0].status -ne 'True')) { throw 'LINSTOR is not Ready' }
+          Write-Host 'GUI_OIDC_PREFLIGHT=PASS'
+
+      - name: Enable OIDC, expose LINSTOR GUI, and enable optional package
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o json | ConvertFrom-Json)
+          $values = $pkg.spec.components.platform.values
+
+          $enabled = @($values.bundles.enabledPackages | Where-Object { $_ })
+          if ('cozystack.linstor-gui' -notin $enabled) { $enabled += 'cozystack.linstor-gui' }
+          $enabled = @($enabled | Sort-Object -Unique)
+
+          $exposed = @($values.publishing.exposedServices | Where-Object { $_ })
+          if ('linstor-gui' -notin $exposed) { $exposed += 'linstor-gui' }
+          $exposed = @($exposed | Sort-Object -Unique)
+
+          $patchObject = @{
+            spec = @{
+              components = @{
+                platform = @{
+                  values = @{
+                    authentication = @{ oidc = @{ enabled = $true } }
+                    bundles = @{ enabledPackages = $enabled }
+                    publishing = @{ exposedServices = $exposed }
+                  }
+                }
+              }
+            }
+          }
+          $patchFile = Join-Path $env:RUNNER_TEMP 'platform-storage-gui-patch.json'
+          $patchObject | ConvertTo-Json -Depth 20 | Set-Content -Path $patchFile -Encoding UTF8
+          & $env:KUBECTL patch package.cozystack.io cozystack.cozystack-platform --type merge --patch-file $patchFile
+          if ($LASTEXITCODE -ne 0) { throw 'platform OIDC/LINSTOR-GUI patch failed' }
+
+          $after = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o json | ConvertFrom-Json)
+          $afterValues = $after.spec.components.platform.values
+          if (-not $afterValues.authentication.oidc.enabled) { throw 'OIDC did not become enabled' }
+          if ('cozystack.linstor-gui' -notin @($afterValues.bundles.enabledPackages)) { throw 'linstor-gui package not enabled' }
+          if ('linstor-gui' -notin @($afterValues.publishing.exposedServices)) { throw 'linstor-gui service not exposed' }
+          Write-Host ('enabled_packages=' + (@($afterValues.bundles.enabledPackages) -join ','))
+          Write-Host ('exposed_services=' + (@($afterValues.publishing.exposedServices) -join ','))
+          Write-Host 'PLATFORM_OIDC_GUI_PATCH=PASS'
+
+      - name: Wait for native Keycloak and LINSTOR GUI packages
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Wait-PackageReady([string]$name) {
+            $deadline = (Get-Date).AddMinutes(15)
+            do {
+              $raw = & $env:KUBECTL get package.cozystack.io $name -o json 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                $p = $raw | ConvertFrom-Json
+                $c = @($p.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+                if (($c.Count -gt 0) -and ($c[0].status -eq 'True')) {
+                  Write-Host "$name=Ready variant=$($p.spec.variant)"
+                  return
+                }
+                if ($c.Count -gt 0) { Write-Host "$name pending: $($c[0].reason) $($c[0].message)" }
+              } else {
+                $global:LASTEXITCODE = 0
+              }
+              Start-Sleep -Seconds 15
+            } while ((Get-Date) -lt $deadline)
+            throw "$name did not become Ready"
+          }
+          Wait-PackageReady 'cozystack.keycloak-operator'
+          Wait-PackageReady 'cozystack.keycloak'
+          Wait-PackageReady 'cozystack.cozystack-engine'
+          Wait-PackageReady 'cozystack.linstor-gui'
+
+          $engineVariant = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-engine -o jsonpath='{.spec.variant}').Trim()
+          if ($engineVariant -ne 'oidc') { throw "cozystack-engine variant is $engineVariant, expected oidc" }
+          & $env:KUBECTL rollout status deployment/linstor-gui -n cozy-linstor-gui --timeout=300s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui Deployment not Ready' }
+          & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor-gui --timeout=300s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui gatekeeper not Ready' }
+
+          $clients = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com -A -o name 2>$null | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'KeycloakClient API not available' }
+          if ($clients -notmatch 'linstor-gui') { throw 'linstor-gui KeycloakClient not created' }
+          & $env:KUBECTL get pods,svc,ingress -n cozy-linstor-gui -o wide
+          & $env:KUBECTL get keycloakclients.v1.edp.epam.com -A
+          Write-Host 'KEYCLOAK_LINSTOR_GUI_RECONCILIATION=PASS'
+
+      - name: Verify unauthenticated GUI is not exposed directly
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { throw 'curl.exe missing' }
+          $pkg = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o json | ConvertFrom-Json)
+          $rootHost = $pkg.spec.components.platform.values.publishing.host
+          $url = "https://linstor-gui.$rootHost/"
+          $headers = (& curl.exe -k -sS -I --max-time 20 $url 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "GUI endpoint unreachable: $headers" }
+          Write-Host $headers
+          $status = [regex]::Match($headers, 'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($status -eq '200') { throw 'SECURITY FAILURE: unauthenticated GUI returned HTTP 200' }
+          if ($status -notin @('302','303','307','401','403')) { throw "unexpected unauthenticated status $status" }
+          if (($status -in @('302','303','307')) -and ($headers -notmatch '(?i)location:.*(oauth2|keycloak)')) { throw 'redirect is outside oauth2/Keycloak flow' }
+          Write-Host "LINSTOR_GUI_AUTH_GATE=PASS status=$status"
+          Write-Host '===== CERTIFICATE STATUS (private nip.io lab) ====='
+          & $env:KUBECTL get certificate -A 2>$null | Select-String -Pattern 'keycloak|linstor-gui' -CaseSensitive:$false
+          $global:LASTEXITCODE = 0
