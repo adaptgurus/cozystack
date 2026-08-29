@@ -1,0 +1,220 @@
+name: LayerSentry POC E2E Certification
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-poc-e2e-certification.yml
+      - .github/scripts/layersentry/**
+      - packages/system/dashboard/images/console/apps/console/src/components/network/**
+      - packages/system/dashboard/images/console/apps/console/src/routes/NetworkFabricPage*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-poc-e2e-certification
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  certify:
+    name: Certify sen1 sen2 sen3 POC
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    env:
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      TALOSCTL: C:\hci-tools\talosctl.exe
+    steps:
+      - name: Checkout certification source
+        uses: actions/checkout@v4
+
+      - name: Assert runner assets and Hyper-V topology
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($path in @($env:KUBECTL, $env:TALOSCTL, $env:KUBECONFIG, $env:TALOSCONFIG)) {
+            if (-not (Test-Path $path)) { throw "required runner asset missing: $path" }
+          }
+
+          $expected = @('sen1','sen2','sen3')
+          $vms = @(Get-VM -Name $expected -ErrorAction Stop)
+          if ($vms.Count -ne 3) { throw "expected 3 Hyper-V VMs, found $($vms.Count)" }
+          foreach ($name in $expected) {
+            $vm = $vms | Where-Object Name -eq $name
+            if (-not $vm) { throw "missing VM $name" }
+            if ($vm.State -ne 'Running') { throw "VM $name is not Running: $($vm.State)" }
+            Write-Host "vm=$name state=$($vm.State) vcpu=$($vm.ProcessorCount) startupMemory=$($vm.MemoryStartup) dynamicMemory=$($vm.DynamicMemoryEnabled)"
+          }
+
+      - name: Assert Talos API on all three nodes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nodes = @($env:HCI_NODE_IPS -split ',')
+          if ($nodes.Count -ne 3) { throw "expected exactly 3 Talos endpoints" }
+          foreach ($node in $nodes) {
+            Write-Host "===== TALOS $node ====="
+            & $env:TALOSCTL --talosconfig $env:TALOSCONFIG -n $node -e $node version
+            if ($LASTEXITCODE -ne 0) { throw "Talos API failed for $node" }
+            & $env:TALOSCTL --talosconfig $env:TALOSCONFIG -n $node -e $node get links
+            if ($LASTEXITCODE -ne 0) { throw "Talos link inventory failed for $node" }
+          }
+
+      - name: Assert Kubernetes 3 of 3 Ready
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get nodes -o json
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl get nodes failed' }
+          $data = $raw | ConvertFrom-Json
+          $nodes = @($data.items)
+          if ($nodes.Count -ne 3) { throw "expected exactly 3 Kubernetes nodes, found $($nodes.Count)" }
+          foreach ($node in $nodes) {
+            $ready = @($node.status.conditions | Where-Object { $_.type -eq 'Ready' }) | Select-Object -First 1
+            if (-not $ready -or $ready.status -ne 'True') {
+              throw "Kubernetes node $($node.metadata.name) is not Ready"
+            }
+            Write-Host "k8s_node=$($node.metadata.name) ready=True"
+          }
+
+      - name: Assert critical workload health
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get pods -A -o json
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl get pods failed' }
+          $data = $raw | ConvertFrom-Json
+          $bad = @()
+          foreach ($pod in @($data.items)) {
+            if ($pod.status.phase -in @('Succeeded')) { continue }
+            if ($pod.status.phase -ne 'Running') {
+              $bad += "$($pod.metadata.namespace)/$($pod.metadata.name):phase=$($pod.status.phase)"
+              continue
+            }
+            foreach ($container in @($pod.status.containerStatuses)) {
+              if (-not $container.ready) {
+                $bad += "$($pod.metadata.namespace)/$($pod.metadata.name):container=$($container.name):not-ready"
+              }
+            }
+          }
+          if ($bad.Count -gt 0) {
+            $bad | ForEach-Object { Write-Host "UNHEALTHY $_" }
+            throw "$($bad.Count) non-healthy pod/container states detected"
+          }
+
+          $all = @($data.items)
+          $cilium = @($all | Where-Object { $_.metadata.name -match '^cilium-' -or $_.metadata.labels.'k8s-app' -eq 'cilium' })
+          if ($cilium.Count -lt 3) { throw "expected Cilium coverage on three nodes; found $($cilium.Count) matching pods" }
+          Write-Host "healthy_pods=$($all.Count) cilium_pods=$($cilium.Count)"
+
+      - name: Collect and assert fail-closed network inventory
+        id: network
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-network-inventory.json'
+          & .\.github\scripts\layersentry\collect-network-inventory.ps1 `
+            -Talosctl $env:TALOSCTL `
+            -Talosconfig $env:TALOSCONFIG `
+            -Nodes $env:HCI_NODE_IPS `
+            -Output $output `
+            -SourceCommit $env:GITHUB_SHA `
+            -SourceRun $env:GITHUB_RUN_ID
+          if ($LASTEXITCODE -ne 0) { throw 'network inventory collection failed' }
+
+          $inventory = Get-Content -Raw -Path $output | ConvertFrom-Json
+          if ($inventory.schemaVersion -ne 'network.layersentry.io/v1alpha1') { throw 'network inventory schema mismatch' }
+          if ($inventory.nodeCount -ne 3 -or @($inventory.nodes).Count -ne 3) { throw 'network inventory does not contain exactly three nodes' }
+          if ($inventory.readyNodeCount -ne 3 -or $inventory.partial) { throw 'network inventory is partial or has non-ready nodes' }
+          if ($inventory.sourceCommit -and $inventory.sourceCommit -ne $env:GITHUB_SHA) { throw 'network inventory source commit mismatch' }
+          $generated = [DateTimeOffset]::Parse($inventory.generatedAt)
+          $age = [DateTimeOffset]::UtcNow - $generated.ToUniversalTime()
+          if ($age.TotalMinutes -gt 10) { throw "network inventory is stale: $([math]::Round($age.TotalMinutes,2)) minutes" }
+
+          $safeSpareByNode = @{}
+          foreach ($node in @($inventory.nodes)) {
+            if ($node.state -ne 'ready') { throw "inventory node $($node.name) is not ready" }
+            $protected = @($node.management.physicalInterfaces | Where-Object { $_ })
+            if (-not $node.management.interface) { throw "management interface unresolved on $($node.name)" }
+            if ($protected.Count -lt 1) { throw "management physical underlay unresolved on $($node.name)" }
+
+            $physical = @($node.links | Where-Object { $_.physical -eq $true })
+            foreach ($protectedName in $protected) {
+              $evidence = @($physical | Where-Object name -eq $protectedName)
+              if ($evidence.Count -ne 1) { throw "protected management NIC $protectedName lacks unique physical evidence on $($node.name)" }
+            }
+
+            foreach ($link in $physical) {
+              if ($link.sriov.supported -eq $true -and ($null -eq $link.sriov.totalVfs -or [int]$link.sriov.totalVfs -lt 1)) {
+                throw "contradictory SR-IOV evidence on $($node.name)/$($link.name)"
+              }
+              if ($link.rdma.supported -eq $true -and @($link.rdma.devices).Count -lt 1) {
+                throw "contradictory RDMA evidence on $($node.name)/$($link.name)"
+              }
+            }
+
+            $spare = @($physical | Where-Object { $_.name -notin $protected -and $_.linkUp -eq $true })
+            $safeSpareByNode[$node.name] = @($spare | ForEach-Object name)
+            Write-Host "network_node=$($node.name) management=$($node.management.interface) protected=$($protected -join ',') safe_up_spares=$(@($spare).name -join ',')"
+          }
+
+          $rawText = Get-Content -Raw -Path $output
+          if ($rawText -match '(?i)(BEGIN [A-Z ]*PRIVATE KEY|client-key-data|client-certificate-data|talosconfig|kubeconfig)') {
+            throw 'credential material marker detected in inventory evidence'
+          }
+
+          $safeOnAll = $true
+          foreach ($node in @($inventory.nodes)) {
+            if (@($safeSpareByNode[$node.name]).Count -lt 1) { $safeOnAll = $false }
+          }
+          "safe_spare_on_all=$($safeOnAll.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "safe_spare_on_all=$safeOnAll"
+
+      - name: Assert virtualization and storage control planes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $crdNames = @(& $env:KUBECTL --kubeconfig $env:KUBECONFIG get crd -o name)
+          if ($LASTEXITCODE -ne 0) { throw 'unable to enumerate CRDs' }
+
+          $requiredPatterns = @(
+            'virtualmachines.kubevirt.io',
+            'virtualmachineinstances.kubevirt.io',
+            'network-attachment-definitions.k8s.cni.cncf.io'
+          )
+          foreach ($pattern in $requiredPatterns) {
+            if (-not ($crdNames -match [regex]::Escape($pattern))) { throw "required virtualization/network CRD missing: $pattern" }
+          }
+
+          $scRaw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get storageclass -o json
+          if ($LASTEXITCODE -ne 0) { throw 'unable to enumerate StorageClasses' }
+          $sc = $scRaw | ConvertFrom-Json
+          if (@($sc.items).Count -lt 1) { throw 'no StorageClass is installed' }
+          $default = @($sc.items | Where-Object {
+            $_.metadata.annotations.'storageclass.kubernetes.io/is-default-class' -eq 'true' -or
+            $_.metadata.annotations.'storageclass.beta.kubernetes.io/is-default-class' -eq 'true'
+          })
+          if ($default.Count -lt 1) { throw 'no default StorageClass is configured' }
+          Write-Host "default_storageclass=$($default[0].metadata.name) provisioner=$($default[0].provisioner)"
+
+          $kubevirt = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get kubevirt -A -o json 2>$null
+          if ($LASTEXITCODE -ne 0) { throw 'KubeVirt control plane resource is unavailable' }
+          $kv = $kubevirt | ConvertFrom-Json
+          if (@($kv.items).Count -lt 1) { throw 'KubeVirt resource not found' }
+          foreach ($item in @($kv.items)) {
+            if ($item.status.phase -and $item.status.phase -ne 'Deployed') { throw "KubeVirt phase is $($item.status.phase), expected Deployed" }
+          }
+
+      - name: Report mutation safety boundary
+        run: |
+          $safe = '${{ steps.network.outputs.safe_spare_on_all }}'
+          Write-Host "safe_spare_on_all=$safe"
+          if ($safe -eq 'true') {
+            Write-Host 'A non-management, link-up physical NIC is evidenced on every node. Reversible network mutation testing may proceed in a dedicated staged gate.'
+          } else {
+            Write-Host 'No universally safe spare NIC set is proven. Destructive NetworkFabric mutation is intentionally blocked; this is the required fail-closed behavior.'
+          }
+          Write-Host 'This gate performs no disk formatting, storage-pool creation, Talos machine-config mutation, NIC reconfiguration, or management-path changes.'
