@@ -1,0 +1,87 @@
+name: LayerSentry TESTSER Diagnostics
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-testser-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-testser-diagnostics
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Capture scheduler and storage evidence
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== NODES ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG get nodes -o wide
+          Write-Host '===== NODE TAINTS LABELS ====='
+          $nodes = (& $env:KUBECTL --kubeconfig $env:KUBECONFIG get nodes -o json | ConvertFrom-Json).items
+          foreach ($n in @($nodes)) {
+            $taints = @($n.spec.taints | ForEach-Object { "$($_.key)=$($_.value):$($_.effect)" }) -join ','
+            $labels = $n.metadata.labels
+            Write-Host "node=$($n.metadata.name) taints=$taints kubernetes.io/os=$($labels.'kubernetes.io/os') node-role.kubernetes.io/control-plane=$($labels.'node-role.kubernetes.io/control-plane')"
+          }
+          Write-Host '===== BLOCKSTOR PODS ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG -n blockstor-system get pods -o wide
+          Write-Host '===== BLOCKSTOR DAEMONSETS ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG -n blockstor-system get daemonset -o wide
+          Write-Host '===== BLOCKSTOR SATELLITE SCHEDULING SPEC ====='
+          $dsRaw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG -n blockstor-system get daemonset -o json
+          if ($LASTEXITCODE -eq 0) {
+            $dss = ($dsRaw | ConvertFrom-Json).items
+            foreach ($ds in @($dss | Where-Object { $_.metadata.name -match 'satellite' })) {
+              Write-Host "daemonset=$($ds.metadata.name) desired=$($ds.status.desiredNumberScheduled) current=$($ds.status.currentNumberScheduled) ready=$($ds.status.numberReady)"
+              Write-Host "nodeSelector=$($ds.spec.template.spec.nodeSelector | ConvertTo-Json -Compress)"
+              Write-Host "tolerations=$($ds.spec.template.spec.tolerations | ConvertTo-Json -Compress -Depth 8)"
+              Write-Host "affinity=$($ds.spec.template.spec.affinity | ConvertTo-Json -Compress -Depth 12)"
+            }
+          }
+          Write-Host '===== BLOCKSTOR EVENTS ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG -n blockstor-system get events --sort-by=.lastTimestamp
+          Write-Host '===== STORAGE CLASSES ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG get storageclass -o wide
+
+      - name: Capture package source and operator contract evidence
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== COZYSTACK OPERATOR ARGS ====='
+          $depRaw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG -n cozy-system get deployment cozystack-operator -o json
+          if ($LASTEXITCODE -eq 0) {
+            $dep = $depRaw | ConvertFrom-Json
+            foreach ($c in @($dep.spec.template.spec.containers)) {
+              Write-Host "container=$($c.name) image=$($c.image)"
+              foreach ($arg in @($c.args)) {
+                if ($arg -match 'source|platform|bundle|version') { Write-Host "arg=$arg" }
+              }
+            }
+          }
+          Write-Host '===== OCI REPOSITORIES ====='
+          $ociRaw = & $env:KUBECTL --kubeconfig $env:KUBECONFIG get ocirepositories.source.toolkit.fluxcd.io -A -o json
+          if ($LASTEXITCODE -eq 0) {
+            $repos = ($ociRaw | ConvertFrom-Json).items
+            foreach ($r in @($repos)) {
+              $conds = @($r.status.conditions | ForEach-Object { "$($_.type)=$($_.status):$($_.reason):$($_.message)" }) -join ' | '
+              Write-Host "repo=$($r.metadata.namespace)/$($r.metadata.name) url=$($r.spec.url) digest=$($r.spec.ref.digest) tag=$($r.spec.ref.tag) artifactDigest=$($r.status.artifact.digest) revision=$($r.status.artifact.revision) conditions=$conds"
+            }
+          }
+          Write-Host '===== KUBEVIRT ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG get kubevirt -A -o wide
+          Write-Host '===== NAD ====='
+          & $env:KUBECTL --kubeconfig $env:KUBECONFIG get network-attachment-definitions.k8s.cni.cncf.io -A
