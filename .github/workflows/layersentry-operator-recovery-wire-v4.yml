@@ -1,0 +1,79 @@
+name: LayerSentry Operator Recovery Wiring V4
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-operator-recovery-wire-v4.yml
+
+permissions:
+  contents: write
+
+jobs:
+  wire-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Apply status-safe recovery wiring
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p=Path('internal/operator/packagesource_reconciler.go')
+          s=p.read_text()
+          def rep(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise SystemExit(f'{label}: anchor count={n}')
+              s=s.replace(old,new,1)
+
+          rep('\t// Find Ready condition in ArtifactGenerator\n\treadyCondition := meta.FindStatusCondition(ag.Status.Conditions, "Ready")\n', '''\t// Ready alone is insufficient: independently compare the current Flux\n\t// source hash with source-watcher's persisted source state before trusting it.\n\treadyCondition := meta.FindStatusCondition(ag.Status.Conditions, "Ready")\n\tsourceDiverged, currentSourceDigest, err := r.artifactGeneratorSourceDiverged(ctx, ag)\n\tif err != nil {\n\t\treturn ctrl.Result{}, fmt.Errorf("compare current source state with ArtifactGenerator status: %w", err)\n\t}\n\trealUpstreamFailure := readyCondition != nil && readyCondition.Status == metav1.ConditionFalse && readyCondition.Reason != reasonRecoveryForced\n\tinitialGraceActive := false\n\tif readyCondition == nil {\n\t\tinitialGraceActive = ag.CreationTimestamp.Time.Add(stuckGracePeriod).After(now)\n\t} else if readyCondition.Status == metav1.ConditionUnknown && readyCondition.ObservedGeneration == ag.Generation {\n\t\tinitialGraceActive = readyCondition.LastTransitionTime.Time.Add(stuckGracePeriod).After(now)\n\t}\n''','ready')
+
+          rep('''\tisProgressingInRecovery := attempts > 0 && readyCondition != nil &&\n\t\treadyCondition.Status == metav1.ConditionUnknown &&\n\t\treadyCondition.ObservedGeneration == ag.Generation\n\tif isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now) {''','''\tisProgressingInRecovery := attempts > 0 && readyCondition != nil &&\n\t\treadyCondition.Status == metav1.ConditionUnknown &&\n\t\treadyCondition.ObservedGeneration == ag.Generation\n\thealthyCurrent := readyCondition != nil && readyCondition.Status == metav1.ConditionTrue && !sourceDiverged\n\trecoverySignal := isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now)\n\tif sourceDiverged && !initialGraceActive { recoverySignal = true }\n\tif !healthyCurrent && !realUpstreamFailure && recoverySignal {''','route')
+
+          rep('''\t\t\tlogger.V(1).Info("routing to recovery state machine",\n\t\t\t\t"packageSource", packageSource.Name,\n\t\t\t\t"artifactGenerator", ag.Name,\n\t\t\t\t"attempts", attempts,\n\t\t\t\t"ownMarker", isOwnMarker,\n\t\t\t\t"progressingInRecovery", isProgressingInRecovery)''','''\t\t\tlogger.V(1).Info("routing to status-safe recovery state machine",\n\t\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name,\n\t\t\t\t"attempts", attempts, "sourceDiverged", sourceDiverged,\n\t\t\t\t"currentSourceDigest", currentSourceDigest, "observedSourcesDigest", ag.Status.ObservedSourcesDigest,\n\t\t\t\t"initialGraceActive", initialGraceActive, "ownMarker", isOwnMarker,\n\t\t\t\t"progressingInRecovery", isProgressingInRecovery)''','log')
+
+          rep('''\t\tif err := r.forceArtifactGeneratorDrift(ctx, ag, now, nextAttempt); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf("failed to force ArtifactGenerator drift: %w", err)\n\t\t}''','''\t\tif err := r.requestArtifactGeneratorRecovery(ctx, ag, now, nextAttempt); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf("failed to request ArtifactGenerator recovery: %w", err)\n\t\t}''','request')
+
+          rep('''\t\tmessage := fmt.Sprintf(\n\t\t\t"ArtifactGenerator %s/%s has been stuck with a lost Ready condition through %d force-drift attempts; "+\n\t\t\t\t"source-watcher is not recovering. See https://github.com/fluxcd/pkg/issues/934. "+\n\t\t\t\t"An operator must restart source-watcher or manually inspect the ArtifactGenerator.",\n\t\t\tag.Namespace, ag.Name, maxRecoveryAttempts,\n\t\t)''','''\t\tmessage := fmt.Sprintf(\n\t\t\t"ArtifactGenerator %s/%s did not converge through %d bounded reconcile requests; "+\n\t\t\t\t"Cozystack did not mutate Flux-owned status while recovery was in flight. Inspect source-watcher and the ArtifactGenerator before further mutation.",\n\t\t\tag.Namespace, ag.Name, maxRecoveryAttempts,\n\t\t)''','giveup')
+
+          s=s.replace('forced source-watcher drift via AG status Ready=False patch','requested source-watcher recovery without mutating Flux-owned status')
+          s=s.replace('source-watcher stalled after bounded force-drift attempts; surfacing PackageSource Ready=False','source-watcher stalled after bounded reconcile requests; surfacing PackageSource Ready=False')
+          s=s.replace('ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+\n\t\t\t\t\t"force-drift %d/%d issued, waiting for source-watcher to rebuild.','ArtifactGenerator source/status convergence is pending; "+\n\t\t\t\t\t"reconcile request %d/%d issued without mutating Flux-owned status.')
+          s=s.replace('ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+\n\t\t\t\t\t"forced drift on AG.status.conditions[Ready]=False (attempt %d/%d) so source-watcher rebuilds.','ArtifactGenerator source/status convergence is pending; "+\n\t\t\t\t\t"requested source-watcher reconcile (attempt %d/%d) without writing AG.status.')
+          p.write_text(s)
+
+          tp=Path('internal/operator/packagesource_reconciler_test.go')
+          t=tp.read_text()
+          t=t.replace('''// TestMaybeRecoverArtifactGenerator_ForceBranch pins the first-time-stuck path:\n// no prior tracking annotations, so decideRecovery returns Force, we patch\n// Ready=False on the AG's status, update tracking annotations, and set the\n// PackageSource to Unknown/AwaitingSourceWatcherRecovery with a RequeueAfter\n// equal to backoffFor(1).''','''// TestMaybeRecoverArtifactGenerator_ForceBranch pins the first-time-stuck path:\n// no prior tracking annotations, so decideRecovery enqueues source-watcher via\n// metadata only, leaves Flux-owned Ready status untouched, and applies backoff.''')
+          old='''\t// AG status.Ready must be False in apiserver.\n\tpersistedAG := &sourcewatcherv1beta1.ArtifactGenerator{}\n\tif err := c.Get(context.Background(), client.ObjectKeyFromObject(ag), persistedAG); err != nil {\n\t\tt.Fatalf("Get AG: %v", err)\n\t}\n\tagReady := meta.FindStatusCondition(persistedAG.Status.Conditions, "Ready")\n\tif agReady == nil || agReady.Status != metav1.ConditionFalse {\n\t\tt.Errorf("AG Ready in apiserver = %+v, want False", agReady)\n\t}\n\tif persistedAG.Annotations[annotationRecoveryAttempts] != "1" {\n\t\tt.Errorf("AG %s annotation = %q, want 1", annotationRecoveryAttempts, persistedAG.Annotations[annotationRecoveryAttempts])\n\t}\n'''
+          new='''\t// Flux-owned Ready status must remain unchanged; recovery is metadata-only.\n\tpersistedAG := &sourcewatcherv1beta1.ArtifactGenerator{}\n\tif err := c.Get(context.Background(), client.ObjectKeyFromObject(ag), persistedAG); err != nil { t.Fatalf("Get AG: %v", err) }\n\tagReady := meta.FindStatusCondition(persistedAG.Status.Conditions, "Ready")\n\tif agReady == nil || agReady.Status != metav1.ConditionUnknown || agReady.Reason != "Progressing" {\n\t\tt.Errorf("AG Ready in apiserver = %+v, want unchanged Unknown/Progressing", agReady)\n\t}\n\tif persistedAG.Annotations[annotationRecoveryAttempts] != "1" {\n\t\tt.Errorf("AG %s annotation = %q, want 1", annotationRecoveryAttempts, persistedAG.Annotations[annotationRecoveryAttempts])\n\t}\n\tif persistedAG.Annotations[annotationFluxRequestedAt] == "" { t.Error("AG reconcile request annotation missing") }\n'''
+          if t.count(old)!=1: raise SystemExit(f'test assertion anchor count={t.count(old)}')
+          tp.write_text(t.replace(old,new,1))
+
+      - name: Full operator regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w internal/operator/packagesource_reconciler.go internal/operator/packagesource_reconciler_test.go internal/operator/packagesource_recovery_request.go internal/operator/packagesource_recovery_request_test.go
+          go test ./internal/operator -count=1
+          grep -F 'requestArtifactGeneratorRecovery(ctx, ag, now, nextAttempt)' internal/operator/packagesource_reconciler.go >/dev/null
+          ! grep -F 'forceArtifactGeneratorDrift(ctx, ag, now, nextAttempt)' internal/operator/packagesource_reconciler.go >/dev/null
+          echo STATUS_SAFE_SOURCE_RECOVERY_TEST_GATE=PASS
+
+      - name: Commit tested source on latest branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add internal/operator/packagesource_reconciler.go internal/operator/packagesource_reconciler_test.go internal/operator/packagesource_recovery_request.go internal/operator/packagesource_recovery_request_test.go
+          git config user.name adaptgurus
+          git config user.email 73125939+adaptgurus@users.noreply.github.com
+          git commit -m 'fix(operator): avoid source-watcher status write races'
+          git fetch origin layersentry-platform
+          git rebase origin/layersentry-platform
+          go test ./internal/operator -count=1
+          git push origin HEAD:layersentry-platform
