@@ -1,0 +1,126 @@
+name: LayerSentry Dashboard Auth Diagnose
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-dashboard-auth-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose-auth:
+    name: Diagnose dashboard OAuth and RBAC on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+    steps:
+      - name: Verify cluster access
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $k='C:\hci-tools\kubectl.exe'
+          & $k get nodes
+          if ($LASTEXITCODE -ne 0) { throw 'cluster access failed' }
+
+      - name: Inspect live gatekeeper configuration without secret values
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $k='C:\hci-tools\kubectl.exe'
+          $d = & $k -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          if (-not $d) { throw 'gatekeeper deployment missing' }
+          foreach ($c in @($d.spec.template.spec.containers)) {
+            Write-Host "container=$($c.name) image=$($c.image)"
+            Write-Host 'args:'
+            @($c.args) | ForEach-Object { Write-Host "  $_" }
+            Write-Host 'env references (values redacted):'
+            foreach ($e in @($c.env)) {
+              if ($e.valueFrom.secretKeyRef) {
+                Write-Host "  $($e.name)=secret:$($e.valueFrom.secretKeyRef.name)/$($e.valueFrom.secretKeyRef.key)"
+              } elseif ($e.valueFrom.configMapKeyRef) {
+                Write-Host "  $($e.name)=configmap:$($e.valueFrom.configMapKeyRef.name)/$($e.valueFrom.configMapKeyRef.key)"
+              } elseif ($e.value) {
+                Write-Host "  $($e.name)=<literal-redacted>"
+              }
+            }
+          }
+          Write-Host '===== services/endpoints/routes ====='
+          & $k -n cozy-dashboard get svc,endpoints,httproute,ingress -o wide 2>$null
+
+      - name: Inspect gatekeeper OAuth logs
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          Write-Host '===== gatekeeper current logs ====='
+          & $k -n cozy-dashboard logs deploy/incloud-web-gatekeeper --all-containers=true --tail=500 --timestamps=true
+          Write-Host '===== gatekeeper previous logs if any ====='
+          $pod = (& $k -n cozy-dashboard get pod -l 'app.kubernetes.io/name=gatekeeper,app.kubernetes.io/instance=incloud-web' -o jsonpath='{.items[0].metadata.name}')
+          if ($pod) { & $k -n cozy-dashboard logs $pod --all-containers=true --previous --tail=300 --timestamps=true 2>$null }
+
+      - name: Inspect Keycloak client and operator status safely
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          Write-Host '===== dashboard KeycloakClient ====='
+          & $k get keycloakclients.v1.edp.epam.com -A 2>$null | Select-String -Pattern 'dashboard' -CaseSensitive:$false
+          $kc = & $k get keycloakclients.v1.edp.epam.com -A -o json 2>$null | ConvertFrom-Json
+          if ($kc) {
+            foreach ($i in @($kc.items | Where-Object { $_.metadata.name -match 'dashboard' })) {
+              Write-Host "namespace=$($i.metadata.namespace) name=$($i.metadata.name) clientId=$($i.spec.clientId) realm=$($i.spec.realmRef.name)"
+              Write-Host "defaultScopes=$([string]::Join(',', @($i.spec.defaultClientScopes)))"
+              Write-Host "optionalScopes=$([string]::Join(',', @($i.spec.optionalClientScopes)))"
+              Write-Host "redirectUris=$([string]::Join(',', @($i.spec.redirectUris)))"
+              if ($i.status) { $i.status | ConvertTo-Json -Depth 8 }
+            }
+          }
+          Write-Host '===== Keycloak pods ====='
+          & $k get pods -A -o wide | Select-String -Pattern 'keycloak' -CaseSensitive:$false
+          Write-Host '===== Keycloak recent auth/offline/error log lines ====='
+          $pods = & $k get pods -A -o json 2>$null | ConvertFrom-Json
+          foreach ($p in @($pods.items | Where-Object { $_.metadata.name -match 'keycloak' })) {
+            Write-Host "--- $($p.metadata.namespace)/$($p.metadata.name) ---"
+            & $k logs -n $p.metadata.namespace $p.metadata.name --all-containers=true --tail=1200 --timestamps=true 2>$null | Select-String -Pattern 'offline|dashboard|LOGIN_ERROR|CODE_TO_TOKEN_ERROR|invalid|token|error' -CaseSensitive:$false | Select-Object -Last 160
+          }
+
+      - name: Inspect dashboard RBAC bindings and identity permissions
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          Write-Host '===== cluster role bindings relevant to web/groups ====='
+          & $k get clusterrolebinding -o yaml | Select-String -Pattern 'cozystack-cluster-admin|web-user|cluster-view|cluster-usage|dashboard' -Context 3,6 -CaseSensitive:$false
+          Write-Host '===== role bindings relevant to root tenant ====='
+          & $k -n tenant-root get rolebinding -o yaml | Select-String -Pattern 'cozystack-cluster-admin|web-user|dashboard|admin' -Context 3,6 -CaseSensitive:$false
+          Write-Host '===== impersonated group checks ====='
+          $group='cozystack-cluster-admin'
+          $user='layersentry-admin'
+          $checks=@(
+            @('get','tenantnamespaces.core.cozystack.io',''),
+            @('get','customresourcedefinitions.apiextensions.k8s.io',''),
+            @('get','plans.backups.cozystack.io','tenant-root'),
+            @('create','tenants.apps.cozystack.io','tenant-root')
+          )
+          foreach ($c in $checks) {
+            $verb=$c[0]; $res=$c[1]; $ns=$c[2]
+            if ($ns) {
+              $r=& $k auth can-i $verb $res -n $ns --as=$user --as-group=$group 2>&1
+            } else {
+              $r=& $k auth can-i $verb $res --as=$user --as-group=$group 2>&1
+            }
+            Write-Host "$verb $res namespace=$ns => $r"
+          }
+
+      - name: Inspect dashboard Helm ownership and source version
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $k='C:\hci-tools\kubectl.exe'
+          & $k -n cozy-dashboard get helmrelease -o wide
+          & $k -n cozy-dashboard get helmrelease -o yaml | Select-String -Pattern 'chart:|version:|sourceRef:|Ready|message:' -Context 1,2
+          & $k get package -A 2>$null | Select-String -Pattern 'dashboard' -CaseSensitive:$false
+          Write-Host 'No Secret data was read or printed.'
