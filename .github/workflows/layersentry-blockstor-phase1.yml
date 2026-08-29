@@ -136,6 +136,45 @@ jobs:
           }
           Write-Host 'BLOCKSTOR_MTLS_NODES=PASS'
 
+      - name: Refuse incompatible Blockstor satellite host-port deployment
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Blockstor v0.1.17 hard-codes its snapshot-stream listener to TCP/9100
+          # and its upstream hostNetwork DaemonSet requests hostPort 9100. A simple
+          # hostPort remap is therefore not a valid integration fix. Detect any
+          # existing non-Blockstor owner before applying/replacing the satellite DS.
+          $allPods = @((& $env:KUBECTL get pods -A -o json | ConvertFrom-Json).items)
+          $conflicts = @()
+          foreach ($pod in $allPods) {
+            if ($pod.metadata.namespace -eq 'blockstor-system' -and $pod.metadata.name -like 'blockstor-satellite-*') { continue }
+            foreach ($container in @($pod.spec.containers)) {
+              foreach ($portSpec in @($container.ports)) {
+                if ($null -ne $portSpec.hostPort -and [int]$portSpec.hostPort -eq 9100) {
+                  $conflicts += [pscustomobject]@{
+                    Namespace = $pod.metadata.namespace
+                    Pod = $pod.metadata.name
+                    Node = $pod.spec.nodeName
+                    Container = $container.name
+                    HostPort = [int]$portSpec.hostPort
+                    Protocol = $portSpec.protocol
+                  }
+                }
+              }
+            }
+          }
+
+          # Preserve the Phase-1 safety invariant before stopping here.
+          $pools = @((& $env:KUBECTL get storagepools.blockstor.cozystack.io -o json | ConvertFrom-Json).items)
+          if ($pools.Count -ne 0) { throw 'SAFETY FAILURE: Blockstor StoragePools exist before satellite deployment' }
+          Write-Host 'BLOCKSTOR_STORAGEPOOL_COUNT=0'
+
+          if ($conflicts.Count -gt 0) {
+            $conflicts | Sort-Object Node,Namespace,Pod | Format-Table -AutoSize
+            throw 'BLOCKSTOR_UPSTREAM_INCOMPATIBILITY: v0.1.17 snapshot-stream requires host TCP/9100, which is already allocated. Preserve the incumbent workload; do not deploy satellites or migrate CSI until Blockstor provides a configurable/non-conflicting listener or an explicitly validated compatible build.'
+          }
+          Write-Host 'BLOCKSTOR_SNAPSHOT_PORT_PREFLIGHT=PASS'
+
       - name: Apply Blockstor satellites on all HCI nodes
         run: |
           $ErrorActionPreference = 'Stop'
