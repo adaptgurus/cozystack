@@ -24,8 +24,9 @@ jobs:
     steps:
       - name: Trace dashboard HelmRelease reconciliation ownership safely
         run: |
-          $ErrorActionPreference='Stop'
-          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+          $ErrorActionPreference='Continue'
+          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json 2>$null | ConvertFrom-Json
+          if(-not $hr){throw 'dashboard HelmRelease missing'}
           Write-Host '===== HELMRELEASE SUMMARY ====='
           Write-Host "name=$($hr.metadata.name) namespace=$($hr.metadata.namespace) generation=$($hr.metadata.generation) resourceVersion=$($hr.metadata.resourceVersion)"
           Write-Host "chartRefKind=$($hr.spec.chartRef.kind) chartRefName=$($hr.spec.chartRef.name) interval=$($hr.spec.interval)"
@@ -33,43 +34,62 @@ jobs:
           Write-Host "labels=$((@($hr.metadata.labels.PSObject.Properties) | ForEach-Object {($_.Name + '=' + $_.Value)}) -join ';')"
           Write-Host "annotations=$((@($hr.metadata.annotations.PSObject.Properties) | Where-Object {$_.Name -notmatch '(?i)token|secret|password'} | ForEach-Object {($_.Name + '=' + $_.Value)}) -join ';')"
           Write-Host "postRenderersCount=$(@($hr.spec.postRenderers).Count)"
+          Write-Host 'postRenderersSafeJson='
+          @($hr.spec.postRenderers) | ConvertTo-Json -Depth 50 | Write-Host
           foreach($mf in @($hr.metadata.managedFields)){
             Write-Host "managedField manager=$($mf.manager) operation=$($mf.operation) apiVersion=$($mf.apiVersion) time=$($mf.time) subresource=$($mf.subresource)"
           }
-          Write-Host "ready=$((@($hr.status.conditions)|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1).status) reason=$((@($hr.status.conditions)|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1).reason)"
+          $ready=@($hr.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)
+          Write-Host "ready=$($ready.status) reason=$($ready.reason) message=$($ready.message)"
           Write-Host "lastAttemptedRevision=$($hr.status.lastAttemptedRevision) lastHandledReconcileAt=$($hr.status.lastHandledReconcileAt)"
 
-          Write-Host '===== DASHBOARD PACKAGES ====='
-          & $env:KUBECTL get packages.cozystack.io -A -o wide 2>$null | Select-String -Pattern 'dashboard|oidc|engine' -CaseSensitive:$false
-
-          Write-Host '===== DASHBOARD PACKAGE JSON SUMMARY ====='
-          $pkgs=@((& $env:KUBECTL get packages.cozystack.io -A -o json 2>$null | ConvertFrom-Json).items | Where-Object {$_.metadata.name -match '(?i)dashboard'})
-          foreach($p in $pkgs){
-            Write-Host "package apiVersion=$($p.apiVersion) kind=$($p.kind) ns=$($p.metadata.namespace) name=$($p.metadata.name) generation=$($p.metadata.generation)"
-            Write-Host "package owners=$((@($p.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name)}) -join ';')"
-            Write-Host "package labels=$((@($p.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
-            Write-Host "package specKeys=$((@($p.spec.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+          Write-Host '===== OWNING PACKAGE ====='
+          $owner=@($hr.metadata.ownerReferences | Where-Object {$_.kind -eq 'Package'} | Select-Object -First 1)
+          if($owner){
+            $pkgName=[string]$owner.name
+            $pkg=& $env:KUBECTL get packages.cozystack.io $pkgName -o json 2>$null | ConvertFrom-Json
+            if(-not $pkg){$pkg=& $env:KUBECTL -n cozy-dashboard get packages.cozystack.io $pkgName -o json 2>$null | ConvertFrom-Json}
+            if($pkg){
+              Write-Host "package apiVersion=$($pkg.apiVersion) kind=$($pkg.kind) ns=$($pkg.metadata.namespace) name=$($pkg.metadata.name) generation=$($pkg.metadata.generation) resourceVersion=$($pkg.metadata.resourceVersion)"
+              Write-Host "package owners=$((@($pkg.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name+'/controller='+$_.controller)}) -join ';')"
+              Write-Host "package labels=$((@($pkg.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+              Write-Host "package annotations=$((@($pkg.metadata.annotations.PSObject.Properties)|Where-Object{$_.Name -notmatch '(?i)token|secret|password'}|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+              Write-Host "package specKeys=$((@($pkg.spec.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+              foreach($prop in @($pkg.spec.PSObject.Properties)){
+                $name=[string]$prop.Name
+                if($name -match '(?i)secret|password|token'){continue}
+                $value=$prop.Value
+                if($null -eq $value){Write-Host "packageSpec $name=<null>";continue}
+                if($value -is [string] -or $value -is [bool] -or $value -is [int] -or $value -is [long]){
+                  Write-Host "packageSpec $name=$value"
+                }else{
+                  Write-Host "packageSpec $name keys=$((@($value.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+                }
+              }
+              Write-Host "package statusKeys=$((@($pkg.status.PSObject.Properties)|ForEach-Object{$_.Name}) -join ',')"
+              foreach($cond in @($pkg.status.conditions)){Write-Host "packageCondition type=$($cond.type) status=$($cond.status) reason=$($cond.reason) message=$($cond.message)"}
+            }else{Write-Host "owning Package not readable: $pkgName"}
           }
 
-          Write-Host '===== DASHBOARD EXTERNAL ARTIFACT ====='
+          Write-Host '===== ALL PACKAGE NAMES ====='
+          & $env:KUBECTL get packages.cozystack.io -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status' 2>$null | Select-String -Pattern 'engine|oidc|dashboard|NAME' -CaseSensitive:$false
+
+          Write-Host '===== EXTERNAL ARTIFACT DISCOVERY ====='
           $eaName=[string]$hr.spec.chartRef.name
-          $eaKind=[string]$hr.spec.chartRef.kind
-          if($eaKind -eq 'ExternalArtifact'){
-            $ea=& $env:KUBECTL -n cozy-dashboard get externalartifact $eaName -o json 2>$null | ConvertFrom-Json
-            if($ea){
-              Write-Host "externalArtifact name=$($ea.metadata.name) generation=$($ea.metadata.generation) resourceVersion=$($ea.metadata.resourceVersion)"
-              Write-Host "externalArtifact owners=$((@($ea.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name+'/controller='+$_.controller)}) -join ';')"
-              Write-Host "externalArtifact labels=$((@($ea.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
-              Write-Host "externalArtifact annotations=$((@($ea.metadata.annotations.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
-              foreach($mf in @($ea.metadata.managedFields)){Write-Host "EA managedField manager=$($mf.manager) operation=$($mf.operation) time=$($mf.time)"}
-            }else{Write-Host 'externalArtifact object not readable'}
-          }
+          & $env:KUBECTL get externalartifacts.source.toolkit.fluxcd.io -A -o wide 2>$null | Select-String -Pattern $eaName -SimpleMatch
+          $allEa=& $env:KUBECTL get externalartifacts.source.toolkit.fluxcd.io -A -o json 2>$null | ConvertFrom-Json
+          $ea=@($allEa.items | Where-Object {$_.metadata.name -eq $eaName} | Select-Object -First 1)
+          if($ea){
+            Write-Host "externalArtifact ns=$($ea.metadata.namespace) name=$($ea.metadata.name) generation=$($ea.metadata.generation) resourceVersion=$($ea.metadata.resourceVersion)"
+            Write-Host "externalArtifact owners=$((@($ea.metadata.ownerReferences)|ForEach-Object{($_.apiVersion+'/'+$_.kind+'/'+$_.name+'/controller='+$_.controller)}) -join ';')"
+            Write-Host "externalArtifact labels=$((@($ea.metadata.labels.PSObject.Properties)|ForEach-Object{($_.Name+'='+$_.Value)}) -join ';')"
+            foreach($mf in @($ea.metadata.managedFields)){Write-Host "EA managedField manager=$($mf.manager) operation=$($mf.operation) time=$($mf.time)"}
+          }else{Write-Host "externalArtifact not found in list: $eaName"}
 
-          Write-Host '===== APPLICATION DEFINITIONS ====='
-          & $env:KUBECTL get applicationdefinitions.cozystack.io -o wide 2>$null | Select-String -Pattern 'dashboard|oidc|engine' -CaseSensitive:$false
-
-          Write-Host '===== LIVE SCOPE ====='
-          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          Write-Host '===== LIVE DEPLOYMENT SCOPE ====='
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json 2>$null | ConvertFrom-Json
           $proxy=@($d.spec.template.spec.containers | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1)
           @($proxy.args) | Where-Object {$_ -like '--scope=*'} | ForEach-Object {Write-Host "scope=$_"}
           Write-Host 'OWNER_DIAGNOSE=PASS'
+          $global:LASTEXITCODE=0
+          exit 0
