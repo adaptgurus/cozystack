@@ -64,7 +64,7 @@ export function ApplicationOrderPage({
   }, [editMode])
 
   const plural = ad?.spec?.application.plural ?? ""
-  const isVmInstance = appName === "vm-instance" || ad?.metadata.name === "vm-instance"
+  const isVmInstance = appName === "vm-instance" || ad?.metadata?.name === "vm-instance"
 
   const create = useK8sCreate({
     apiGroup: APPS_GROUP,
