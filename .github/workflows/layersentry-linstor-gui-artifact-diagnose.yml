@@ -1,0 +1,49 @@
+name: LayerSentry LINSTOR GUI Artifact Diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-artifact-diagnose.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Inspect ExternalArtifact and platform source
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '=== EXTERNAL ARTIFACT API ==='
+          & $env:KUBECTL api-resources | Select-String -Pattern 'ExternalArtifact' -CaseSensitive:$false
+          Write-Host '=== EXTERNAL ARTIFACT OBJECT ==='
+          & $env:KUBECTL get externalartifact cozystack-linstor-gui-default-linstor-gui -n cozy-system -o json
+          Write-Host '=== COZYSTACK PLATFORM HELMRELEASE ==='
+          $platform = (& $env:KUBECTL get helmrelease cozystack-platform -n cozy-system -o json | ConvertFrom-Json)
+          Write-Host ('platformChartRef=' + ($platform.spec.chartRef | ConvertTo-Json -Depth 20 -Compress))
+          if ($platform.spec.chart) { Write-Host ('platformChart=' + ($platform.spec.chart | ConvertTo-Json -Depth 20 -Compress)) }
+          Write-Host ('platformValuesFrom=' + ($platform.spec.valuesFrom | ConvertTo-Json -Depth 20 -Compress))
+          Write-Host '=== COZY-SYSTEM SOURCES JSON SUMMARY ==='
+          foreach ($kind in @('ocirepositories.source.toolkit.fluxcd.io','helmrepositories.source.toolkit.fluxcd.io','gitrepositories.source.toolkit.fluxcd.io','helmcharts.source.toolkit.fluxcd.io')) {
+            Write-Host "--- $kind ---"
+            $raw = (& $env:KUBECTL get $kind -n cozy-system -o json 2>$null | Out-String).Trim()
+            if ($raw) {
+              $obj = $raw | ConvertFrom-Json
+              foreach ($i in @($obj.items)) {
+                Write-Host (([ordered]@{name=$i.metadata.name;spec=$i.spec;artifact=$i.status.artifact;ready=@($i.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)}) | ConvertTo-Json -Depth 20 -Compress)
+              }
+            }
+          }
+          exit 0
