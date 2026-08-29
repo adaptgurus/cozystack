@@ -71,6 +71,19 @@ jobs:
           flux version --client
           yq --version
 
+      - name: Validate dashboard console logic and types
+        shell: bash
+        working-directory: packages/system/dashboard/images/console
+        run: |
+          set -euo pipefail
+          node --version
+          corepack enable
+          corepack prepare pnpm@11.1.2 --activate
+          pnpm install --frozen-lockfile
+          pnpm --filter @cozystack/console test
+          pnpm --filter @cozystack/console typecheck
+          echo "CONSOLE_LOGIC_TYPE_GATE=PASS"
+
       - name: Revalidate repaired operator before image build
         shell: bash
         run: |
@@ -223,6 +236,11 @@ jobs:
           git config user.name "adaptgurus"
           git config user.email "73125939+adaptgurus@users.noreply.github.com"
           git commit -m "ci(layersentry): pin repaired operator VM production certification"
+          # Image/package builds intentionally rewrite tracked values files. The
+          # certification pins above are already committed, so discard only
+          # remaining uncommitted build outputs before the branch-safe rebase.
+          git reset --hard HEAD
+          git clean -fd
           git fetch origin layersentry-platform
           git rebase origin/layersentry-platform
           git push origin HEAD:layersentry-platform
