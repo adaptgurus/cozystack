@@ -65,14 +65,19 @@ jobs:
           Add-Command 'Kubernetes nodes' { & $kubectl get nodes -o wide }
           Add-Command 'Tenant / Plan / Backup API resources' { & $kubectl api-resources -o wide | Select-String -Pattern 'tenant|plan|backup' -CaseSensitive:$false }
           Add-Command 'Cozystack APIService health' { & $kubectl get apiservice -o wide | Select-String -Pattern 'cozystack' -CaseSensitive:$false }
+          Add-Command 'backups.cozystack.io APIService' { & $kubectl get apiservice v1alpha1.backups.cozystack.io -o yaml 2>$null }
+
           Add-Command 'TenantNamespaces aggregated API' { & $kubectl get tenantnamespaces.core.cozystack.io -o yaml }
           Add-Command 'tenant-root Namespace' { & $kubectl get namespace tenant-root -o yaml }
+          Add-Command 'Existing generated Tenant objects' { & $kubectl get tenants.apps.cozystack.io -A -o yaml 2>$null }
           Add-Command 'Tenant HelmReleases' { & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant' -CaseSensitive:$false }
           Add-Command 'Tenant ApplicationDefinition candidates' { & $kubectl get applicationdefinitions -A -o wide 2>$null | Select-String -Pattern 'tenant' -CaseSensitive:$false }
           Add-Command 'Tenant ApplicationDefinition YAML' { & $kubectl get applicationdefinitions tenant -o yaml 2>$null }
-          Add-Command 'cozystack-apps HelmRepository' { & $kubectl get helmrepository.source.toolkit.fluxcd.io -n cozy-public cozystack-apps -o yaml 2>$null }
+          Add-Command 'Tenant ExternalArtifact source' { & $kubectl get externalartifacts.source.toolkit.fluxcd.io -n cozy-system cozystack-tenant-application-default-tenant -o yaml 2>$null }
 
           Add-Command 'Plan-related CRDs' { & $kubectl get crd -o wide | Select-String -Pattern 'plan|backup' -CaseSensitive:$false }
+          Add-Command 'Plan / Backup ApplicationDefinition candidates' { & $kubectl get applicationdefinitions -A -o wide 2>$null | Select-String -Pattern 'plan|backup' -CaseSensitive:$false }
+          Add-Command 'Plan ApplicationDefinition YAML' { & $kubectl get applicationdefinitions plan -o yaml 2>$null }
           Add-Command 'Plan CRD served/storage/schema summary' {
             $raw = & $kubectl get crd -o json 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $raw) { 'CRD_LIST_UNAVAILABLE'; return }
@@ -158,9 +163,10 @@ jobs:
           if (-not (Test-Path $report)) { throw "report missing: $report" }
           if (-not $env:GITHUB_TOKEN) { throw 'GITHUB_TOKEN unavailable' }
 
+          $repo = 'adaptgurus/cozystack'
           $path = 'docs/layersentry/evidence/dashboard-tenant-latest.md'
           $branch = 'layersentry-platform'
-          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$path"
+          $uri = "https://api.github.com/repos/$repo/contents/$path"
           $headers = @{
             Authorization = "Bearer $env:GITHUB_TOKEN"
             Accept = 'application/vnd.github+json'
@@ -169,7 +175,7 @@ jobs:
 
           $existingSha = $null
           try {
-            $existing = Invoke-RestMethod -Method Get -Uri "$uri?ref=$branch" -Headers $headers
+            $existing = Invoke-RestMethod -Method Get -Uri ($uri + '?ref=' + $branch) -Headers $headers
             $existingSha = [string]$existing.sha
           } catch {
             $status = 0
