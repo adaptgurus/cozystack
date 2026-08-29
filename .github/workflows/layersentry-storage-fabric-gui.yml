@@ -27,6 +27,8 @@ jobs:
           set -euo pipefail
           helm template linstor-gui packages/system/linstor-gui \
             --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
             --show-only templates/configmap-nginx.yaml \
             --show-only templates/configmap-storage-fabric.yaml \
             --show-only templates/deployment.yaml \
@@ -49,6 +51,8 @@ jobs:
           set -euo pipefail
           helm template linstor-gui packages/system/linstor-gui \
             --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
             --set gateway.provisioningEnabled=true \
             --show-only templates/configmap-nginx.yaml \
             --show-only templates/configmap-storage-fabric.yaml \
@@ -65,6 +69,8 @@ jobs:
           set -euo pipefail
           if helm template linstor-gui packages/system/linstor-gui \
             --namespace cozy-linstor \
+            --set-string _cluster.root-host=example.invalid \
+            --set-string _cluster.oidc-enabled=false \
             --set gateway.endpoint=linstor-gateway.cozy-linstor.svc:8337 \
             --show-only templates/configmap-nginx.yaml >/tmp/invalid.yaml 2>/tmp/invalid.err; then
             echo 'invalid Gateway endpoint unexpectedly rendered'
