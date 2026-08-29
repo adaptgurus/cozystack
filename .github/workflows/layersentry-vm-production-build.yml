@@ -117,12 +117,37 @@ jobs:
           set -euo pipefail
           rm -rf /tmp/pkg && mkdir -p /tmp/pkg
           flux pull artifact "oci://ghcr.io/adaptgurus/cozystack/cozystack-packages@${PACKAGE_DIGEST}" --output /tmp/pkg
-          grep -F "image: ${OPERATOR_IMAGE}" /tmp/pkg/core/installer/values.yaml >/dev/null
-          grep -F "image: ${DASHBOARD_IMAGE}" /tmp/pkg/system/dashboard/values.yaml >/dev/null
+
+          actual_operator="$(yq -r '.cozystackOperator.image' /tmp/pkg/core/installer/values.yaml)"
+          actual_dashboard="$(yq -r '.console.image' /tmp/pkg/system/dashboard/values.yaml)"
+          if [ "$actual_operator" != "$OPERATOR_IMAGE" ]; then
+            echo "::error::immutable package operator mismatch expected=${OPERATOR_IMAGE} actual=${actual_operator}"
+            exit 1
+          fi
+          if [ "$actual_dashboard" != "$DASHBOARD_IMAGE" ]; then
+            echo "::error::immutable package dashboard mismatch expected=${DASHBOARD_IMAGE} actual=${actual_dashboard}"
+            exit 1
+          fi
+
           grep -F -- '--scope=openid email profile' /tmp/pkg/system/dashboard/templates/gatekeeper.yaml >/dev/null
           ! grep -F -- '--scope=openid email profile offline_access' /tmp/pkg/system/dashboard/templates/gatekeeper.yaml >/dev/null
           helm template dashboard /tmp/pkg/system/dashboard --set-string '_cluster.root-host=offline.invalid' >/tmp/dashboard.yaml
-          grep -F "image: ${DASHBOARD_IMAGE}" /tmp/dashboard.yaml >/dev/null
+          python3 - <<'PY'
+          import os, yaml
+          docs=list(yaml.safe_load_all(open('/tmp/dashboard.yaml')))
+          deps=[d for d in docs if isinstance(d,dict) and d.get('kind')=='Deployment' and d.get('metadata',{}).get('name')=='cozy-dashboard-console']
+          if len(deps)!=1:
+              raise SystemExit(f'expected one cozy-dashboard-console Deployment, got {len(deps)}')
+          containers=deps[0]['spec']['template']['spec']['containers']
+          console=[c for c in containers if c.get('name')=='console']
+          if len(console)!=1:
+              raise SystemExit(f'expected one console container, got {len(console)}')
+          actual=console[0].get('image')
+          expected=os.environ['DASHBOARD_IMAGE']
+          if actual!=expected:
+              raise SystemExit(f'rendered dashboard image mismatch expected={expected} actual={actual}')
+          print(f'IMMUTABLE_RENDERED_DASHBOARD=PASS image={actual}')
+          PY
           echo "IMMUTABLE_PRODUCTION_PACKAGE=PASS digest=${PACKAGE_DIGEST} operator=${OPERATOR_IMAGE} dashboard=${DASHBOARD_IMAGE}"
 
       - name: Pin production certification to this immutable build
