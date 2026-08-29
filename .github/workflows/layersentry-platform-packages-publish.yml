@@ -1,0 +1,106 @@
+name: LayerSentry Platform Packages Publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - packages/system/linstor-gui/**
+      - packages/core/installer/**
+      - packages/core/platform/**
+      - .github/workflows/layersentry-platform-packages-publish.yml
+
+concurrency:
+  group: layersentry-platform-packages-publish
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/cozystack
+  IMAGE_TAG: layersentry-platform-${{ github.sha }}
+  PUBLISH_VERSIONED: '0'
+  PUBLISH_FLOATING: '0'
+  WRITE_CACHE: '0'
+
+jobs:
+  publish:
+    name: Publish exact LayerSentry package source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact layersentry-platform revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "adaptgurus/cozystack"
+          test "${GITHUB_REF_NAME}" = "layersentry-platform"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Install pinned Flux CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLUX_VERSION=v2.6.4
+          FLUX_ARCHIVE="flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo "/tmp/${FLUX_ARCHIVE}" "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/${FLUX_ARCHIVE}"
+          curl -fsSLo /tmp/flux-checksums.txt "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_checksums.txt"
+          grep " ${FLUX_ARCHIVE}$" /tmp/flux-checksums.txt | sed "s#  ${FLUX_ARCHIVE}#  /tmp/${FLUX_ARCHIVE}#" > /tmp/flux.expected
+          test -s /tmp/flux.expected
+          sha256sum -c /tmp/flux.expected
+          tar -xzf "/tmp/${FLUX_ARCHIVE}" -C /tmp flux
+          sudo install -m 0755 /tmp/flux /usr/local/bin/flux
+          flux version --client
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish package source artifact
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C packages/core/installer image-packages
+          source_ref="$(yq -r '.cozystackOperator.platformSourceRef' packages/core/installer/values.yaml)"
+          source_url="$(yq -r '.cozystackOperator.platformSourceUrl' packages/core/installer/values.yaml)"
+          test "$source_url" = "oci://${REGISTRY}/cozystack-packages"
+          case "$source_ref" in
+            digest=sha256:*) ;;
+            *) echo "::error::Unexpected platform source ref: $source_ref"; exit 1 ;;
+          esac
+          digest="${source_ref#digest=}"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "PLATFORM_SOURCE_URL=${source_url}"
+          echo "PLATFORM_SOURCE_REF=${source_ref}"
+          echo "PLATFORM_SOURCE_COMMIT=${GITHUB_SHA}"
+
+      - name: Verify published chart contains corrected LINSTOR GUI OAuth scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/layersentry-packages
+          mkdir -p /tmp/layersentry-packages
+          flux pull artifact "oci://${REGISTRY}/cozystack-packages:${IMAGE_TAG}" --output /tmp/layersentry-packages
+          gatekeeper=/tmp/layersentry-packages/system/linstor-gui/templates/gatekeeper.yaml
+          test -s "$gatekeeper"
+          grep -F -- '--scope=openid email profile groups' "$gatekeeper" >/dev/null
+          if grep -F -- '--scope=openid email profile groups offline_access' "$gatekeeper" >/dev/null; then
+            echo '::error::Published LINSTOR GUI chart still requests offline_access'
+            exit 1
+          fi
+          echo "PUBLISHED_PACKAGE_SCOPE_GATE=PASS"
+          echo "PUBLISHED_PACKAGE_DIGEST=${{ steps.publish.outputs.digest }}"
