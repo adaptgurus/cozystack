@@ -11,6 +11,10 @@ mTLS-protected controller path.
 {{- if not (or (hasPrefix "http://" .Values.gateway.endpoint) (hasPrefix "https://" .Values.gateway.endpoint)) -}}
 {{- fail "gateway.endpoint must be an http:// or https:// URL" -}}
 {{- end -}}
+{{- $provisioningReady := and .Values.gateway.provisioningEnabled .Values.gateway.safety.persistentDiskIdentityCertified .Values.gateway.safety.agentDataPlaneCertified -}}
+{{- if and $provisioningReady (eq (trim .Values.gateway.safety.certificationReference) "") -}}
+{{- fail "gateway.safety.certificationReference is required when provisioning and both safety certifications are enabled" -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -30,6 +34,17 @@ data:
       include       /etc/nginx/mime.types;
       default_type  application/octet-stream;
       server_tokens off;
+
+      # A mutating Gateway request must carry the custom confirmation header
+      # emitted by the LayerSentry wizard. Cross-origin HTML forms cannot set
+      # this header, which adds a CSRF-resistant boundary in addition to auth.
+      map "$request_method:$http_x_layersentry_provisioning" $gateway_mutation_header_ok {
+        default 0;
+        ~^GET: 1;
+        ~^HEAD: 1;
+        ~^OPTIONS: 1;
+        ~^(POST|PUT|PATCH|DELETE):certified$ 1;
+      }
 
       client_body_temp_path /tmp/client_body;
       proxy_temp_path       /tmp/proxy;
@@ -59,23 +74,30 @@ data:
         proxy_ssl_name         {{ $endpointHost }};
 
         # LayerSentry Storage Fabric console. Keep the URL stable and
-        # independent from the upstream LINSTOR GUI SPA routing.
+        # independent from the upstream LINSTOR GUI SPA routing. The wizard is
+        # injected here so the base dashboard remains a small, auditable view.
         location = /storage-fabric {
           return 302 /storage-fabric/;
         }
 
         location ^~ /storage-fabric/ {
+          sub_filter_once on;
+          sub_filter '</body>' '<script defer src="/storage-fabric/wizard.js"></script></body>';
           try_files $uri $uri/ /storage-fabric/index.html;
         }
 
-        # Same-origin proxy to LINSTOR Gateway. The browser is never given
-        # the internal service address. While provisioningEnabled=false,
-        # nginx enforces the safety boundary even if a browser bypasses the UI.
+        # Same-origin proxy to LINSTOR Gateway. The browser is never given the
+        # internal service address. Writes require all three chart safety gates
+        # plus the custom wizard confirmation header.
         location ^~ /gateway/ {
           default_type application/json;
-          {{- if not .Values.gateway.provisioningEnabled }}
+          {{- if not $provisioningReady }}
           if ($request_method !~ ^(GET|HEAD|OPTIONS)$) {
             return 403 '{"code":"ProvisioningLocked","message":{{ .Values.gateway.provisioningDisabledReason | toJson }}}';
+          }
+          {{- else }}
+          if ($gateway_mutation_header_ok = 0) {
+            return 428 '{"code":"ProvisioningConfirmationRequired","message":"Mutating Storage Fabric requests must originate from the certified LayerSentry provisioning workflow."}';
           }
           {{- end }}
           proxy_http_version 1.1;
