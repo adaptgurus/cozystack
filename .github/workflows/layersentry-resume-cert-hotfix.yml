@@ -1,0 +1,61 @@
+name: LayerSentry Resume Cert Hotfix
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-resume-cert-hotfix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-resume-cert-hotfix
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch only certification defects
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "adaptgurus/cozystack"
+          test "${GITHUB_REF_NAME}" = "layersentry-platform"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml')
+          s = p.read_text()
+          old = '          helm template dashboard /tmp/release/system/dashboard >/tmp/rendered.yaml\n'
+          new = "          helm template dashboard /tmp/release/system/dashboard --set-string '_cluster.root-host=offline.invalid' >/tmp/rendered.yaml\n"
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one offline helm template line, found {s.count(old)}')
+          s = s.replace(old, new)
+          old_selector = 'await p.locator(\'input[placeholder="e.g. web-01"]\').fill(process.env.E2E_NAME);'
+          new_selector = 'await p.locator(\'input[placeholder="web-01"]\').fill(process.env.E2E_NAME);'
+          if s.count(old_selector) != 1:
+              raise SystemExit(f'expected exactly one stale VM-name selector, found {s.count(old_selector)}')
+          s = s.replace(old_selector, new_selector)
+          p.write_text(s)
+          PY
+          grep -F -- "--set-string '_cluster.root-host=offline.invalid'" .github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml >/dev/null
+          grep -F -- 'input[placeholder="web-01"]' .github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml >/dev/null
+          ! grep -F -- 'input[placeholder="e.g. web-01"]' .github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml >/dev/null
+
+      - name: Commit certification repair and remove one-shot helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/layersentry-resume-cert-hotfix.yml
+          git config user.name 'adaptgurus'
+          git config user.email '73125939+adaptgurus@users.noreply.github.com'
+          git add .github/workflows/layersentry-dashboard-vm-ux-resume-cert.yml .github/workflows/layersentry-resume-cert-hotfix.yml
+          git diff --cached --check
+          git commit -m 'fix(layersentry): repair VM UX certification preflight'
+          git push origin HEAD:layersentry-platform
