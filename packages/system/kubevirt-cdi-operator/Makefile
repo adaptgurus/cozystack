@@ -23,4 +23,6 @@ update:
 	@grep -q 'image: quay.io/kubevirt/cdi-operator:$(CDI_VERSION)' templates/cdi-operator.yaml || { echo "ERROR: downloaded CDI operator manifest does not contain expected $(CDI_VERSION) image" >&2; exit 1; }
 	sed -i 's/namespace: cdi/namespace: cozy-kubevirt-cdi/g' templates/cdi-operator.yaml
 	awk -i inplace -v RS="---" '!/kind: Namespace/{printf "%s", $$0 RS}' templates/cdi-operator.yaml
-	patch --no-backup-if-mismatch -p1 < patches/startupProbe.diff
+	@# The patch records repo-root paths (a/packages/system/...); this Makefile
+	@# executes from this package directory, so strip through the package prefix.
+	patch --no-backup-if-mismatch --batch -p4 < patches/startupProbe.diff
