@@ -1,4 +1,5 @@
 name: LayerSentry VM Production Build
+# Candidate refresh: includes actionable VM submit errors and live-inventory NetworkFabric regression coverage.
 
 on:
   push:
