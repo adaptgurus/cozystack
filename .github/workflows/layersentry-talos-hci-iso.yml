@@ -61,7 +61,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name layersentry-registry --network host registry:2
+          docker run -d --name layersentry-registry --network host \
+            -e REGISTRY_HTTP_ADDR=0.0.0.0:5005 \
+            registry:2
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:5005/v2/ >/dev/null && exit 0
             sleep 1
@@ -115,7 +117,6 @@ jobs:
             }
           done
 
-          # Official extension refs must carry immutable digests.
           awk '/imageRef:/ {print $3}' "$profile" | while read -r ref; do
             printf '%s\n' "$ref" | grep -Fq '@sha256:' || {
               echo "::error::Unpinned official extension: $ref"
