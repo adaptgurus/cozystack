@@ -41,22 +41,33 @@ function groupByComplexity(
   return groups
 }
 
+interface CozystackFormContext {
+  cozystackVisibleFields?: string[]
+}
+
 export function CustomObjectFieldTemplate<
   T = any,
   S extends StrictRJSFSchema = RJSFSchema,
   F extends FormContextType = any,
 >(props: ObjectFieldTemplateProps<T, S, F>) {
   const { formData } = props
+  const formContext = props.registry.formContext as CozystackFormContext | undefined
+  const isFilteredRoot =
+    props.idSchema.$id === "root" && Array.isArray(formContext?.cozystackVisibleFields)
+  const visibleFields = new Set(formContext?.cozystackVisibleFields ?? [])
+  const properties = isFilteredRoot
+    ? props.properties.filter((property) => visibleFields.has(property.name))
+    : props.properties
 
   // Addon pattern: has 'enabled' + other config fields → conditional expand
-  const hasEnabledField = props.properties.some((p) => p.name === "enabled")
-  const hasOtherFields = props.properties.some((p) => p.name !== "enabled")
+  const hasEnabledField = properties.some((p) => p.name === "enabled")
+  const hasOtherFields = properties.some((p) => p.name !== "enabled")
   const isAddon = hasEnabledField && hasOtherFields
 
   if (isAddon) {
     const isEnabled = (formData as any)?.enabled === true
-    const enabledProp = props.properties.find((p) => p.name === "enabled")
-    const otherProps = props.properties.filter((p) => p.name !== "enabled")
+    const enabledProp = properties.find((p) => p.name === "enabled")
+    const otherProps = properties.filter((p) => p.name !== "enabled")
     const groups = groupByComplexity(otherProps, props.schema)
 
     return (
@@ -97,13 +108,15 @@ export function CustomObjectFieldTemplate<
     )
   }
 
-  // Default: smart 2-column grid for simple fields, full width for complex
-  const groups = groupByComplexity(props.properties, props.schema)
+  // Default: smart 2-column grid for simple fields, full width for complex.
+  // Guided product workflows can filter only the root fields they need while
+  // keeping nested object/array rendering unchanged.
+  const groups = groupByComplexity(properties, props.schema)
 
   return (
     <fieldset id={props.idSchema.$id}>
-      {props.title && <legend>{props.title}</legend>}
-      {props.description && <p className="field-description">{props.description}</p>}
+      {!isFilteredRoot && props.title && <legend>{props.title}</legend>}
+      {!isFilteredRoot && props.description && <p className="field-description">{props.description}</p>}
       {groups.map((group, i) =>
         group.simple ? (
           <div key={i} className="grid-fields grid grid-cols-2 gap-x-3 xl:grid-cols-3">
