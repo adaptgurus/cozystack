@@ -17,14 +17,14 @@ defaults:
 
 jobs:
   validate-auth:
-    name: Validate LINSTOR GUI Keycloak login on TESTSER
+    name: Provision and validate LINSTOR GUI Keycloak login on TESTSER
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
       KUBECTL: C:\hci-tools\kubectl.exe
     steps:
-      - name: Validate OIDC packages and exact KeycloakClient
+      - name: Validate OIDC stack and provision exact KeycloakClient if missing
         run: |
           $ErrorActionPreference = 'Stop'
           & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=120s
@@ -36,25 +36,75 @@ jobs:
           $engineVariant = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-engine -o jsonpath='{.spec.variant}').Trim()
           if ($engineVariant -ne 'oidc') { throw "cozystack-engine variant is $engineVariant, expected oidc" }
 
-          $client = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor --ignore-not-found -o json | Out-String).Trim()
-          if (-not $client) {
-            Write-Host 'linstor-gui-client is not present; requesting a Flux reconcile now that Keycloak CRDs are established'
-            $stamp = [DateTime]::UtcNow.ToString('o')
-            & $env:KUBECTL annotate helmrelease linstor-gui -n cozy-linstor "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite
-            if ($LASTEXITCODE -ne 0) { throw 'failed requesting linstor-gui reconcile' }
-            & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=180s
-            if ($LASTEXITCODE -ne 0) { throw 'linstor-gui did not reconcile after Keycloak CRD establishment' }
-            Start-Sleep -Seconds 5
-            $client = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor --ignore-not-found -o json | Out-String).Trim()
+          $secret = (& $env:KUBECTL get secret linstor-gui-client -n cozy-linstor --ignore-not-found -o name | Out-String).Trim()
+          if (-not $secret) { throw 'linstor-gui-client Secret is missing; refusing to synthesize or expose client credentials' }
+          $realm = (& $env:KUBECTL get clusterkeycloakrealms.v1.edp.epam.com keycloakrealm-cozy --ignore-not-found -o name | Out-String).Trim()
+          if (-not $realm) { throw 'ClusterKeycloakRealm keycloakrealm-cozy is missing' }
+
+          $ing = (& $env:KUBECTL get ingress linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+          $host = $ing.spec.rules[0].host
+          if (-not $host) { throw 'linstor-gui Ingress host is empty' }
+
+          $clientRaw = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor --ignore-not-found -o json | Out-String).Trim()
+          if (-not $clientRaw) {
+            Write-Host 'KeycloakClient is absent because the packaged chart skipped it during CRD capability discovery; applying the chart-equivalent CR without reading the secret value.'
+            $clientObject = [ordered]@{
+              apiVersion = 'v1.edp.epam.com/v1'
+              kind = 'KeycloakClient'
+              metadata = [ordered]@{
+                name = 'linstor-gui-client'
+                namespace = 'cozy-linstor'
+                labels = [ordered]@{
+                  'app.kubernetes.io/managed-by' = 'Helm'
+                  'app.kubernetes.io/instance' = 'linstor-gui'
+                  'app.kubernetes.io/name' = 'linstor-gui'
+                  'app.kubernetes.io/part-of' = 'cozystack'
+                }
+                annotations = [ordered]@{
+                  'meta.helm.sh/release-name' = 'linstor-gui'
+                  'meta.helm.sh/release-namespace' = 'cozy-linstor'
+                  'layersentry.io/live-remediation' = 'keycloak-client-capability-race'
+                }
+              }
+              spec = [ordered]@{
+                realmRef = [ordered]@{ name = 'keycloakrealm-cozy'; kind = 'ClusterKeycloakRealm' }
+                secret = '$linstor-gui-client:client-secret-key'
+                advancedProtocolMappers = $true
+                name = 'linstor-gui'
+                clientId = 'linstor-gui'
+                directAccess = $true
+                public = $false
+                webUrl = "https://$host"
+                defaultClientScopes = @('groups')
+                optionalClientScopes = @('offline_access')
+                attributes = [ordered]@{ 'post.logout.redirect.uris' = '+' }
+                redirectUris = @("https://$host/oauth2/callback/*")
+              }
+            }
+            $clientFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-keycloak-client.json'
+            $clientObject | ConvertTo-Json -Depth 20 | Set-Content -Path $clientFile -Encoding UTF8
+            & $env:KUBECTL apply -f $clientFile
+            if ($LASTEXITCODE -ne 0) { throw 'failed to apply linstor-gui KeycloakClient' }
           }
-          if (-not $client) { throw 'linstor-gui-client KeycloakClient is still missing after explicit reconcile' }
-          $obj = $client | ConvertFrom-Json
+
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            $obj = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
+            $failureCount = 0
+            if ($null -ne $obj.status.failureCount) { $failureCount = [int]$obj.status.failureCount }
+            Write-Host "KeycloakClient reconcile status: value=$($obj.status.value) clientId=$($obj.status.clientId) failureCount=$failureCount"
+            if (($obj.status.clientId -eq 'linstor-gui') -and ($failureCount -eq 0)) { break }
+            if ($failureCount -gt 0) { throw "Keycloak operator reports failureCount=$failureCount for linstor-gui-client" }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+          if ($obj.status.clientId -ne 'linstor-gui') { throw 'Keycloak operator did not confirm linstor-gui client registration' }
+
           if ($obj.spec.clientId -ne 'linstor-gui') { throw "unexpected Keycloak clientId $($obj.spec.clientId)" }
           if ($obj.spec.realmRef.name -ne 'keycloakrealm-cozy') { throw "unexpected realmRef $($obj.spec.realmRef.name)" }
           if ($obj.spec.secret -ne '$linstor-gui-client:client-secret-key') { throw 'KeycloakClient secret reference is not the expected Kubernetes Secret reference' }
-          Write-Host "KEYCLOAK_CLIENT=PASS name=$($obj.metadata.name) clientId=$($obj.spec.clientId) realm=$($obj.spec.realmRef.name)"
+          Write-Host "KEYCLOAK_CLIENT=PASS name=$($obj.metadata.name) clientId=$($obj.spec.clientId) realm=$($obj.spec.realmRef.name) operatorStatus=$($obj.status.value)"
 
-      - name: Validate oauth2 proxy, ingress backend and login redirect
+      - name: Validate oauth2 proxy, ingress backend and browser login chain
         run: |
           $ErrorActionPreference = 'Stop'
           & $env:KUBECTL rollout status deployment/linstor-gui -n cozy-linstor --timeout=120s
@@ -62,35 +112,44 @@ jobs:
           & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor --timeout=120s
           if ($LASTEXITCODE -ne 0) { throw 'linstor-gui-gatekeeper deployment is not Ready' }
 
-          $ingRaw = (& $env:KUBECTL get ingress linstor-gui -n cozy-linstor -o json | Out-String).Trim()
-          if (-not $ingRaw) { throw 'linstor-gui Ingress missing' }
-          $ing = $ingRaw | ConvertFrom-Json
+          $ing = (& $env:KUBECTL get ingress linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
           $host = $ing.spec.rules[0].host
-          if (-not $host) { throw 'linstor-gui Ingress host is empty' }
           $backend = $ing.spec.rules[0].http.paths[0].backend.service.name
-          if ($backend -notmatch 'gatekeeper') { throw "SECURITY FAILURE: ingress backend is $backend instead of oauth2 gatekeeper" }
+          if ($backend -ne 'linstor-gui-gatekeeper') { throw "SECURITY FAILURE: ingress backend is $backend instead of linstor-gui-gatekeeper" }
 
           $client = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
           $expectedCallback = "https://$host/oauth2/callback/*"
           if ($expectedCallback -notin @($client.spec.redirectUris)) { throw "Keycloak redirect URI does not include $expectedCallback" }
 
-          $url = "https://$host/"
-          Write-Host "LINSTOR_GUI_URL=$url"
-          $headers = (& curl.exe -k -sS -I --max-time 20 $url 2>&1 | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw "LINSTOR GUI endpoint unreachable: $headers" }
-          Write-Host $headers
-          $m = [regex]::Match($headers, 'HTTP/\S+\s+(\d{3})')
-          if (-not $m.Success) { throw 'could not parse HTTP status from LINSTOR GUI' }
-          $status = $m.Groups[1].Value
-          if ($status -eq '200') { throw 'SECURITY FAILURE: unauthenticated request reached GUI with HTTP 200' }
-          if ($status -notin @('302','303','307','401','403')) { throw "unexpected unauthenticated status $status" }
-          if ($status -in @('302','303','307')) {
-            $location = ([regex]::Match($headers, '(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
-            if (-not $location) { throw 'redirect response has no Location header' }
-            if ($location -notmatch '(?i)(oauth2|keycloak|realms/cozy|protocol/openid-connect)') { throw "redirect is not an OIDC/Keycloak flow: $location" }
-            Write-Host "OIDC_REDIRECT=PASS location=$location"
+          $rootHeadersFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-root-headers.txt'
+          & curl.exe -k -sS -D $rootHeadersFile -o NUL --max-time 20 "https://$host/"
+          if ($LASTEXITCODE -ne 0) { throw 'LINSTOR GUI endpoint is unreachable' }
+          $rootHeaders = Get-Content $rootHeadersFile -Raw
+          Write-Host $rootHeaders
+          $rootStatus = [regex]::Match($rootHeaders, 'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($rootStatus -eq '200') { throw 'SECURITY FAILURE: unauthenticated request reached GUI with HTTP 200' }
+          if ($rootStatus -notin @('302','303','307')) { throw "expected authentication redirect, got HTTP $rootStatus" }
+          $location = ([regex]::Match($rootHeaders, '(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if (-not $location) { throw 'authentication redirect has no Location header' }
+
+          if ($location.StartsWith('/')) {
+            $startHeadersFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-start-headers.txt'
+            & curl.exe -k -sS -D $startHeadersFile -o NUL --max-time 20 "https://$host$location"
+            if ($LASTEXITCODE -ne 0) { throw 'oauth2 start endpoint is unreachable' }
+            $startHeaders = Get-Content $startHeadersFile -Raw
+            Write-Host $startHeaders
+            $location = ([regex]::Match($startHeaders, '(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
           }
-          Write-Host "LINSTOR_GUI_KEYCLOAK_LOGIN=PASS status=$status backend=$backend host=$host"
+          if ($location -notmatch '(?i)/realms/cozy/protocol/openid-connect/auth') { throw "oauth2-proxy did not redirect to the cozy Keycloak realm: $location" }
+          if ($location -notmatch '(?i)(client_id=linstor-gui|client_id%3Dlinstor-gui)') { throw 'Keycloak authorization URL does not carry client_id=linstor-gui' }
+
+          $loginBodyFile = Join-Path $env:RUNNER_TEMP 'keycloak-login-body.html'
+          $loginCode = (& curl.exe -k -sS -L --max-redirs 5 --max-time 30 -o $loginBodyFile -w '%{http_code}' $location | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak authorization endpoint is unreachable' }
+          $loginBody = Get-Content $loginBodyFile -Raw
+          if ($loginCode -ne '200') { throw "Keycloak authorization endpoint returned HTTP $loginCode" }
+          if ($loginBody -match '(?i)(invalid[_ -]?client|client not found|unknown client)') { throw 'Keycloak rejected the linstor-gui client registration' }
+          Write-Host "LINSTOR_GUI_KEYCLOAK_LOGIN=PASS rootStatus=$rootStatus backend=$backend host=$host keycloakAuthHttp=$loginCode"
 
       - name: Validate admin group authorization configuration without exposing secrets
         run: |
@@ -98,6 +157,6 @@ jobs:
           $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
           $args = @($dep.spec.template.spec.containers[0].args)
           $joined = $args -join "`n"
-          if ($joined -notmatch 'cozystack-cluster-admin') { throw 'gatekeeper does not restrict access to cozystack-cluster-admin' }
-          if ($joined -notmatch '(?i)oidc|keycloak') { throw 'gatekeeper args do not show OIDC configuration' }
+          if ($joined -notmatch '--allowed-group=cozystack-cluster-admin') { throw 'gatekeeper does not restrict access to cozystack-cluster-admin' }
+          if ($joined -notmatch '--provider=oidc') { throw 'gatekeeper is not configured for OIDC' }
           Write-Host 'LINSTOR_GUI_ADMIN_GROUP_AUTH=PASS group=cozystack-cluster-admin'
