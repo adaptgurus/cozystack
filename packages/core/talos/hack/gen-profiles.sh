@@ -1,182 +1,166 @@
 #!/bin/sh
-set -e
-set -u
-
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+set -eu
 
 PROFILES="initramfs kernel iso installer nocloud metal"
-EMBEDDED_CONFIG="layersentry-hci-machine-config.yaml"
-LOCAL_ISCSI_TARGET_TARBALL="/extensions/layersentry-iscsi-target.tar"
-LOCAL_NFS_SERVER_TARBALL="/extensions/layersentry-nfs-server.tar"
-
-# Firmware already carried by the Cozystack Talos image. Keep this list broad
-# enough for the common bare-metal NIC/GPU/storage platforms we support.
-FIRMWARES="amd-ucode amdgpu bnx2-bnx2x i915 intel-ice-firmware intel-ucode qlogic-firmware"
-
-# LayerSentry HCI host extensions.
-#
-# These are deliberately baked into every LayerSentry Talos boot asset so a
-# node has the host-side tooling required by storage/network controllers from
-# first boot. Hardware-specific kernel capabilities (SR-IOV, VFIO, RDMA/RoCE,
-# NVMe/RDMA, NVMe/FC and NVMe/TCP) are provided by the Talos kernel and matching
-# device drivers; these extensions add the userspace/service pieces where Talos
-# publishes one.
-#
-# nfsd is the Sidero extension that supplies the Talos-version-matched NFSD
-# kernel module. nfs-utils supplies client/NFSv3 helper components. The complete
-# server userspace is carried in the LayerSentry nfs-server extension below.
-#
-# trident-iscsi-tools is intentionally included even when NetApp Trident is not
-# installed: Sidero's extension is the supported catalog image that provides
-# lsscsi on Talos v1.13.x.
-HCI_EXTENSIONS="\
-iscsi-tools \
-multipath-tools \
-nfsd \
-nfs-utils \
-nfsrahead \
-nvme-cli \
-lldpd \
-trident-iscsi-tools \
-util-linux-tools"
-
-# GPU/RDMA-capable nodes use the same ISO. The open NVIDIA production driver
-# and CDI/container runtime integration make host GPU workloads possible, while
-# a PCIDriverRebindConfig can still bind selected devices to vfio-pci for
-# KubeVirt passthrough. nvidia-gdrdrv-device supplies the catalog GPUDirect RDMA
-# device support. Actual GPUDirect operation still requires compatible NVIDIA
-# GPUs, RDMA NICs, IOMMU/topology and Kubernetes GPU/RDMA operators.
-GPU_EXTENSIONS="\
-nvidia-open-gpu-kernel-modules-production \
-nvidia-container-toolkit-production \
-nvidia-gdrdrv-device"
-
+EMBEDDED_MACHINE_CONFIG=${EMBEDDED_MACHINE_CONFIG:-layersentry-hci-machine-config.yaml}
+LAYERSENTRY_ISCSI_TARGET_TARBALL=${LAYERSENTRY_ISCSI_TARGET_TARBALL:-/extensions/layersentry-iscsi-target.tar}
+LAYERSENTRY_NFS_SERVER_TARBALL=${LAYERSENTRY_NFS_SERVER_TARBALL:-/extensions/layersentry-nfs-server.tar}
+LAYERSENTRY_HCI_TOOLS_TARBALL=${LAYERSENTRY_HCI_TOOLS_TARBALL:-/extensions/layersentry-hci-tools.tar}
+FIRMWARE="
+amd-ucode
+amdgpu
+bnx2-bnx2x
+i915
+intel-ice-firmware
+intel-ucode
+qlogic-firmware
+"
+HCI_EXTENSIONS="
+iscsi-tools
+multipath-tools
+nfsd
+nfs-utils
+nfsrahead
+nvme-cli
+lldpd
+trident-iscsi-tools
+util-linux-tools
+"
+GPU_EXTENSIONS="
+nvidia-open-gpu-kernel-modules-production
+nvidia-container-toolkit-production
+nvidia-gdrdrv-device
+"
 EXTENSIONS="drbd zfs $HCI_EXTENSIONS $GPU_EXTENSIONS"
 
-mkdir -p images/talos/profiles
-
-test -s "$EMBEDDED_CONFIG"
-embedded_config_yaml=$(sed 's/^/    /' "$EMBEDDED_CONFIG")
-
-printf "fetching talos version: "
-talos_version=${1:-$(skopeo --override-os linux --override-arch amd64 list-tags docker://ghcr.io/siderolabs/imager | jq -r '.Tags[]' | grep '^v[0-9]\+.[0-9]\+.[0-9]\+$' | sort -V | tail -n 1)}
-echo "$talos_version"
-
-export TALOS_VERSION="$talos_version"
-CATALOG_IMAGE="ghcr.io/siderolabs/extensions:${TALOS_VERSION}"
-CATALOG_DIGESTS="$TMPDIR/image-digests"
-
-# crane is convenient for developer workstations, but release builders already
-# guarantee Docker. Keep a Docker fallback so normal Cozystack image/release
-# builds do not gain a new mandatory host dependency.
-if command -v crane >/dev/null 2>&1; then
-  crane export "$CATALOG_IMAGE" | tar x -O image-digests > "$CATALOG_DIGESTS"
+if [ -n "${1:-}" ]; then
+  TALOS_VERSION=$1
 else
-  docker pull "$CATALOG_IMAGE" >/dev/null
-  catalog_container=$(docker create "$CATALOG_IMAGE" /bin/true)
-  trap 'docker rm -f "$catalog_container" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT INT TERM
-  docker export "$catalog_container" | tar x -O image-digests > "$CATALOG_DIGESTS"
-  docker rm "$catalog_container" >/dev/null
-  trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+  TALOS_VERSION=$(docker image ls --format '{{.Tag}}' ghcr.io/siderolabs/imager | grep -v '<none>' | sort -V | tail -1)
 fi
 
-IMAGE_REFS="$TMPDIR/image-refs"
-: > "$IMAGE_REFS"
+if [ -z "$TALOS_VERSION" ]; then
+  echo "ERROR: Talos version could not be resolved" >&2
+  exit 1
+fi
 
-resolve_image() {
-  extension_name=$1
-  image=$(grep -F "/${extension_name}:" "$CATALOG_DIGESTS" | head -n 1 || true)
-  if [ -z "$image" ]; then
-    echo "ERROR: Talos ${TALOS_VERSION} extension '${extension_name}' is not present in ${CATALOG_IMAGE}" >&2
+BASE_INSTALLER_IMAGE=${BASE_INSTALLER_IMAGE:-ghcr.io/siderolabs/installer:${TALOS_VERSION}}
+CATALOG_IMAGE="ghcr.io/siderolabs/extensions:${TALOS_VERSION}"
+CATALOG_TMP=$(mktemp)
+trap 'rm -f "$CATALOG_TMP"' EXIT INT TERM
+
+# Resolve the exact extension set for this Talos release from the signed
+# Sidero catalog and keep the immutable digest-qualified references in every
+# generated profile. Never guess extension tags.
+docker run --rm --entrypoint /bin/sh "$CATALOG_IMAGE" -c 'cat /image-digests' > "$CATALOG_TMP"
+
+resolve_extension() {
+  name=$1
+  ref=$(awk -v n="/$name:" 'index($0,n){print; exit}' "$CATALOG_TMP")
+  if [ -z "$ref" ]; then
+    echo "ERROR: extension '$name' is not present in ${CATALOG_IMAGE}" >&2
     exit 1
   fi
-  printf "fetching %s version: %s\n" "$extension_name" "$image" >&2
-  printf "%s\n" "$image"
+  printf '%s\n' "$ref"
 }
 
-for extension in $FIRMWARES $EXTENSIONS; do
-  resolve_image "$extension" >> "$IMAGE_REFS"
-done
+emit_extensions() {
+  for extension in $FIRMWARE $EXTENSIONS; do
+    ref=$(resolve_extension "$extension")
+    printf '    - imageRef: %s\n' "$ref"
+  done
+  printf '    - tarballPath: %s\n' "$LAYERSENTRY_ISCSI_TARGET_TARBALL"
+  printf '    - tarballPath: %s\n' "$LAYERSENTRY_NFS_SERVER_TARBALL"
+  printf '    - tarballPath: %s\n' "$LAYERSENTRY_HCI_TOOLS_TARBALL"
+}
 
-for profile in $PROFILES; do
-  echo "writing profile images/talos/profiles/$profile.yaml"
-  case "$profile" in
-    initramfs|iso)
-      image_options="{}"
-      out_format="raw"
-      platform="metal"
-      kind="$profile"
-      ;;
-    kernel)
-      image_options="{}"
-      out_format="raw"
-      platform="metal"
-      kind="$profile"
-      ;;
-    installer)
-      image_options="{}"
-      out_format="raw"
-      platform="metal"
-      kind="installer"
-      ;;
-    metal)
-      image_options="{ diskSize: 1306525696, diskFormat: raw }"
-      out_format=".xz"
-      platform="metal"
-      kind="image"
-      ;;
-    nocloud)
-      image_options="{ diskSize: 1306525696, diskFormat: raw }"
-      out_format=".xz"
-      platform="nocloud"
-      kind="image"
-      ;;
-    *)
-      echo "Unknown profile: $profile" >&2
-      exit 1
-      ;;
-  esac
-
-  extension_yaml=$(sed 's/^/    - imageRef: /' "$IMAGE_REFS")
-  # LayerSentry-specific server extensions are built locally as validated Talos
-  # extension tarballs and mounted into imager at /extensions.
-  extension_yaml="${extension_yaml}
-    - tarballPath: ${LOCAL_ISCSI_TARGET_TARBALL}
-    - tarballPath: ${LOCAL_NFS_SERVER_TARBALL}"
-
-  # Embedded configuration is a virtual system extension. Include it in every
-  # boot/install asset that carries an initramfs so multipath and NFSD kernel
-  # modules, multipathd defaults, and LayerSentry's host-ingress accept policy
-  # are active from first boot. A kernel-only artifact cannot carry config.
-  if [ "$profile" = "kernel" ]; then
-    customization_yaml=""
-  else
-    customization_yaml="customization:
-  embeddedMachineConfiguration: |
-$embedded_config_yaml"
-  fi
-
-  cat > images/talos/profiles/$profile.yaml <<EOT
-# this file generated by hack/gen-profiles.sh
-# do not edit it
+for PROFILE in $PROFILES; do
+  OUT="images/talos/profiles/${PROFILE}.yaml"
+  {
+    cat <<EOF
 arch: amd64
-platform: ${platform}
+platform: metal
 secureboot: false
 version: ${TALOS_VERSION}
-${customization_yaml}
 input:
   kernel:
     path: /usr/install/amd64/vmlinuz
   initramfs:
     path: /usr/install/amd64/initramfs.xz
+  sdStub:
+    path: /usr/install/amd64/systemd-stub.efi
+  sdBoot:
+    path: /usr/install/amd64/systemd-boot.efi
   baseInstaller:
-    imageRef: "ghcr.io/siderolabs/installer:${TALOS_VERSION}"
+    imageRef: ${BASE_INSTALLER_IMAGE}
   systemExtensions:
-${extension_yaml}
+EOF
+    emit_extensions
+
+    if [ "$PROFILE" != "kernel" ]; then
+      cat <<EOF
+customization:
+  extraKernelArgs:
+    - net.ifnames=0
+  embeddedMachineConfiguration:
+EOF
+      sed 's/^/    /' "$EMBEDDED_MACHINE_CONFIG"
+    fi
+
+    case "$PROFILE" in
+      initramfs)
+        cat <<EOF
 output:
-  kind: ${kind}
-  imageOptions: ${image_options}
-  outFormat: ${out_format}
-EOT
+  kind: initramfs
+  outFormat: raw
+EOF
+        ;;
+      kernel)
+        cat <<EOF
+output:
+  kind: kernel
+  outFormat: raw
+EOF
+        ;;
+      iso)
+        cat <<EOF
+output:
+  kind: iso
+  outFormat: raw
+EOF
+        ;;
+      installer)
+        cat <<EOF
+output:
+  kind: installer
+  outFormat: raw
+EOF
+        ;;
+      nocloud)
+        cat <<EOF
+output:
+  kind: image
+  imageOptions:
+    diskSize: 2147483648
+    diskFormat: raw
+    platform: nocloud
+  outFormat: xz
+EOF
+        ;;
+      metal)
+        cat <<EOF
+output:
+  kind: image
+  imageOptions:
+    diskSize: 2147483648
+    diskFormat: raw
+  outFormat: xz
+EOF
+        ;;
+      *)
+        echo "ERROR: unsupported profile $PROFILE" >&2
+        exit 1
+        ;;
+    esac
+  } > "$OUT"
 done

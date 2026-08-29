@@ -3,14 +3,6 @@
 # This configuration is embedded into LayerSentry boot/install assets by
 # hack/gen-profiles.sh. Keep array-specific WWID/product overrides outside this
 # generic image policy; controllers or site machine-config patches can add them.
-#
-# Talos v1.13.6 multipath-tools requires dm_multipath plus a supported path
-# selector module. dm-service-time is not available in this Talos kernel, so the
-# image deliberately uses round-robin.
-#
-# NFSD is deliberately loaded because LayerSentry HCI exposes NFS server support
-# as a platform capability. Export definitions and lifecycle remain managed by
-# the LayerSentry storage layer rather than hard-coded into a reusable ISO.
 version: v1alpha1
 machine:
   kernel:
@@ -18,6 +10,10 @@ machine:
       - name: dm_multipath
       - name: dm_round-robin
       - name: nfsd
+      # Stock Talos v1.13.6 disables CONFIG_INFINIBAND_ISER. The LayerSentry
+      # kernel build enables it as a module and explicitly packages ib_iser in
+      # the Talos initramfs module allow-list.
+      - name: ib_iser
 ---
 apiVersion: v1alpha1
 kind: ExtensionServiceConfig
@@ -33,9 +29,9 @@ configFiles:
 ---
 # LayerSentry deliberately does not impose an OS-level ingress firewall in the
 # generic HCI image. Talos' default ingress action is accept; pin it explicitly
-# so storage traffic such as NFS, iSCSI and NVMe-oF is not blocked by the Talos
-# ingress firewall. Netfilter/nftables/iptables kernel and userspace capability
-# is retained because Kubernetes/Cilium can rely on it for datapath functions.
+# so storage traffic such as NFS, iSCSI, iSER and NVMe-oF is not blocked. The
+# kernel netfilter/conntrack substrate is retained for Kubernetes/Cilium
+# compatibility; normal LayerSentry Kubernetes datapath policy is Cilium/eBPF.
 apiVersion: v1alpha1
 kind: NetworkDefaultActionConfig
 ingress: accept

@@ -7,6 +7,7 @@ on:
       - layersentry-platform
     paths:
       - 'packages/core/talos/**'
+      - 'packages/system/cilium/values.yaml'
       - '.github/workflows/layersentry-talos-hci-iso.yml'
 
 concurrency:
@@ -16,12 +17,19 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  TALOS_VERSION: v1.13.6
+  TALOS_COMMIT: 04318854eb64c90e99308b844b45b26b0077489e
+  PKGS_COMMIT: d8c80cc52d6c60a25c7ab2a80fa78814c08a04da
+  LOCAL_REGISTRY: 127.0.0.1:5005
+  BUILD_TAG: v1.13.6-layersentry-iser1
+
 jobs:
   build-release:
-    name: Build, audit and publish LayerSentry HCI Talos ISO
+    name: Build, boot-test and publish LayerSentry HCI Talos ISO
     if: github.ref_name == 'layersentry-platform'
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 180
 
     steps:
       - name: Checkout layersentry-platform
@@ -30,22 +38,57 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Assert branch and clean output
+      - name: Assert branch and source pins
         shell: bash
         run: |
           set -euo pipefail
           test "${GITHUB_REF_NAME}" = "layersentry-platform"
-          rm -rf _out/assets _out/extensions
-          mkdir -p _out/assets _out/extensions
+          test "$(awk '/^version:/ {print $2; exit}' packages/core/talos/images/talos/profiles/installer.yaml)" = "${TALOS_VERSION}"
+          grep -Fq 'kubeProxyReplacement: true' packages/system/cilium/values.yaml
+          grep -Fq 'masquerade: true' packages/system/cilium/values.yaml
+          grep -Fq 'hostLegacyRouting: false' packages/system/cilium/values.yaml
 
-      - name: Build LayerSentry HCI Talos ISO
+      - name: Set up Docker Buildx for local registry
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."127.0.0.1:5005"]
+              http = true
+              insecure = true
+
+      - name: Start ephemeral local registry
         shell: bash
         run: |
           set -euo pipefail
-          make -C packages/core/talos talos-iso
+          docker run -d --name layersentry-registry --network host registry:2
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5005/v2/ >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs layersentry-registry
+          exit 1
+
+      - name: Build exact Talos v1.13.6 kernel with iSER
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages/core/talos/hack/build-layersentry-custom-talos.sh
+
+      - name: Build LayerSentry custom extensions and ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _out/assets _out/extensions
+          mkdir -p _out/assets _out/extensions
+          base_installer="${LOCAL_REGISTRY}/layersentry/talos/installer-base:${BUILD_TAG}"
+          imager="${LOCAL_REGISTRY}/layersentry/talos/imager:${BUILD_TAG}"
+          make -C packages/core/talos talos-iso \
+            BASE_INSTALLER_IMAGE="$base_installer" \
+            IMAGER_IMAGE="$imager"
           test -s _out/assets/metal-amd64.iso
 
-      - name: Verify storage extensions and embedded runtime configuration
+      - name: Verify image profile, tools and kernel gates
         shell: bash
         run: |
           set -euo pipefail
@@ -53,67 +96,127 @@ jobs:
           runtime_config="packages/core/talos/layersentry-hci-machine-config.yaml"
           iscsi_ext="_out/extensions/layersentry-iscsi-target.tar"
           nfs_ext="_out/extensions/layersentry-nfs-server.tar"
+          tools_ext="_out/extensions/layersentry-hci-tools.tar"
 
-          test -s "$profile"
-          test -s "$runtime_config"
-          test -s "$iscsi_ext"
-          test -s "$nfs_ext"
+          for f in "$profile" "$runtime_config" "$iscsi_ext" "$nfs_ext" "$tools_ext"; do
+            test -s "$f"
+          done
 
           required_extensions=(
-            drbd
-            zfs
-            iscsi-tools
-            multipath-tools
-            nfsd
-            nfs-utils
-            nfsrahead
-            nvme-cli
-            lldpd
-            trident-iscsi-tools
-            util-linux-tools
+            drbd zfs iscsi-tools multipath-tools nfsd nfs-utils nfsrahead
+            nvme-cli lldpd trident-iscsi-tools util-linux-tools
             nvidia-open-gpu-kernel-modules-production
-            nvidia-container-toolkit-production
-            nvidia-gdrdrv-device
+            nvidia-container-toolkit-production nvidia-gdrdrv-device
           )
-
           for extension in "${required_extensions[@]}"; do
-            if ! grep -Fq "/${extension}:" "$profile"; then
-              echo "::error::Required Talos extension '${extension}' is missing from ${profile}"
+            grep -Fq "/${extension}:" "$profile" || {
+              echo "::error::Required Talos extension '${extension}' missing from ${profile}"
               exit 1
-            fi
+            }
+          done
+
+          # Official extension refs must carry immutable digests.
+          awk '/imageRef:/ {print $3}' "$profile" | while read -r ref; do
+            printf '%s\n' "$ref" | grep -Fq '@sha256:' || {
+              echo "::error::Unpinned official extension: $ref"
+              exit 1
+            }
           done
 
           grep -Fq 'tarballPath: /extensions/layersentry-iscsi-target.tar' "$profile"
           grep -Fq 'tarballPath: /extensions/layersentry-nfs-server.tar' "$profile"
-
-          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtd' >/dev/null
-          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtadm' >/dev/null
-          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtimg' >/dev/null
-          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-iscsi-target.yaml' >/dev/null
-          tar -xOf "$iscsi_ext" manifest.yaml | grep -F 'name: layersentry-iscsi-target' >/dev/null
-
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/exportfs' >/dev/null
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.nfsd' >/dev/null
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.mountd' >/dev/null
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/sbin/rpc.statd' >/dev/null
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/local/sbin/layersentry-nfs-server' >/dev/null
-          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-nfs-server.yaml' >/dev/null
-          tar -xOf "$nfs_ext" manifest.yaml | grep -F 'name: layersentry-nfs-server' >/dev/null
-
-          grep -Fq '/trident-iscsi-tools:' "$profile"
-          grep -Fq 'name: dm_multipath' "$runtime_config"
-          grep -Fq 'name: dm_round-robin' "$runtime_config"
-          grep -Fq 'name: multipathd' "$runtime_config"
-          grep -Fq 'path_selector "round-robin 0"' "$runtime_config"
-          grep -Fq 'name: nfsd' "$runtime_config"
-          grep -Fq 'kind: NetworkDefaultActionConfig' "$runtime_config"
-          grep -Fq 'ingress: accept' "$runtime_config"
-          grep -Fq 'embeddedMachineConfiguration:' "$profile"
+          grep -Fq 'tarballPath: /extensions/layersentry-hci-tools.tar' "$profile"
+          grep -Fq "imageRef: ${LOCAL_REGISTRY}/layersentry/talos/installer-base:${BUILD_TAG}" "$profile"
+          grep -Fq 'name: ib_iser' "$profile"
           grep -Fq 'name: dm_multipath' "$profile"
           grep -Fq 'name: nfsd' "$profile"
-          grep -Fq 'kind: NetworkDefaultActionConfig' "$profile"
-          grep -Fq 'ingress: accept' "$profile"
-          grep -Fq '| NVMe/FC host | PASS - HARDWARE CERTIFICATION REQUIRED |' packages/core/talos/LAYERSENTRY_HCI_IMAGE_AUDIT.md
+
+          tar -tf "$iscsi_ext" | grep -E '/tgtd$' >/dev/null
+          tar -tf "$iscsi_ext" | grep -E '/tgtadm$' >/dev/null
+          tar -tf "$nfs_ext" | grep -E '/exportfs$' >/dev/null
+          tar -tf "$nfs_ext" | grep -E '/rpc\.nfsd$' >/dev/null
+          tar -tf "$tools_ext" | grep -E '/ethtool$' >/dev/null
+          tar -tf "$tools_ext" | grep -E '/rdma$' >/dev/null
+          tar -tf "$tools_ext" | grep -E '/ibv_devices$' >/dev/null
+          tar -tf "$tools_ext" | grep -E '/ibv_devinfo$' >/dev/null
+
+      - name: Install QEMU for disposable ISO boot gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 gzip
+          curl --fail --location --retry 4 \
+            "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
+            -o /tmp/talosctl
+          chmod +x /tmp/talosctl
+          /tmp/talosctl version --client
+
+      - name: Boot exact ISO and validate Talos API plus iSER
+        shell: bash
+        run: |
+          set -euo pipefail
+          iso="_out/assets/metal-amd64.iso"
+          serial="${RUNNER_TEMP}/layersentry-talos-serial.log"
+          qemu-system-x86_64 \
+            -machine q35,accel=tcg \
+            -cpu max \
+            -m 3072 \
+            -smp 2 \
+            -boot d \
+            -cdrom "$iso" \
+            -display none \
+            -serial "file:${serial}" \
+            -netdev user,id=net0,hostfwd=tcp:127.0.0.1:50000-:50000 \
+            -device virtio-net-pci,netdev=net0 \
+            >"${RUNNER_TEMP}/qemu.stdout" 2>"${RUNNER_TEMP}/qemu.stderr" &
+          qemu_pid=$!
+          trap 'kill ${qemu_pid} 2>/dev/null || true' EXIT
+
+          api_ok=false
+          for i in $(seq 1 150); do
+            if /tmp/talosctl --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure version >"${RUNNER_TEMP}/talos-version.txt" 2>&1; then
+              api_ok=true
+              break
+            fi
+            if ! kill -0 "$qemu_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$api_ok" != true ]; then
+            echo '::error::Talos maintenance API did not become reachable from the booted ISO'
+            cat "${RUNNER_TEMP}/qemu.stderr" || true
+            tail -200 "$serial" || true
+            exit 1
+          fi
+
+          cat "${RUNNER_TEMP}/talos-version.txt"
+          /tmp/talosctl --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure \
+            read /proc/config.gz > "${RUNNER_TEMP}/config.gz"
+          zgrep -Fx 'CONFIG_INFINIBAND_ISER=m' "${RUNNER_TEMP}/config.gz"
+          zgrep -Eq '^CONFIG_NVME_(TCP|RDMA|FC)=[ym]$' "${RUNNER_TEMP}/config.gz"
+          zgrep -Fx 'CONFIG_PCI_IOV=y' "${RUNNER_TEMP}/config.gz"
+          zgrep -Eq '^CONFIG_VFIO_PCI=[ym]$' "${RUNNER_TEMP}/config.gz"
+
+          /tmp/talosctl --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure \
+            read /proc/modules > "${RUNNER_TEMP}/modules.txt"
+          grep -Eq '^ib_iser ' "${RUNNER_TEMP}/modules.txt" || {
+            echo '::error::ib_iser is not loaded in the booted LayerSentry Talos image'
+            cat "${RUNNER_TEMP}/modules.txt"
+            exit 1
+          }
+
+          /tmp/talosctl --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure \
+            get extensions -o yaml > "${RUNNER_TEMP}/extensions.yaml"
+          for extension in layersentry-iscsi-target layersentry-nfs-server layersentry-hci-tools; do
+            grep -Fq "$extension" "${RUNNER_TEMP}/extensions.yaml" || {
+              echo "::error::Booted ISO is missing extension ${extension}"
+              cat "${RUNNER_TEMP}/extensions.yaml"
+              exit 1
+            }
+          done
 
       - name: Package release assets
         id: package
@@ -121,10 +224,7 @@ jobs:
         run: |
           set -euo pipefail
           profile="packages/core/talos/images/talos/profiles/iso.yaml"
-          talos_version="$(awk '/^version:/ {print $2; exit}' "$profile")"
-          test -n "$talos_version"
-
-          version="${talos_version#v}"
+          version="${TALOS_VERSION#v}"
           base="layersentry-hci-talos-${version}-amd64"
           iso="_out/assets/${base}.iso"
           checksum="_out/assets/${base}.sha256"
@@ -134,8 +234,10 @@ jobs:
           audit_asset="_out/assets/${base}-audit.md"
           iscsi_asset="_out/assets/${base}-iscsi-target-extension.tar"
           nfs_asset="_out/assets/${base}-nfs-server-extension.tar"
+          tools_asset="_out/assets/${base}-hci-tools-extension.tar"
           custom_checksums="_out/assets/${base}-custom-extensions.sha256"
-          release_tag="layersentry-hci-talos-v${version}-r3"
+          provenance="_out/assets/${base}-kernel-provenance.txt"
+          release_tag="layersentry-hci-talos-v${version}-r4"
 
           mv _out/assets/metal-amd64.iso "$iso"
           cp "$profile" "$profile_asset"
@@ -143,50 +245,58 @@ jobs:
           cp packages/core/talos/LAYERSENTRY_HCI_IMAGE_AUDIT.md "$audit_asset"
           cp _out/extensions/layersentry-iscsi-target.tar "$iscsi_asset"
           cp _out/extensions/layersentry-nfs-server.tar "$nfs_asset"
+          cp _out/extensions/layersentry-hci-tools.tar "$tools_asset"
+
+          {
+            echo "Talos version: ${TALOS_VERSION}"
+            echo "Talos commit: ${TALOS_COMMIT}"
+            echo "siderolabs/pkgs commit: ${PKGS_COMMIT}"
+            echo "Kernel delta: CONFIG_INFINIBAND_ISER=m"
+            echo "Packaged Talos module: kernel/drivers/infiniband/ulp/iser/ib_iser.ko"
+            echo "Build tag: ${BUILD_TAG}"
+            echo "LayerSentry commit: ${GITHUB_SHA}"
+          } > "$provenance"
 
           {
             echo "LayerSentry HCI Talos image"
-            echo "Talos version: ${talos_version}"
+            echo "Talos version: ${TALOS_VERSION}"
             echo "Release tag: ${release_tag}"
             echo "Git branch: ${GITHUB_REF_NAME}"
             echo "Git commit: ${GITHUB_SHA}"
             echo
             echo "Official Talos system extensions (digest pinned):"
-            awk '/systemExtensions:/{p=1; next} p && /imageRef:/{sub(/^.*imageRef: /, ""); print "  " $0; next} p && /^output:/{exit}' "$profile"
+            awk '/systemExtensions:/{p=1; next} p && /imageRef:/{sub(/^.*imageRef: /, ""); print "  " $0; next} p && /^customization:/{exit}' "$profile"
             echo
             echo "LayerSentry custom extensions:"
-            echo "  layersentry-iscsi-target: scsi-tgt/tgtd + tgtadm + tgtimg"
-            echo "  layersentry-nfs-server: exportfs + rpc.nfsd + rpc.mountd + rpc.statd/rpcbind"
+            echo "  layersentry-iscsi-target"
+            echo "  layersentry-nfs-server"
+            echo "  layersentry-hci-tools (ethtool + rdma + ibv_devices + ibv_devinfo)"
             echo
-            echo "Embedded runtime configuration:"
-            echo "  dm_multipath + dm_round-robin"
-            echo "  multipathd with round-robin path selector"
-            echo "  nfsd module loaded"
-            echo "  Talos host ingress action: accept (host firewall filtering disabled)"
-            echo "  netfilter/nftables/iptables capability retained for Kubernetes/Cilium datapath compatibility"
+            echo "Custom kernel:"
+            echo "  CONFIG_INFINIBAND_ISER=m"
+            echo "  ib_iser packaged and boot-loaded"
             echo
-            echo "Storage protocol status:"
-            echo "  NVMe/FC host support: enabled by exact Talos v1.13.6 kernel; hardware/fabric certification required"
-            echo "  iSCSI target: userspace tgtd service included; no default LUN/ACL"
-            echo "  NFS server/export engine: included; no default export"
-            echo "  iSER: not claimed by this release"
+            echo "Cilium datapath policy:"
+            echo "  kubeProxyReplacement=true"
+            echo "  bpf.masquerade=true"
+            echo "  bpf.hostLegacyRouting=false"
+            echo "  netfilter/conntrack retained only for compatibility"
           } > "$manifest"
 
           (cd _out/assets && sha256sum "${base}.iso" > "${base}.sha256")
           (cd _out/assets && sha256sum \
             "${base}-iscsi-target-extension.tar" \
             "${base}-nfs-server-extension.tar" \
+            "${base}-hci-tools-extension.tar" \
             > "${base}-custom-extensions.sha256")
 
-          for asset in \
-            "$iso" "$checksum" "$manifest" "$profile_asset" "$runtime_asset" \
-            "$audit_asset" "$iscsi_asset" "$nfs_asset" "$custom_checksums"; do
+          for asset in "$iso" "$checksum" "$manifest" "$profile_asset" "$runtime_asset" \
+            "$audit_asset" "$iscsi_asset" "$nfs_asset" "$tools_asset" "$custom_checksums" "$provenance"; do
             test -s "$asset"
           done
 
           echo "base=${base}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
-          echo "talos_version=${talos_version}" >> "$GITHUB_OUTPUT"
           echo "iso=${iso}" >> "$GITHUB_OUTPUT"
           echo "checksum=${checksum}" >> "$GITHUB_OUTPUT"
           echo "manifest=${manifest}" >> "$GITHUB_OUTPUT"
@@ -195,17 +305,15 @@ jobs:
           echo "audit_asset=${audit_asset}" >> "$GITHUB_OUTPUT"
           echo "iscsi_asset=${iscsi_asset}" >> "$GITHUB_OUTPUT"
           echo "nfs_asset=${nfs_asset}" >> "$GITHUB_OUTPUT"
+          echo "tools_asset=${tools_asset}" >> "$GITHUB_OUTPUT"
           echo "custom_checksums=${custom_checksums}" >> "$GITHUB_OUTPUT"
-
+          echo "provenance=${provenance}" >> "$GITHUB_OUTPUT"
           cat "$checksum"
-          cat "$custom_checksums"
-          cat "$manifest"
 
-      - name: Publish official-style GitHub Release
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
-          TALOS_VERSION: ${{ steps.package.outputs.talos_version }}
           ISO: ${{ steps.package.outputs.iso }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}
           MANIFEST: ${{ steps.package.outputs.manifest }}
@@ -214,66 +322,50 @@ jobs:
           AUDIT_ASSET: ${{ steps.package.outputs.audit_asset }}
           ISCSI_ASSET: ${{ steps.package.outputs.iscsi_asset }}
           NFS_ASSET: ${{ steps.package.outputs.nfs_asset }}
+          TOOLS_ASSET: ${{ steps.package.outputs.tools_asset }}
           CUSTOM_CHECKSUMS: ${{ steps.package.outputs.custom_checksums }}
+          PROVENANCE: ${{ steps.package.outputs.provenance }}
         shell: bash
         run: |
           set -euo pipefail
-
           cat > /tmp/layersentry-release-notes.md <<EOF
-          LayerSentry HCI Talos ${TALOS_VERSION} **r3** built from the \`layersentry-platform\` branch.
+          LayerSentry HCI Talos ${TALOS_VERSION} r4 built from \`layersentry-platform\`.
 
-          **Storage profile in r3**
-          - NVMe/FC host support release-audited against the exact Talos v1.13.6 kernel configuration.
-          - LayerSentry userspace iSCSI target service (\`tgtd\`) baked into the ISO without requiring Linux LIO/targetcli.
-          - Full NFS server/export userspace plus Talos \`nfsd\` module baked into the ISO. No export is created until LayerSentry supplies explicit export policy.
-          - Talos host ingress firewall action explicitly set to \`accept\`. Netfilter/nftables/iptables capability is retained only for Kubernetes/Cilium datapath compatibility.
+          Release gates passed before publication:
+          - custom Talos 6.18.38 kernel built from the exact v1.13.6 package revision with \`CONFIG_INFINIBAND_ISER=m\`;
+          - \`ib_iser\` packaged into the Talos initramfs and loaded by the booted ISO;
+          - storage/NFS/iSCSI/multipath/NVMe/LLDP/GPU extensions resolved to digest-pinned references;
+          - LayerSentry ethtool/RDMA diagnostics extension built and validated;
+          - disposable QEMU boot completed and Talos maintenance API answered;
+          - Cilium is configured for kube-proxy replacement, BPF masquerading and non-legacy host routing.
 
-          **Build identity**
-          - Commit: \`${GITHUB_SHA}\`
-          - Full ISO is stored as a GitHub Release asset, not committed into Git history.
-          - Verify the ISO and custom extension assets against the attached SHA-256 files before installation.
-
-          **Release gate**
-          - Custom iSCSI/NFS extension build and binary verification: required
-          - Talos Imager system-extension validation: required
-          - Talos ISO build: required
-          - Digest-pinned official extension verification: required
-          - Embedded DM-Multipath/NFSD/open-ingress configuration verification: required
-          - Package/capability audit: attached
-
-          Hardware-dependent FC/NVMe-FC/RDMA/SR-IOV/VFIO/GPU functionality remains subject to real-hardware certification.
+          Hardware-dependent iSER/RoCE/NVMe-RDMA/FC/NVMe-FC/SR-IOV/VFIO/GPU behavior still requires physical lab certification.
           EOF
 
           assets=(
-            "$ISO"
-            "$CHECKSUM"
-            "$MANIFEST"
-            "$PROFILE_ASSET"
-            "$RUNTIME_ASSET"
-            "$AUDIT_ASSET"
-            "$ISCSI_ASSET"
-            "$NFS_ASSET"
-            "$CUSTOM_CHECKSUMS"
+            "$ISO" "$CHECKSUM" "$MANIFEST" "$PROFILE_ASSET" "$RUNTIME_ASSET"
+            "$AUDIT_ASSET" "$ISCSI_ASSET" "$NFS_ASSET" "$TOOLS_ASSET"
+            "$CUSTOM_CHECKSUMS" "$PROVENANCE"
           )
 
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
-            if [ "$tag_sha" != "$GITHUB_SHA" ]; then
-              echo "::error::Release tag ${RELEASE_TAG} already points to ${tag_sha}, not ${GITHUB_SHA}. Increment the LayerSentry release revision before publishing a new build."
+            test "$tag_sha" = "$GITHUB_SHA" || {
+              echo "::error::${RELEASE_TAG} already points at ${tag_sha}; bump the release revision"
               exit 1
-            fi
+            }
             gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
           else
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "LayerSentry HCI Talos ${TALOS_VERSION} r3" \
+              --title "LayerSentry HCI Talos ${TALOS_VERSION} r4" \
               --notes-file /tmp/layersentry-release-notes.md \
               --latest=false \
               "${assets[@]}"
           fi
 
-      - name: Verify published release assets
+      - name: Verify published release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
@@ -292,9 +384,11 @@ jobs:
             "${BASE}-audit.md" \
             "${BASE}-iscsi-target-extension.tar" \
             "${BASE}-nfs-server-extension.tar" \
-            "${BASE}-custom-extensions.sha256"; do
+            "${BASE}-hci-tools-extension.tar" \
+            "${BASE}-custom-extensions.sha256" \
+            "${BASE}-kernel-provenance.txt"; do
             printf '%s\n' "$assets" | grep -Fx "$required" >/dev/null || {
-              echo "::error::Published release is missing asset ${required}"
+              echo "::error::Published release missing ${required}"
               exit 1
             }
           done

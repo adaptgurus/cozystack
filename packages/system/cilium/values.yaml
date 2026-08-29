@@ -1,5 +1,13 @@
 cilium:
   kubeProxyReplacement: true
+  # LayerSentry HCI uses Cilium's eBPF datapath for service translation and
+  # SNAT/masquerading. Keep the kernel netfilter compatibility substrate, but
+  # do not make normal pod/service traffic depend on kube-proxy/iptables.
+  bpf:
+    masquerade: true
+    # Cilium 1.19 defaults this to false. Pin it explicitly so direct-routing
+    # deployments use the eBPF host-routing path when the kernel supports it.
+    hostLegacyRouting: false
   # Upstream cilium with hostFirewall enabled and the IPv6 datapath disabled
   # (ipv6.enabled=false, the default here) drops ALL node IPv6 before any
   # policy evaluation ("Unsupported L3 protocol", DROP_UNKNOWN_L3 in
@@ -27,11 +35,6 @@ cilium:
     digest: "sha256:136a7dfff4d6adcd448424c2354144160028a8e96eb6558b917fd3ee6d7b39fe"
   envoy:
     enabled: true
-    # Upstream default is {} — no requests/limits. The embedded envoy DaemonSet
-    # idles at ~100 MB RAM/node and grows under L7 traffic; without requests
-    # the DaemonSet schedules onto any node with no reserved headroom, and
-    # without a memory limit a runaway listener could OOM the node.
-    # The baseline matches the commented-out example in the upstream Helm values.
     resources:
       requests:
         cpu: 100m
