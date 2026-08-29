@@ -14,6 +14,7 @@ import { useTenantContext } from "../lib/tenant-context.tsx"
 import { composeResource } from "../lib/app-resource.ts"
 import { prepareUpdateSpec } from "../lib/prepare-update.ts"
 import { SchemaForm, type SchemaFormHandle } from "../components/SchemaForm.tsx"
+import { VMInstanceExperience } from "../components/VMInstanceExperience.tsx"
 
 // Lazy-load the YAML editor so monaco and its workers are code-split into their
 // own chunk, fetched only when the YAML view is opened.
@@ -63,6 +64,7 @@ export function ApplicationOrderPage({
   }, [editMode])
 
   const plural = ad?.spec?.application.plural ?? ""
+  const isVmInstance = appName === "vm-instance" || ad?.metadata.name === "vm-instance"
 
   const create = useK8sCreate({
     apiGroup: APPS_GROUP,
@@ -120,18 +122,23 @@ export function ApplicationOrderPage({
     return { name, spec }
   }
 
-  const submit = async () => {
+  const submit = async (skipFormValidation = false) => {
     if (!ad || !tenantNamespace) return
     const snap = snapshot()
     if (!snap.name) {
       alert("Please set a resource name.")
       return
     }
-    // The Deploy button lives outside RJSF and bypasses its submit, so trigger
-    // validation explicitly in form mode. RJSF renders the errors inline; abort
-    // so an invalid spec (e.g. a disk row left without a name) is never sent to
-    // the API. YAML mode hand-authors the spec and is left to the API to reject.
-    if (mode === "form" && schemaFormRef.current && !schemaFormRef.current.validate()) {
+    // The generic Deploy button lives outside RJSF and bypasses its submit, so
+    // trigger validation explicitly. The VM product flow owns its own mounted
+    // SchemaForm and passes skipFormValidation=true only after that validation
+    // succeeds in the Review step.
+    if (
+      !skipFormValidation &&
+      mode === "form" &&
+      schemaFormRef.current &&
+      !schemaFormRef.current.validate()
+    ) {
       return
     }
     const body = composeResource(ad, tenantNamespace, snap.name, snap.spec)
@@ -178,12 +185,15 @@ export function ApplicationOrderPage({
   const icon = iconDataUrl(ad)
   const displayName = appDisplayName(ad)
   const description = ad.spec?.dashboard?.description
+  const busy = create.isPending || update.isPending
+  const cancel = () => editMode ? navigate(`/console/${plural}/${editMode.name}`) : navigate(-1)
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-slate-200 bg-white px-6 pt-4 pb-3">
         <button
           type="button"
-          onClick={() => editMode ? navigate(`/console/${plural}/${editMode.name}`) : navigate(-1)}
+          onClick={cancel}
           className="mb-2 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900"
         >
           <ChevronLeft className="size-3.5" /> Back
@@ -197,10 +207,14 @@ export function ApplicationOrderPage({
             </div>
             <div>
               <p className="text-xs uppercase tracking-wider text-slate-500">
-                {displayName}
+                {isVmInstance ? "Virtual machine" : displayName}
               </p>
               <h1 className="text-lg font-semibold text-slate-900">
-                {editMode ? `Edit ${editMode.name}` : `Deploy new ${ad.spec?.application.singular ?? "instance"}`}
+                {editMode
+                  ? `Edit ${editMode.name}`
+                  : isVmInstance
+                    ? "Create virtual machine"
+                    : `Deploy new ${ad.spec?.application.singular ?? "instance"}`}
               </h1>
               {description && (
                 <p className="mt-0.5 text-xs text-slate-500">{description}</p>
@@ -239,58 +253,78 @@ export function ApplicationOrderPage({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => editMode ? navigate(`/console/${plural}/${editMode.name}`) : navigate(-1)}
-              disabled={create.isPending || update.isPending}
+              onClick={cancel}
+              disabled={busy}
             >
               Cancel
             </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={submit}
-              disabled={create.isPending || update.isPending || !tenantNamespace}
-            >
-              {(create.isPending || update.isPending) && <Spinner className="text-white" />}
-              {editMode ? "Save" : "Deploy"}
-            </Button>
+            {(!isVmInstance || mode === "yaml") && (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => submit()}
+                disabled={busy || !tenantNamespace}
+              >
+                {busy && <Spinner className="text-white" />}
+                {editMode ? "Save" : "Deploy"}
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
       {mode === "form" ? (
-        <div className="flex-1 overflow-auto bg-slate-50 p-4">
-          <div className="space-y-3">
-            <div className="rounded-lg border border-slate-200 bg-white p-4">
-              <label className="mb-1 block text-xs font-medium text-slate-600">
-                Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={!!editMode}
-                placeholder={ad.spec?.application.singular ?? "name"}
-                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition-shadow focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-50 disabled:text-slate-400"
-              />
-              {tenantNamespace && (
-                <p className="mt-1.5 text-xs text-slate-500">
-                  Namespace: <code className="text-slate-700">{tenantNamespace}</code>
-                </p>
-              )}
-            </div>
-            {ad.spec?.application.openAPISchema && (
-              <div className="rounded-lg border border-slate-200 bg-white p-4">
-                <SchemaForm
-                  ref={schemaFormRef}
-                  openAPISchema={ad.spec.application.openAPISchema}
-                  keysOrder={ad.spec?.dashboard?.keysOrder}
-                  formData={spec}
-                  onChange={setSpec}
-                  immutableMode={editMode ? "enforce" : "off"}
-                />
+        <div className="flex-1 overflow-auto bg-slate-50">
+          {isVmInstance && ad.spec?.application.openAPISchema ? (
+            <VMInstanceExperience
+              name={name}
+              onNameChange={setName}
+              tenantNamespace={tenantNamespace}
+              openAPISchema={ad.spec.application.openAPISchema}
+              keysOrder={ad.spec?.dashboard?.keysOrder}
+              spec={spec}
+              onSpecChange={setSpec}
+              initialSpec={initialSpecRef.current}
+              isEdit={!!editMode}
+              busy={busy}
+              onSubmit={() => submit(true)}
+            />
+          ) : (
+            <div className="p-4">
+              <div className="space-y-3">
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <label className="mb-1 block text-xs font-medium text-slate-600">
+                    Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={!!editMode}
+                    placeholder={ad.spec?.application.singular ?? "name"}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition-shadow focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-50 disabled:text-slate-400"
+                  />
+                  {tenantNamespace && (
+                    <p className="mt-1.5 text-xs text-slate-500">
+                      Namespace: <code className="text-slate-700">{tenantNamespace}</code>
+                    </p>
+                  )}
+                </div>
+                {ad.spec?.application.openAPISchema && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <SchemaForm
+                      ref={schemaFormRef}
+                      openAPISchema={ad.spec.application.openAPISchema}
+                      keysOrder={ad.spec?.dashboard?.keysOrder}
+                      formData={spec}
+                      onChange={setSpec}
+                      immutableMode={editMode ? "enforce" : "off"}
+                    />
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex flex-1 flex-col bg-white">
