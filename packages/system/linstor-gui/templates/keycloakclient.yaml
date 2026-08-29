@@ -1,4 +1,5 @@
 {{- $host := index .Values._cluster "root-host" }}
+{{- $oidcEnabled := index .Values._cluster "oidc-enabled" }}
 
 {{- /*
 Persist client + cookie secrets across upgrades: if the Secrets already
@@ -41,7 +42,16 @@ metadata:
 type: Opaque
 data:
   cookieSecret: {{ $cookieSecret | b64enc }}
-{{- if .Capabilities.APIVersions.Has "v1.edp.epam.com/v1" }}
+{{- /*
+Render the Keycloak client whenever OIDC is enabled. Do not gate this on
+.Capabilities.APIVersions: Flux/Helm capability discovery can race the
+Keycloak operator CRD installation and previously allowed the linstor-gui
+release to become Ready without an authentication client. Failing the Helm
+reconcile until the CRD exists is safer than silently exposing an unusable or
+misconfigured authentication boundary; Flux will retry after the Keycloak CRD
+is established.
+*/ -}}
+{{- if eq $oidcEnabled "true" }}
 ---
 apiVersion: v1.edp.epam.com/v1
 kind: KeycloakClient
