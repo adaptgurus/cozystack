@@ -1,0 +1,227 @@
+name: LayerSentry ISP Full Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-isp-full-gate.yml
+
+concurrency:
+  group: layersentry-isp-full-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  install-verify:
+    name: Install and verify isp-full on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+
+    steps:
+      - name: Verify lab access and capture pre-change state
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing to run outside layersentry-platform: $env:GITHUB_REF_NAME"
+          }
+          if (-not (Test-Path $env:KUBECTL)) { throw "kubectl missing: $env:KUBECTL" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          Write-Host '===== NODES BEFORE ISP-FULL ====='
+          & $env:KUBECTL get nodes -o wide
+          if ($LASTEXITCODE -ne 0) { throw 'kubectl get nodes failed' }
+
+          Write-Host '===== PLATFORM PACKAGE BEFORE ISP-FULL ====='
+          & $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw 'cozystack.cozystack-platform does not exist; refusing to create it without preserving the lab-specific publishing/networking configuration'
+          }
+
+          $variant = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o jsonpath='{.spec.variant}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'failed to read current platform variant' }
+          Write-Host "current_variant=$variant"
+
+      - name: Set platform variant to isp-full
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $variant = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o jsonpath='{.spec.variant}').Trim()
+          if ($variant -eq 'isp-full') {
+            Write-Host 'Platform is already spec.variant=isp-full; no mutation required.'
+          } else {
+            Write-Host "Changing only spec.variant: $variant -> isp-full"
+            $patch = '{"spec":{"variant":"isp-full"}}'
+            & $env:KUBECTL patch package.cozystack.io cozystack.cozystack-platform --type merge -p $patch
+            if ($LASTEXITCODE -ne 0) { throw 'failed to patch platform Package to isp-full' }
+          }
+
+          $after = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o jsonpath='{.spec.variant}').Trim()
+          Write-Host "variant_after_patch=$after"
+          if ($after -ne 'isp-full') { throw "platform variant is '$after', expected isp-full" }
+
+          Write-Host '===== PLATFORM PACKAGE AFTER PATCH ====='
+          & $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o yaml
+
+      - name: Wait for the standard isp-full package inventory
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # These are the non-optional Package CRs emitted by the current
+          # layersentry-platform System + IaaS + PaaS + NaaS bundle templates.
+          # OIDC/proxy-protocol conditionals and bundles.enabledPackages extras
+          # are intentionally not required here.
+          $expected = @(
+            'cozystack.networking',
+            'cozystack.kubeovn-webhook',
+            'cozystack.kubeovn-plunger',
+            'cozystack.cozy-proxy',
+            'cozystack.multus',
+            'cozystack.metallb',
+            'cozystack.reloader',
+            'cozystack.linstor-scheduler',
+            'cozystack.snapshot-controller',
+            'cozystack.securitygroup-controller',
+            'cozystack.linstor',
+            'cozystack.cozystack-scheduler',
+            'cozystack.cozystack-engine',
+            'cozystack.gateway-api-crds',
+            'cozystack.cert-manager',
+            'cozystack.flux-plunger',
+            'cozystack.flux-shard-operator',
+            'cozystack.victoria-metrics-operator',
+            'cozystack.tenant-application',
+            'cozystack.ingress-application',
+            'cozystack.gateway-application',
+            'cozystack.seaweedfs-application',
+            'cozystack.info-application',
+            'cozystack.monitoring-application',
+            'cozystack.etcd-application',
+            'cozystack.cozystack-basics',
+            'cozystack.backupstrategy-controller',
+            'cozystack.backup-controller',
+            'cozystack.velero',
+            'cozystack.vertical-pod-autoscaler',
+            'cozystack.metrics-server',
+            'cozystack.monitoring-agents',
+            'cozystack.goldpinger',
+            'cozystack.prometheus-operator-crds',
+            'cozystack.grafana-operator',
+            'cozystack.etcd-operator',
+            'cozystack.postgres-operator',
+            'cozystack.objectstorage-controller',
+            'cozystack.kubevirt',
+            'cozystack.kubevirt-cdi',
+            'cozystack.kamaji',
+            'cozystack.capi-operator',
+            'cozystack.capi-provider-bootstrap-kubeadm',
+            'cozystack.capi-provider-core',
+            'cozystack.capi-provider-cp-kamaji',
+            'cozystack.capi-provider-infra-kubevirt',
+            'cozystack.bucket-application',
+            'cozystack.kubernetes-application',
+            'cozystack.virtualprivatecloud-application',
+            'cozystack.vm-disk-application',
+            'cozystack.vm-instance-application',
+            'cozystack.mariadb-operator',
+            'cozystack.kafka-operator',
+            'cozystack.clickhouse-operator',
+            'cozystack.foundationdb-operator',
+            'cozystack.rabbitmq-operator',
+            'cozystack.redis-operator',
+            'cozystack.mongodb-operator',
+            'cozystack.opensearch-operator',
+            'cozystack.clickhouse-application',
+            'cozystack.foundationdb-application',
+            'cozystack.harbor-application',
+            'cozystack.kafka-application',
+            'cozystack.mariadb-application',
+            'cozystack.mongodb-application',
+            'cozystack.nats-application',
+            'cozystack.openbao-application',
+            'cozystack.opensearch-application',
+            'cozystack.postgres-application',
+            'cozystack.qdrant-application',
+            'cozystack.rabbitmq-application',
+            'cozystack.redis-application',
+            'cozystack.http-cache-application',
+            'cozystack.tcp-balancer-application',
+            'cozystack.vpn-application'
+          )
+
+          $deadline = (Get-Date).AddMinutes(20)
+          do {
+            $all = (& $env:KUBECTL get package.cozystack.io -o json | ConvertFrom-Json).items
+            $names = @($all | ForEach-Object { $_.metadata.name })
+            $missing = @($expected | Where-Object { $_ -notin $names })
+
+            $notReady = @()
+            foreach ($name in $expected) {
+              $pkg = $all | Where-Object { $_.metadata.name -eq $name } | Select-Object -First 1
+              if ($null -eq $pkg) { continue }
+              $ready = @($pkg.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+              if (($ready.Count -eq 0) -or ($ready[0].status -ne 'True')) {
+                $notReady += $name
+              }
+            }
+
+            Write-Host "expected=$($expected.Count) present=$($expected.Count - $missing.Count) missing=$($missing.Count) not_ready=$($notReady.Count)"
+            if ($missing.Count -gt 0) { Write-Host ('missing: ' + ($missing -join ', ')) }
+            if ($notReady.Count -gt 0) { Write-Host ('not ready: ' + ($notReady -join ', ')) }
+
+            if (($missing.Count -eq 0) -and ($notReady.Count -eq 0)) { break }
+            Start-Sleep -Seconds 20
+          } while ((Get-Date) -lt $deadline)
+
+          if ($missing.Count -gt 0) { throw "isp-full package inventory incomplete: $($missing -join ', ')" }
+          if ($notReady.Count -gt 0) { throw "isp-full packages not Ready: $($notReady -join ', ')" }
+
+          Write-Host '===== PACKAGE INVENTORY ====='
+          & $env:KUBECTL get package.cozystack.io
+
+      - name: Verify nodes and platform HelmReleases are Ready
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host '===== WAIT FOR ALL KUBERNETES NODES ====='
+          & $env:KUBECTL wait --for=condition=Ready nodes --all --timeout=900s
+          if ($LASTEXITCODE -ne 0) { throw 'one or more Kubernetes nodes did not become Ready' }
+
+          $deadline = (Get-Date).AddMinutes(10)
+          do {
+            $hrs = (& $env:KUBECTL get helmreleases.helm.toolkit.fluxcd.io -A -o json | ConvertFrom-Json).items
+            $platformHrs = @($hrs | Where-Object {
+              ($_.metadata.namespace -like 'cozy-*') -or ($_.metadata.namespace -eq 'tenant-root')
+            })
+            $notReady = @()
+            foreach ($hr in $platformHrs) {
+              $ready = @($hr.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+              if (($ready.Count -eq 0) -or ($ready[0].status -ne 'True')) {
+                $notReady += "$($hr.metadata.namespace)/$($hr.metadata.name)"
+              }
+            }
+            Write-Host "platform_helmreleases=$($platformHrs.Count) not_ready=$($notReady.Count)"
+            if ($notReady.Count -eq 0) { break }
+            Write-Host ('not ready: ' + ($notReady -join ', '))
+            Start-Sleep -Seconds 20
+          } while ((Get-Date) -lt $deadline)
+
+          if ($notReady.Count -gt 0) { throw "platform HelmReleases not Ready: $($notReady -join ', ')" }
+
+          Write-Host '===== FINAL NODES ====='
+          & $env:KUBECTL get nodes -o wide
+          Write-Host '===== FINAL PLATFORM/ROOT HELMRELEASES ====='
+          & $env:KUBECTL get hr -A
+          Write-Host '===== FINAL PLATFORM VARIANT ====='
+          & $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o jsonpath='{.spec.variant}'
+          Write-Host ''
+          Write-Host 'ISP_FULL_GATE=PASS'
