@@ -1,5 +1,4 @@
 import { StorageManagementOverview } from "../components/storage/StorageManagementOverview.tsx"
-import { StorageSignatureEvidence } from "../components/storage/StorageSignatureEvidence.tsx"
 
 /**
  * Admin → Capacity → Storage.
@@ -20,7 +19,6 @@ export function StoragePage() {
         </p>
       </div>
       <StorageManagementOverview />
-      <StorageSignatureEvidence />
     </div>
   )
 }
