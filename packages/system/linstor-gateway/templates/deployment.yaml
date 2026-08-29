@@ -1,0 +1,84 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linstor-gateway
+  labels:
+    {{- include "linstor-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "linstor-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "linstor-gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: linstor-gateway
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - server
+            - --addr={{ .Values.gateway.listenAddress }}
+            - --config=/etc/linstor-gateway/linstor-gateway.toml
+          ports:
+            - name: http
+              containerPort: 8337
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 5
+            timeoutSeconds: 3
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 2
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/linstor-gateway/linstor-gateway.toml
+              subPath: linstor-gateway.toml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.gateway.tokenSecret.name }}
+            - name: token
+              mountPath: /etc/linstor-gateway/token
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: linstor-gateway-config
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.gateway.tokenSecret.name }}
+        - name: token
+          secret:
+            secretName: {{ .Values.gateway.tokenSecret.name }}
+            items:
+              - key: {{ .Values.gateway.tokenSecret.key }}
+                path: {{ .Values.gateway.tokenSecret.key }}
+        {{- end }}
+{{- end }}

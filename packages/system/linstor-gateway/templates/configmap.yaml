@@ -1,0 +1,18 @@
+{{- if .Values.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linstor-gateway-config
+  labels:
+    {{- include "linstor-gateway.labels" . | nindent 4 }}
+data:
+  linstor-gateway.toml: |
+    [linstor]
+    controllers = {{ toJson .Values.gateway.controllers }}
+    {{- if .Values.gateway.tokenSecret.name }}
+    token_file = "/etc/linstor-gateway/token/{{ .Values.gateway.tokenSecret.key }}"
+    {{- end }}
+
+    [server]
+    cors_allowed_origins = {{ toJson .Values.gateway.corsAllowedOrigins }}
+{{- end }}
