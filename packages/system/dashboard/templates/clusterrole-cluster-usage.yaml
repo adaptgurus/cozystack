@@ -17,7 +17,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["layersentry-storage-inventory"]
+    resourceNames: ["layersentry-storage-inventory", "layersentry-network-inventory"]
     verbs: ["get"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes"]
