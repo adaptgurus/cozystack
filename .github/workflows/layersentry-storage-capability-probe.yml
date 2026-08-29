@@ -1,0 +1,86 @@
+name: LayerSentry Storage Capability Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-capability-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe live storage capabilities read-only
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Enforce read-only probe boundary
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          foreach ($path in @($env:KUBECTL, $env:KUBECONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+          Write-Host 'STORAGE_CAPABILITY_PROBE=READ_ONLY'
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+
+      - name: Read StorageClasses, CSI drivers and snapshot capabilities
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Get-KubeJson([string[]]$Arguments) {
+            $raw = (& $env:KUBECTL @Arguments 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "kubectl $($Arguments -join ' ') failed: $raw" }
+            return ($raw | ConvertFrom-Json)
+          }
+
+          $classes = Get-KubeJson @('get', 'storageclasses.storage.k8s.io', '-o', 'json')
+          $drivers = Get-KubeJson @('get', 'csidrivers.storage.k8s.io', '-o', 'json')
+          $snapClasses = Get-KubeJson @('get', 'volumesnapshotclasses.snapshot.storage.k8s.io', '-o', 'json')
+          $pvcs = Get-KubeJson @('get', 'persistentvolumeclaims', '-A', '-o', 'json')
+          $pvs = Get-KubeJson @('get', 'persistentvolumes', '-o', 'json')
+
+          Write-Host '===== STORAGE CLASSES ====='
+          foreach ($sc in @($classes.items)) {
+            $default = [string]$sc.metadata.annotations.'storageclass.kubernetes.io/is-default-class'
+            $params = if ($null -ne $sc.parameters) { $sc.parameters | ConvertTo-Json -Compress -Depth 10 } else { '{}' }
+            Write-Host "STORAGECLASS name=$($sc.metadata.name) provisioner=$($sc.provisioner) default=$default expansion=$($sc.allowVolumeExpansion) reclaim=$($sc.reclaimPolicy) binding=$($sc.volumeBindingMode) parameters=$params"
+          }
+
+          Write-Host '===== CSI DRIVERS ====='
+          foreach ($driver in @($drivers.items)) {
+            $modes = @($driver.spec.volumeLifecycleModes) -join ','
+            Write-Host "CSIDRIVER name=$($driver.metadata.name) attachRequired=$($driver.spec.attachRequired) podInfoOnMount=$($driver.spec.podInfoOnMount) storageCapacity=$($driver.spec.storageCapacity) fsGroupPolicy=$($driver.spec.fsGroupPolicy) lifecycleModes=$modes"
+          }
+
+          Write-Host '===== SNAPSHOT CLASSES ====='
+          foreach ($sc in @($snapClasses.items)) {
+            $default = [string]$sc.metadata.annotations.'snapshot.storage.kubernetes.io/is-default-class'
+            Write-Host "SNAPSHOTCLASS name=$($sc.metadata.name) driver=$($sc.driver) default=$default deletionPolicy=$($sc.deletionPolicy)"
+          }
+
+          Write-Host "PVC_COUNT=$(@($pvcs.items).Count)"
+          foreach ($pvc in @($pvcs.items)) {
+            $modes = @($pvc.spec.accessModes) -join ','
+            Write-Host "PVC namespace=$($pvc.metadata.namespace) name=$($pvc.metadata.name) class=$($pvc.spec.storageClassName) modes=$modes requested=$($pvc.spec.resources.requests.storage) phase=$($pvc.status.phase)"
+          }
+          Write-Host "PV_COUNT=$(@($pvs.items).Count)"
+          foreach ($pv in @($pvs.items)) {
+            $modes = @($pv.spec.accessModes) -join ','
+            Write-Host "PV name=$($pv.metadata.name) class=$($pv.spec.storageClassName) modes=$modes capacity=$($pv.spec.capacity.storage) phase=$($pv.status.phase) reclaim=$($pv.spec.persistentVolumeReclaimPolicy)"
+          }
+
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+          Write-Host 'NO_IMPORT_ACTION_TAKEN=true'
+          Write-Host 'NO_MOUNT_ACTION_TAKEN=true'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
