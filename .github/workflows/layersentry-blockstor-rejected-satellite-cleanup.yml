@@ -1,0 +1,47 @@
+name: LayerSentry BlockStor Rejected Satellite Cleanup
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-blockstor-rejected-satellite-cleanup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Remove only the known-incompatible BlockStor v0.1.17 satellite DaemonSet
+        run: |
+          $ErrorActionPreference='Stop'
+          $pools=@((& $env:KUBECTL get storagepools.blockstor.cozystack.io -o json 2>$null | ConvertFrom-Json).items)
+          if($pools.Count -ne 0){throw "SAFETY_ABORT: BlockStor has $($pools.Count) StoragePools; refusing cleanup"}
+          $rdefs=@((& $env:KUBECTL get resourcedefinitions.blockstor.cozystack.io -o json 2>$null | ConvertFrom-Json).items)
+          $resources=@((& $env:KUBECTL get resources.blockstor.cozystack.io -o json 2>$null | ConvertFrom-Json).items)
+          if($rdefs.Count -ne 0 -or $resources.Count -ne 0){throw "SAFETY_ABORT: BlockStor has data resources; refusing cleanup"}
+          $ds=& $env:KUBECTL -n blockstor-system get daemonset blockstor-satellite -o json 2>$null | ConvertFrom-Json
+          if($LASTEXITCODE -eq 0 -and $ds){
+            $image=[string]$ds.spec.template.spec.containers[0].image
+            $ports=@($ds.spec.template.spec.containers[0].ports|ForEach-Object{[int]$_.hostPort})
+            if($image -notmatch 'blockstor-satellite:0\.1\.17' -or 9100 -notin $ports){throw "SAFETY_ABORT: unexpected satellite DaemonSet image/ports image=$image ports=$($ports -join ',')"}
+            & $env:KUBECTL -n blockstor-system delete daemonset blockstor-satellite --wait=true --timeout=180s | Out-Host
+            if($LASTEXITCODE){throw 'failed deleting incompatible BlockStor satellite DaemonSet'}
+          }
+          $pending=@((& $env:KUBECTL -n blockstor-system get pods -o json | ConvertFrom-Json).items|Where-Object{$_.metadata.name -like 'blockstor-satellite-*'})
+          if($pending.Count){throw "satellite pods remain after cleanup: $($pending.metadata.name -join ',')"}
+          foreach($sc in @('local','replicated')){
+            $prov=(& $env:KUBECTL get storageclass $sc -o jsonpath='{.provisioner}').Trim()
+            if($prov -ne 'linstor.csi.linbit.com'){throw "classic LINSTOR StorageClass $sc changed: $prov"}
+          }
+          Write-Host 'BLOCKSTOR_REJECTED_SATELLITE_CLEANUP=PASS pools=0 resources=0 classicLinstorPreserved=true'
