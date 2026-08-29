@@ -89,6 +89,9 @@ jobs:
             }
             spec = [ordered]@{
               username = $env:GUI_USERNAME
+              firstName = 'LayerSentry'
+              lastName = 'Administrator'
+              email = 'layersentry-admin@example.invalid'
               enabled = $true
               emailVerified = $true
               groups = @('cozystack-cluster-admin')
@@ -116,7 +119,7 @@ jobs:
           if ([string]$user.status.lastSyncedPasswordSecretVersion -ne $secretRv) { throw "Keycloak password Secret was not synced; secretRV=$secretRv syncedRV=$($user.status.lastSyncedPasswordSecretVersion)" }
           if ($user.spec.username -ne $env:GUI_USERNAME) { throw 'operator user username does not match expected login' }
           if ('cozystack-cluster-admin' -notin @($user.spec.groups)) { throw 'operator user is not assigned to cozystack-cluster-admin' }
-          Write-Host "KEYCLOAK_USER_RECONCILE=PASS username=$env:GUI_USERNAME group=cozystack-cluster-admin realm=cozy status=$($user.status.value) passwordSecretSynced=true"
+          Write-Host "KEYCLOAK_USER_RECONCILE=PASS username=$env:GUI_USERNAME group=cozystack-cluster-admin realm=cozy status=$($user.status.value) passwordSecretSynced=true profileComplete=true"
 
           $passwordB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($password))
           Write-Output "::add-mask::$passwordB64"
