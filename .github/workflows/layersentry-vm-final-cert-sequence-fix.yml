@@ -1,0 +1,109 @@
+name: LayerSentry VM Final Cert Sequence Fix
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-vm-final-cert-sequence-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Patch final certification reconciliation sequence
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('.github/workflows/layersentry-dashboard-vm-ux-final-cert.yml')
+          s = p.read_text()
+          start_marker = '      - name: Switch operator and package sources to immutable VM UX release\n'
+          end_marker = '      - name: Reconcile platform and remove only stale console-image renderer\n'
+          if s.count(start_marker) != 1 or s.count(end_marker) != 1:
+              raise SystemExit(f'certification step anchors invalid start={s.count(start_marker)} end={s.count(end_marker)}')
+          start = s.index(start_marker)
+          end = s.index(end_marker, start)
+          new_step = r'''      - name: Switch operator to immutable VM UX platform source
+        run: |
+          $ErrorActionPreference='Stop'
+          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          $args=New-Object System.Collections.Generic.List[string]
+          $urlSeen=$false;$refSeen=$false
+          foreach($a in @($op.args)){
+            $v=[string]$a
+            if($v -like '--platform-source-url=*'){$args.Add("--platform-source-url=$env:PACKAGE_URL");$urlSeen=$true}
+            elseif($v -like '--platform-source-ref=*'){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST");$refSeen=$true}
+            else{$args.Add($v)}
+          }
+          if(-not$urlSeen){$args.Add("--platform-source-url=$env:PACKAGE_URL")}
+          if(-not$refSeen){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST")}
+          $container=[ordered]@{name='cozystack-operator';args=@($args)}
+          $patch=[ordered]@{spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@($container)}}}}
+          $f=Join-Path $env:RUNNER_TEMP 'vm-final-operator.json';$patch|ConvertTo-Json -Depth 30|Set-Content $f -Encoding UTF8
+          & $env:KUBECTL -n cozy-system patch deploy cozystack-operator --type=strategic "--patch-file=$f"|Out-Null
+          if($LASTEXITCODE){throw 'operator source patch failed'}
+          & $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host
+          if($LASTEXITCODE){throw 'operator rollout failed'}
+          Set-Content (Join-Path $env:RUNNER_TEMP 'vm-final-mutated.flag') 'true'
+
+          # cozystack-platform is owned directly by the operator. Do not race the
+          # platform by forcing its derived cozystack-packages source before the
+          # new platform artifact has reconciled.
+          $deadline=(Get-Date).AddMinutes(5)
+          do{
+            Start-Sleep 5
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-platform -o json|ConvertFrom-Json
+            $r=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            $ok=([string]$src.spec.url -eq $env:PACKAGE_URL -and [string]$src.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $r.status -eq 'True' -and [string]$src.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
+          }while(-not$ok -and (Get-Date)-lt$deadline)
+          if(-not$ok){throw "release platform source did not become Ready: $($r.message)"}
+          Write-Host "VM_UX_PLATFORM_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
+
+'''
+          s = s[:start] + new_step + s[end:]
+
+          reconcile_anchor = "          if([string]$p.status.lastHandledReconcileAt -ne $stamp -or $r.status -ne 'True'){throw \"platform reconcile failed: $($r.message)\"}\n\n"
+          if s.count(reconcile_anchor) != 1:
+              raise SystemExit(f'platform reconcile anchor count={s.count(reconcile_anchor)}')
+          derived_wait = r'''          # The reconciled platform owns the derived cozystack-packages source.
+          # Validate it only after the platform rollout, otherwise the incumbent
+          # platform legitimately restores its own baseline source and races CI.
+          $deadline=(Get-Date).AddMinutes(5)
+          do{
+            Start-Sleep 5
+            $pkg=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-packages -o json|ConvertFrom-Json
+            $pkgReady=@($pkg.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            $pkgOk=([string]$pkg.spec.url -eq $env:PACKAGE_URL -and [string]$pkg.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $pkgReady.status -eq 'True' -and [string]$pkg.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
+          }while(-not$pkgOk -and (Get-Date)-lt$deadline)
+          if(-not$pkgOk){throw "derived package source did not become Ready after platform reconcile: $($pkgReady.message)"}
+          Write-Host "VM_UX_PACKAGE_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
+
+'''
+          s = s.replace(reconcile_anchor, reconcile_anchor + derived_wait, 1)
+
+          bad_cleanup = 'if(Test-Path $sap -and Test-Path $cf)'
+          good_cleanup = 'if((Test-Path $sap) -and (Test-Path $cf))'
+          if s.count(bad_cleanup) != 1:
+              raise SystemExit(f'cleanup syntax anchor count={s.count(bad_cleanup)}')
+          s = s.replace(bad_cleanup, good_cleanup, 1)
+          p.write_text(s)
+      - name: Commit deterministic certification fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff -- .github/workflows/layersentry-dashboard-vm-ux-final-cert.yml
+          git add .github/workflows/layersentry-dashboard-vm-ux-final-cert.yml
+          git config user.name adaptgurus
+          git config user.email 73125939+adaptgurus@users.noreply.github.com
+          git commit -m 'fix(test): reconcile VM package sources in ownership order'
+          git fetch origin layersentry-platform
+          git rebase origin/layersentry-platform
+          git push origin HEAD:layersentry-platform
