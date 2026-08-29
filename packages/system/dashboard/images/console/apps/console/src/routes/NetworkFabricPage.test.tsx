@@ -1,21 +1,107 @@
 import { describe, expect, it } from "vitest"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, screen } from "@testing-library/react"
 import { NetworkFabricPage, validateNetworkFabric } from "./NetworkFabricPage.tsx"
+import type { NetworkInventory, NetworkLink, NodeNetworkInventory } from "../components/network/network-inventory.ts"
+import { createMockK8sClient } from "../test-utils/mock-k8s-client.ts"
+import { renderWithK8sProvider } from "../test-utils/render.tsx"
+
+const link = (name: string, mac: string): NetworkLink => ({
+  name,
+  type: "ether",
+  kind: "physical",
+  physical: true,
+  linkUp: true,
+  operationalState: "up",
+  mac,
+  mtu: 1500,
+  speedMbps: 10000,
+  sriov: {
+    supported: false,
+    totalVfs: 0,
+    configuredVfs: 0,
+    source: "test",
+    reason: "not-required-for-gui-test",
+  },
+  rdma: {
+    supported: false,
+    devices: [],
+    source: "test",
+    reason: "not-required-for-gui-test",
+  },
+})
+
+const node = (name: string, address: string, macSuffix: string): NodeNetworkInventory => ({
+  name,
+  collectedAt: new Date().toISOString(),
+  state: "ready",
+  management: {
+    interface: "eno1",
+    physicalInterfaces: ["eno1"],
+    addresses: [address],
+    gateway: "10.10.10.1",
+    family: "ipv4",
+    confidence: "high",
+    reason: "test-fixture",
+  },
+  links: [
+    link("eno1", `00:11:22:33:44:${macSuffix}`),
+    link("eno2", `00:11:22:33:55:${macSuffix}`),
+  ],
+  addresses: [],
+  routes: [],
+  resolvers: ["10.10.10.2"],
+})
+
+function renderNetworkFabric() {
+  const inventory: NetworkInventory = {
+    schemaVersion: "network.layersentry.io/v1alpha1",
+    generatedAt: new Date().toISOString(),
+    source: "test:talos-resource-api",
+    nodeCount: 3,
+    readyNodeCount: 3,
+    partial: false,
+    nodes: [
+      node("sen1", "10.10.10.11/24", "11"),
+      node("sen2", "10.10.10.12/24", "12"),
+      node("sen3", "10.10.10.13/24", "13"),
+    ],
+  }
+  const client = createMockK8sClient({
+    gets: [
+      {
+        apiGroup: "",
+        apiVersion: "v1",
+        plural: "configmaps",
+        namespace: "cozy-system",
+        name: "layersentry-network-inventory",
+        result: {
+          apiVersion: "v1",
+          kind: "ConfigMap",
+          metadata: { name: "layersentry-network-inventory", namespace: "cozy-system" },
+          data: { "inventory.json": JSON.stringify(inventory) },
+        },
+      },
+    ],
+  })
+  return renderWithK8sProvider(<NetworkFabricPage />, { client })
+}
 
 describe("NetworkFabricPage", () => {
-  it("renders the GUI workflow and desired topology without YAML", () => {
-    render(<NetworkFabricPage />)
+  it("renders the GUI workflow and desired topology without YAML", async () => {
+    renderNetworkFabric()
 
     expect(screen.getByRole("heading", { name: "Network Fabric" })).toBeInTheDocument()
     expect(screen.getByText(/build host and vm networking without yaml/i)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Purpose/i })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Review/i })).toBeInTheDocument()
+    expect(await screen.findByText("Live 3/3")).toBeInTheDocument()
     expect(screen.queryByText(/machine:\s*network/i)).not.toBeInTheDocument()
   })
 
-  it("walks from purpose into node selection", () => {
-    render(<NetworkFabricPage />)
+  it("walks from purpose into live node selection", async () => {
+    renderNetworkFabric()
 
+    expect(await screen.findByText("Live 3/3")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
     expect(screen.getByRole("heading", { name: "2. Select nodes" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /sen1/i })).toBeInTheDocument()
