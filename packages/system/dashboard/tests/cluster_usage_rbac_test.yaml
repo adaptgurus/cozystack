@@ -1,4 +1,4 @@
-suite: dashboard cluster-usage RBAC
+suite: dashboard cluster-usage and storage-management RBAC
 templates:
   - templates/clusterrole-cluster-usage.yaml
   - templates/clusterrolebinding-cluster-usage.yaml
@@ -7,13 +7,10 @@ release:
   name: dashboard
   namespace: cozy-dashboard
 
-# The cluster-usage admin page in the dashboard reads cluster-scoped
-# resources (nodes, pods, metrics.k8s.io) to render aggregate utilisation
-# and a per-node table including arbitrary extended resources (GPUs etc.).
-# The built-in `edit` ClusterRole already bound to cozystack-cluster-admin
-# does not grant cluster-wide pod read or `nodes` access, so the dashboard
-# needs an explicit grant. The page-side sidebar item is gated by SSAR on
-# `nodes list` — pinning the rules here keeps that gate meaningful.
+# Capacity pages are restricted to cozystack-cluster-admin and use a single
+# read-only ClusterRole. In addition to node/pod utilisation, Storage Management
+# needs cluster-wide PV/PVC/StorageClass/snapshot reads plus GET access to one
+# fail-closed inventory ConfigMap. No storage mutation verb belongs here.
 
 tests:
   - it: ClusterRole exists and grants nodes/pods get/list/watch
@@ -33,6 +30,47 @@ tests:
             apiGroups: [""]
             resources: ["nodes", "pods"]
             verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole grants read-only PV and PVC visibility
+    template: templates/clusterrole-cluster-usage.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["persistentvolumes", "persistentvolumeclaims"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole grants read-only StorageClass visibility
+    template: templates/clusterrole-cluster-usage.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole grants read-only VolumeSnapshot visibility
+    template: templates/clusterrole-cluster-usage.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshots"]
+            verbs: ["get", "list", "watch"]
+
+  - it: ClusterRole can only get the certified inventory ConfigMap
+    template: templates/clusterrole-cluster-usage.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["configmaps"]
+            resourceNames: ["layersentry-storage-inventory"]
+            verbs: ["get"]
 
   - it: ClusterRole grants metrics.k8s.io nodes get/list
     template: templates/clusterrole-cluster-usage.yaml
