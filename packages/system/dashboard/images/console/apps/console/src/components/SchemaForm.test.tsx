@@ -1,5 +1,5 @@
 import { createRef } from "react"
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { render, screen, act } from "@testing-library/react"
 import { SchemaForm, type SchemaFormHandle } from "./SchemaForm.tsx"
 import { IMMUTABLE_HELP_TEXT } from "../lib/immutable-paths.ts"
@@ -171,6 +171,43 @@ describe("SchemaForm immutableMode", () => {
     expect(nameInput).toBeDisabled()
     expect(sizeInput).not.toBeDisabled()
     expect(screen.getByText(IMMUTABLE_HELP_TEXT)).toBeInTheDocument()
+  })
+})
+
+describe("SchemaForm guided workflow behavior", () => {
+  it("shows only the requested root fields while retaining the full schema", () => {
+    render(
+      <SchemaForm
+        openAPISchema={schema}
+        formData={{ version: "1.0", description: "hi" }}
+        onChange={noop}
+        visibleFields={["description"]}
+      />,
+    )
+
+    expect(screen.getByLabelText("description")).toBeInTheDocument()
+    expect(screen.queryByLabelText("version")).not.toBeInTheDocument()
+  })
+
+  it("does not inject schema defaults when applyDefaults is disabled for edit flows", () => {
+    const defaultSchema = JSON.stringify({
+      type: "object",
+      properties: {
+        runStrategy: { type: "string", default: "Always" },
+      },
+    })
+    const onChange = vi.fn()
+
+    render(
+      <SchemaForm
+        openAPISchema={defaultSchema}
+        formData={{}}
+        onChange={onChange}
+        applyDefaults={false}
+      />,
+    )
+
+    expect(onChange).not.toHaveBeenCalled()
   })
 })
 
