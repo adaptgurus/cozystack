@@ -88,22 +88,25 @@ jobs:
           grep -Fq 'tarballPath: /extensions/layersentry-iscsi-target.tar' "$profile"
           grep -Fq 'tarballPath: /extensions/layersentry-nfs-server.tar' "$profile"
 
+          # Pipe-fed searches intentionally do not use grep -q. With pipefail,
+          # grep -q can exit after the first match and make tar fail on SIGPIPE,
+          # turning a successful verification into a false negative.
           # Verify the custom iSCSI target extension contains both the daemon and
           # administration tools plus the Talos extension-service definition.
-          tar -tf "$iscsi_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtd'
-          tar -tf "$iscsi_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtadm'
-          tar -tf "$iscsi_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtimg'
-          tar -tf "$iscsi_ext" | grep -Fxq 'rootfs/usr/local/etc/containers/layersentry-iscsi-target.yaml'
-          tar -xOf "$iscsi_ext" manifest.yaml | grep -Fq 'name: layersentry-iscsi-target'
+          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtd' >/dev/null
+          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtadm' >/dev/null
+          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtimg' >/dev/null
+          tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-iscsi-target.yaml' >/dev/null
+          tar -xOf "$iscsi_ext" manifest.yaml | grep -F 'name: layersentry-iscsi-target' >/dev/null
 
           # Verify full NFS server/export userspace, not only the kernel module.
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/exportfs'
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.nfsd'
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.mountd'
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-nfs-server/sbin/rpc.statd'
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/local/sbin/layersentry-nfs-server'
-          tar -tf "$nfs_ext" | grep -Fxq 'rootfs/usr/local/etc/containers/layersentry-nfs-server.yaml'
-          tar -xOf "$nfs_ext" manifest.yaml | grep -Fq 'name: layersentry-nfs-server'
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/exportfs' >/dev/null
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.nfsd' >/dev/null
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.mountd' >/dev/null
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/sbin/rpc.statd' >/dev/null
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/local/sbin/layersentry-nfs-server' >/dev/null
+          tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-nfs-server.yaml' >/dev/null
+          tar -xOf "$nfs_ext" manifest.yaml | grep -F 'name: layersentry-nfs-server' >/dev/null
 
           # lsscsi is deliberately supplied by Sidero trident-iscsi-tools.
           grep -Fq '/trident-iscsi-tools:' "$profile"
@@ -308,7 +311,7 @@ jobs:
             "${BASE}-iscsi-target-extension.tar" \
             "${BASE}-nfs-server-extension.tar" \
             "${BASE}-custom-extensions.sha256"; do
-            printf '%s\n' "$assets" | grep -Fxq "$required" || {
+            printf '%s\n' "$assets" | grep -Fx "$required" >/dev/null || {
               echo "::error::Published release is missing asset ${required}"
               exit 1
             }
