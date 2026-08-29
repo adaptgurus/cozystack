@@ -102,4 +102,27 @@ describe("ApplicationOrderPage submit validation gate", () => {
 
     expect(h.createMutateAsync).toHaveBeenCalledTimes(1)
   })
+
+  it("shows a missing resource name as an accessible inline error", async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.click(screen.getByRole("button", { name: /^deploy$/i }))
+
+    expect(h.createMutateAsync).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Set a resource name before continuing.")
+  })
+
+  it("keeps API failures visible inline instead of using a browser alert", async () => {
+    h.createMutateAsync.mockRejectedValueOnce(new Error("API temporarily unavailable"))
+    const user = userEvent.setup()
+    renderPage()
+
+    await user.type(screen.getByRole("textbox"), "demo-vm")
+    await user.click(screen.getByRole("button", { name: /^deploy$/i }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to deploy the resource: API temporarily unavailable",
+    )
+  })
 })
