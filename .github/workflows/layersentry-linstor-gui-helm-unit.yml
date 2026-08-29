@@ -1,0 +1,33 @@
+name: LayerSentry LINSTOR GUI Helm Unit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - packages/system/linstor-gui/**
+      - .github/workflows/layersentry-linstor-gui-helm-unit.yml
+
+permissions:
+  contents: read
+
+jobs:
+  helm-unit:
+    name: LINSTOR GUI Helm unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout current branch
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.19.0
+
+      - name: Install pinned helm-unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version v1.1.2
+
+      - name: Run LINSTOR GUI chart unit tests
+        run: helm unittest packages/system/linstor-gui
