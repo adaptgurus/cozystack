@@ -227,6 +227,124 @@ jobs:
           "blocked_count=$($blocked.Count)" | Add-Content -Path $env:GITHUB_OUTPUT
           "identity_gate=$gate" | Add-Content -Path $env:GITHUB_OUTPUT
 
+      - name: Classify existing storage metadata read-only
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-StrictMode -Version Latest
+
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') {
+            throw "refusing branch $env:GITHUB_REF_NAME"
+          }
+          foreach ($path in @($env:TALOSCTL, $env:TALOSCONFIG, $env:KUBECTL, $env:KUBECONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+
+          function Select-StorageSignals([string]$Text, [string]$Pattern) {
+            if (-not $Text) { return @() }
+            return @($Text -split "`r?`n" |
+              Where-Object { $_ -match $Pattern } |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { $_ } |
+              Select-Object -Unique)
+          }
+
+          function Invoke-TalosReadOnly([string]$Node, [string[]]$Arguments) {
+            $text = (& $env:TALOSCTL -n $Node -e $Node @Arguments 2>&1 | Out-String)
+            $exit = $LASTEXITCODE
+            return [pscustomobject]@{ ExitCode = $exit; Text = $text }
+          }
+
+          $storagePattern = 'sdb|zfs|linstor|blockstor|openebs|drbd|nfs|iscsi|nvme|storage|volume|mount'
+          $nodeRows = @()
+
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== READ-ONLY STORAGE CLASSIFICATION $node ====="
+
+            $volumes = Invoke-TalosReadOnly $node @('get', 'discoveredvolumes', '-o', 'yaml')
+            $mounts = Invoke-TalosReadOnly $node @('read', '/proc/mounts')
+            $filesystems = Invoke-TalosReadOnly $node @('read', '/proc/filesystems')
+            $modules = Invoke-TalosReadOnly $node @('read', '/proc/modules')
+            $resources = Invoke-TalosReadOnly $node @('get', 'rd', '-o', 'yaml')
+            $extensions = Invoke-TalosReadOnly $node @('get', 'extensions', '-o', 'yaml')
+
+            $volumeSignals = @(Select-StorageSignals $volumes.Text 'sdb|zfs|filesystem|partition_label|partition_uuid|mountpoint')
+            $mountSignals = @(Select-StorageSignals $mounts.Text 'sdb|zfs')
+            $filesystemSignals = @(Select-StorageSignals $filesystems.Text 'zfs|nfs|fuse|xfs|ext4')
+            $moduleSignals = @(Select-StorageSignals $modules.Text 'zfs|spl|drbd|nvme|iscsi')
+            $resourceSignals = @(Select-StorageSignals $resources.Text $storagePattern)
+            $extensionSignals = @(Select-StorageSignals $extensions.Text $storagePattern)
+
+            $nodeRows += [pscustomobject]@{
+              Node = $node
+              DiscoveredVolumeQuery = $volumes.ExitCode
+              MountQuery = $mounts.ExitCode
+              FilesystemQuery = $filesystems.ExitCode
+              ModuleQuery = $modules.ExitCode
+              ResourceDefinitionQuery = $resources.ExitCode
+              ExtensionQuery = $extensions.ExitCode
+              DiscoveredVolumeSignals = ($volumeSignals -join ' | ')
+              ActiveMountSignals = ($mountSignals -join ' | ')
+              FilesystemSignals = ($filesystemSignals -join ' | ')
+              ModuleSignals = ($moduleSignals -join ' | ')
+              ResourceSignals = ($resourceSignals -join ' | ')
+              ExtensionSignals = ($extensionSignals -join ' | ')
+            }
+
+            Write-Host "DISCOVERED_VOLUME_QUERY_EXIT=$($volumes.ExitCode)"
+            $volumeSignals | ForEach-Object { Write-Host "VOLUME_SIGNAL=$_" }
+            Write-Host "MOUNT_QUERY_EXIT=$($mounts.ExitCode)"
+            $mountSignals | ForEach-Object { Write-Host "ACTIVE_MOUNT_SIGNAL=$_" }
+            Write-Host "FILESYSTEM_QUERY_EXIT=$($filesystems.ExitCode)"
+            $filesystemSignals | ForEach-Object { Write-Host "FILESYSTEM_SIGNAL=$_" }
+            Write-Host "MODULE_QUERY_EXIT=$($modules.ExitCode)"
+            $moduleSignals | ForEach-Object { Write-Host "MODULE_SIGNAL=$_" }
+            Write-Host "RESOURCE_DEFINITION_QUERY_EXIT=$($resources.ExitCode)"
+            $resourceSignals | ForEach-Object { Write-Host "RESOURCE_SIGNAL=$_" }
+            Write-Host "EXTENSION_QUERY_EXIT=$($extensions.ExitCode)"
+            $extensionSignals | ForEach-Object { Write-Host "EXTENSION_SIGNAL=$_" }
+          }
+
+          Write-Host '===== READ-ONLY KUBERNETES STORAGE SIGNALS ====='
+          $k8sCommands = @(
+            @{ Name = 'StorageClasses'; Args = @('get', 'storageclass', '-o', 'wide') },
+            @{ Name = 'PersistentVolumes'; Args = @('get', 'pv', '-o', 'wide') },
+            @{ Name = 'StoragePods'; Args = @('get', 'pods', '-A', '-o', 'wide') },
+            @{ Name = 'StorageWorkloads'; Args = @('get', 'deploy,statefulset,daemonset', '-A', '-o', 'wide') },
+            @{ Name = 'StorageCRDs'; Args = @('get', 'crd', '-o', 'name') }
+          )
+          $k8sSummary = @()
+          foreach ($query in $k8sCommands) {
+            $text = (& $env:KUBECTL @($query.Args) 2>&1 | Out-String)
+            $exit = $LASTEXITCODE
+            $signals = @(Select-StorageSignals $text $storagePattern)
+            Write-Host "$($query.Name)_QUERY_EXIT=$exit"
+            $signals | ForEach-Object { Write-Host "$($query.Name.ToUpperInvariant())_SIGNAL=$_" }
+            $k8sSummary += [pscustomobject]@{
+              Query = $query.Name
+              ExitCode = $exit
+              Signals = ($signals -join ' | ')
+            }
+          }
+
+          @(
+            '',
+            '## Read-only existing-storage classification',
+            '',
+            'This step only reads Talos procfs/resources and Kubernetes API objects. It does not import, mount, wipe, format, partition, initialize, or create storage.',
+            '',
+            '| Node | Active sdb/ZFS mount signal | ZFS/DRBD module signal |',
+            '|---|---|---|'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          foreach ($row in $nodeRows) {
+            $mount = if ($row.ActiveMountSignals) { $row.ActiveMountSignals.Replace('|', '\|') } else { '-' }
+            $module = if ($row.ModuleSignals) { $row.ModuleSignals.Replace('|', '\|') } else { '-' }
+            "| $($row.Node) | $mount | $module |" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
+          Write-Host 'STORAGE_METADATA_CLASSIFICATION=READ_ONLY'
+          Write-Host 'STORAGE_METADATA_OWNERSHIP=UNPROVEN_UNLESS_DIRECT_SIGNAL_FOUND'
+          Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+
       - name: Publish read-only inventory to Storage Management API surface
         run: |
           $ErrorActionPreference = 'Stop'
