@@ -1,0 +1,88 @@
+name: LayerSentry LINSTOR GUI 500 Diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-500-diagnose.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    name: Diagnose LINSTOR GUI OAuth callback 500 on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      REQUEST_ID: a6f2be62a0a2db9095b95c55b9bb1896
+    steps:
+      - name: Capture auth configuration and recent errors safely
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          foreach ($hr in @('keycloak-operator','keycloak','keycloak-configure')) {
+            & $env:KUBECTL wait --for=condition=Ready "helmrelease/$hr" -n cozy-keycloak --timeout=120s
+            if ($LASTEXITCODE -ne 0) { throw "Keycloak HelmRelease $hr is not Ready" }
+          }
+          & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui HelmRelease is not Ready' }
+          & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui-gatekeeper deployment is not Ready' }
+
+          Write-Host '=== LIVE GATEKEEPER ARGS ==='
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          @($dep.spec.template.spec.containers[0].args) | ForEach-Object { Write-Host $_ }
+          Write-Host '=== ENV SECRET REFERENCES ==='
+          foreach ($e in @($dep.spec.template.spec.containers[0].env)) {
+            if ($e.valueFrom.secretKeyRef) {
+              Write-Host ("{0} <- secret/{1} key={2}" -f $e.name,$e.valueFrom.secretKeyRef.name,$e.valueFrom.secretKeyRef.key)
+            } elseif ($e.value) {
+              Write-Host ("{0}={1}" -f $e.name,$e.value)
+            }
+          }
+
+          Write-Host '=== SAFE SECRET SHAPE ==='
+          $auth = (& $env:KUBECTL get secret linstor-gui-auth-config -n cozy-linstor -o json | ConvertFrom-Json)
+          $client = (& $env:KUBECTL get secret linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
+          $cookieBytes = [Convert]::FromBase64String([string]$auth.data.cookieSecret)
+          $clientBytes = [Convert]::FromBase64String([string]$client.data.'client-secret-key')
+          Write-Host "cookieSecretBytes=$($cookieBytes.Length) clientSecretBytes=$($clientBytes.Length)"
+          if ($cookieBytes.Length -notin @(16,24,32)) { Write-Host 'DIAG_COOKIE_SECRET_LENGTH=INVALID' }
+
+          Write-Host '=== KEYCLOAK CLIENT STATUS ==='
+          $kc = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
+          Write-Host ("name={0} clientId={1} realm={2}/{3} status={4} failures={5} redirects={6}" -f $kc.metadata.name,$kc.spec.clientId,$kc.spec.realmRef.kind,$kc.spec.realmRef.name,$kc.status.value,$kc.status.failureCount,(@($kc.spec.redirectUris)-join ','))
+
+          Write-Host '=== USER STATUS ==='
+          $u = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com layersentry-gui-admin -n cozy-system -o json | ConvertFrom-Json)
+          Write-Host ("username={0} enabled={1} groups={2} status={3} failures={4}" -f $u.spec.username,$u.spec.enabled,(@($u.spec.groups)-join ','),$u.status.value,$u.status.failureCount)
+
+          Write-Host '=== RECENT GATEKEEPER ERROR LINES ==='
+          $gk = (& $env:KUBECTL logs deployment/linstor-gui-gatekeeper -n cozy-linstor --since=90m 2>&1 | Out-String)
+          $gkLines = $gk -split "`r?`n" | Where-Object { $_ -match [regex]::Escape($env:REQUEST_ID) -or $_ -match '(?i)error|failed|failure|callback|redeem|token|cookie|session|group|oidc|500' }
+          if ($gkLines.Count -eq 0) { Write-Host 'No matching gatekeeper lines found.' } else { $gkLines | Select-Object -Last 200 | ForEach-Object { Write-Host $_ } }
+
+          Write-Host '=== RECENT KEYCLOAK ERROR LINES ==='
+          $pods = @(& $env:KUBECTL get pods -n cozy-keycloak -l app.kubernetes.io/name=keycloak -o name 2>$null)
+          if ($pods.Count -eq 0) { $pods = @(& $env:KUBECTL get pods -n cozy-keycloak -o name | Select-String 'keycloak-[0-9]' | ForEach-Object { $_.Line }) }
+          foreach ($p in $pods) {
+            Write-Host "--- $p ---"
+            $kl = (& $env:KUBECTL logs $p -n cozy-keycloak --since=90m 2>&1 | Out-String)
+            $kl -split "`r?`n" | Where-Object { $_ -match [regex]::Escape($env:REQUEST_ID) -or $_ -match '(?i)ERROR|WARN|LOGIN_ERROR|CODE_TO_TOKEN|invalid|redirect|client|user_session|cookie' } | Select-Object -Last 120 | ForEach-Object { Write-Host $_ }
+          }
+
+          Write-Host '=== RECENT NAMESPACE EVENTS ==='
+          & $env:KUBECTL get events -n cozy-linstor --sort-by=.lastTimestamp | Select-Object -Last 40
+
+          Write-Host '=== ROOT RESPONSE ==='
+          $host = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o jsonpath='{.spec.rules[0].host}' | Out-String).Trim()
+          & curl.exe -k -sS -D - -o NUL --max-time 20 "https://$host/"
