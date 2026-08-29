@@ -65,6 +65,33 @@ jobs:
             }
           }
 
+          Write-Host '===== LIVE HOSTPORT 9100/9101 CONSUMERS ====='
+          $allPods = @((& $env:KUBECTL get pods -A -o json | ConvertFrom-Json).items)
+          $hostPortConsumers = @()
+          foreach ($pod in $allPods) {
+            foreach ($container in @($pod.spec.containers)) {
+              foreach ($portSpec in @($container.ports)) {
+                if ($null -ne $portSpec.hostPort -and ([int]$portSpec.hostPort -eq 9100 -or [int]$portSpec.hostPort -eq 9101)) {
+                  $hostPortConsumers += [pscustomobject]@{
+                    Namespace = $pod.metadata.namespace
+                    Pod = $pod.metadata.name
+                    Node = $pod.spec.nodeName
+                    Container = $container.name
+                    HostNetwork = [bool]$pod.spec.hostNetwork
+                    HostPort = [int]$portSpec.hostPort
+                    ContainerPort = [int]$portSpec.containerPort
+                    Protocol = $portSpec.protocol
+                  }
+                }
+              }
+            }
+          }
+          if ($hostPortConsumers.Count -eq 0) {
+            Write-Host 'HOSTPORT_CONSUMERS=NONE'
+          } else {
+            $hostPortConsumers | Sort-Object Node,HostPort,Namespace,Pod | Format-Table -AutoSize
+          }
+
           Write-Host '===== BLOCKSTOR EVENTS ====='
           & $env:KUBECTL get events -n blockstor-system --sort-by=.lastTimestamp
 
