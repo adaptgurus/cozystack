@@ -229,15 +229,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'cozy-system namespace is unavailable' }
 
           $reportPath = '${{ steps.certify.outputs.report_path }}'
-          $manifest = (& $env:KUBECTL -n cozy-system create configmap layersentry-storage-inventory \
-            "--from-file=inventory.json=$reportPath" --dry-run=client -o yaml 2>&1 | Out-String)
+          $manifest = (& $env:KUBECTL -n cozy-system create configmap layersentry-storage-inventory "--from-file=inventory.json=$reportPath" --dry-run=client -o yaml 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0) { throw 'failed to render storage inventory ConfigMap' }
           $manifest | & $env:KUBECTL apply -f - | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'failed to publish storage inventory ConfigMap' }
 
-          & $env:KUBECTL -n cozy-system label configmap layersentry-storage-inventory \
-            app.kubernetes.io/part-of=layersentry \
-            layersentry.io/storage-inventory=true --overwrite | Out-Host
+          & $env:KUBECTL -n cozy-system label configmap layersentry-storage-inventory app.kubernetes.io/part-of=layersentry layersentry.io/storage-inventory=true --overwrite | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'failed to label storage inventory ConfigMap' }
 
           $published = (& $env:KUBECTL -n cozy-system get configmap layersentry-storage-inventory -o json | ConvertFrom-Json)
