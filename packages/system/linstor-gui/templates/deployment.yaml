@@ -77,6 +77,10 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+            - name: storage-fabric-ui
+              mountPath: /usr/share/nginx/html/storage-fabric/index.html
+              subPath: index.html
+              readOnly: true
             - name: linstor-client-tls
               mountPath: /etc/linstor/client
               readOnly: true
@@ -88,6 +92,9 @@ spec:
         - name: nginx-config
           configMap:
             name: linstor-gui-nginx
+        - name: storage-fabric-ui
+          configMap:
+            name: linstor-gui-storage-fabric
         - name: linstor-client-tls
           secret:
             secretName: {{ .Values.linstor.clientSecret }}
