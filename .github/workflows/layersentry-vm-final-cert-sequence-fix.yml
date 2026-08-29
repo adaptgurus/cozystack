@@ -16,94 +16,51 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
-      - name: Patch final certification reconciliation sequence
+      - name: Patch final certification reconciliation sequence and inventory parser
         shell: python
         run: |
           from pathlib import Path
+          import base64
 
-          p = Path('.github/workflows/layersentry-dashboard-vm-ux-final-cert.yml')
-          s = p.read_text()
+          cert = Path('.github/workflows/layersentry-dashboard-vm-ux-final-cert.yml')
+          s = cert.read_text()
           start_marker = '      - name: Switch operator and package sources to immutable VM UX release\n'
           end_marker = '      - name: Reconcile platform and remove only stale console-image renderer\n'
           if s.count(start_marker) != 1 or s.count(end_marker) != 1:
               raise SystemExit(f'certification step anchors invalid start={s.count(start_marker)} end={s.count(end_marker)}')
+          new_step = base64.b64decode('ICAgICAgLSBuYW1lOiBTd2l0Y2ggb3BlcmF0b3IgdG8gaW1tdXRhYmxlIFZNIFVYIHBsYXRmb3JtIHNvdXJjZQogICAgICAgIHJ1bjogfAogICAgICAgICAgJEVycm9yQWN0aW9uUHJlZmVyZW5jZT0nU3RvcCcKICAgICAgICAgICRkZXA9JiAkZW52OktVQkVDVEwgLW4gY296eS1zeXN0ZW0gZ2V0IGRlcGxveSBjb3p5c3RhY2stb3BlcmF0b3IgLW8ganNvbnxDb252ZXJ0RnJvbS1Kc29uCiAgICAgICAgICAkb3A9QCgkZGVwLnNwZWMudGVtcGxhdGUuc3BlYy5jb250YWluZXJzfFdoZXJlLU9iamVjdHskXy5uYW1lIC1lcSAnY296eXN0YWNrLW9wZXJhdG9yJ318U2VsZWN0LU9iamVjdCAtRmlyc3QgMSkKICAgICAgICAgICRhcmdzPU5ldy1PYmplY3QgU3lzdGVtLkNvbGxlY3Rpb25zLkdlbmVyaWMuTGlzdFtzdHJpbmddCiAgICAgICAgICAkdXJsU2Vlbj0kZmFsc2U7JHJlZlNlZW49JGZhbHNlCiAgICAgICAgICBmb3JlYWNoKCRhIGluIEAoJG9wLmFyZ3MpKXsKICAgICAgICAgICAgJHY9W3N0cmluZ10kYQogICAgICAgICAgICBpZigkdiAtbGlrZSAnLS1wbGF0Zm9ybS1zb3VyY2UtdXJsPSonKXskYXJncy5BZGQoIi0tcGxhdGZvcm0tc291cmNlLXVybD0kZW52OlBBQ0tBR0VfVVJMIik7JHVybFNlZW49JHRydWV9CiAgICAgICAgICAgIGVsc2VpZigkdiAtbGlrZSAnLS1wbGF0Zm9ybS1zb3VyY2UtcmVmPSonKXskYXJncy5BZGQoIi0tcGxhdGZvcm0tc291cmNlLXJlZj1kaWdlc3Q9JGVudjpSRUxFQVNFX1BBQ0tBR0VfRElHRVNUIik7JHJlZlNlZW49JHRydWV9CiAgICAgICAgICAgIGVsc2V7JGFyZ3MuQWRkKCR2KX0KICAgICAgICAgIH0KICAgICAgICAgIGlmKC1ub3QkdXJsU2Vlbil7JGFyZ3MuQWRkKCItLXBsYXRmb3JtLXNvdXJjZS11cmw9JGVudjpQQUNLQUdFX1VSTCIpfQogICAgICAgICAgaWYoLW5vdCRyZWZTZWVuKXskYXJncy5BZGQoIi0tcGxhdGZvcm0tc291cmNlLXJlZj1kaWdlc3Q9JGVudjpSRUxFQVNFX1BBQ0tBR0VfRElHRVNUIil9CiAgICAgICAgICAkY29udGFpbmVyPVtvcmRlcmVkXUB7bmFtZT0nY296eXN0YWNrLW9wZXJhdG9yJzthcmdzPUAoJGFyZ3MpfQogICAgICAgICAgJHBhdGNoPVtvcmRlcmVkXUB7c3BlYz1bb3JkZXJlZF1Ae3RlbXBsYXRlPVtvcmRlcmVkXUB7c3BlYz1bb3JkZXJlZF1Ae2NvbnRhaW5lcnM9QCgkY29udGFpbmVyKX19fX0KICAgICAgICAgICRmPUpvaW4tUGF0aCAkZW52OlJVTk5FUl9URU1QICd2bS1maW5hbC1vcGVyYXRvci5qc29uJzskcGF0Y2h8Q29udmVydFRvLUpzb24gLURlcHRoIDMwfFNldC1Db250ZW50ICRmIC1FbmNvZGluZyBVVEY4CiAgICAgICAgICAmICRlbnY6S1VCRUNUTCAtbiBjb3p5LXN5c3RlbSBwYXRjaCBkZXBsb3kgY296eXN0YWNrLW9wZXJhdG9yIC0tdHlwZT1zdHJhdGVnaWMgIi0tcGF0Y2gtZmlsZT0kZiJ8T3V0LU51bGwKICAgICAgICAgIGlmKCRMQVNURVhJVENPREUpe3Rocm93ICdvcGVyYXRvciBzb3VyY2UgcGF0Y2ggZmFpbGVkJ30KICAgICAgICAgICYgJGVudjpLVUJFQ1RMIC1uIGNvenktc3lzdGVtIHJvbGxvdXQgc3RhdHVzIGRlcGxveS9jb3p5c3RhY2stb3BlcmF0b3IgLS10aW1lb3V0PTI0MHN8T3V0LUhvc3QKICAgICAgICAgIGlmKCRMQVNURVhJVENPREUpe3Rocm93ICdvcGVyYXRvciByb2xsb3V0IGZhaWxlZCd9CiAgICAgICAgICBTZXQtQ29udGVudCAoSm9pbi1QYXRoICRlbnY6UlVOTkVSX1RFTVAgJ3ZtLWZpbmFsLW11dGF0ZWQuZmxhZycpICd0cnVlJwoKICAgICAgICAgICMgY296eXN0YWNrLXBsYXRmb3JtIGlzIG93bmVkIGRpcmVjdGx5IGJ5IHRoZSBvcGVyYXRvci4gRG8gbm90IHJhY2UgdGhlCiAgICAgICAgICAjIHBsYXRmb3JtIGJ5IGZvcmNpbmcgaXRzIGRlcml2ZWQgY296eXN0YWNrLXBhY2thZ2VzIHNvdXJjZSBiZWZvcmUgdGhlCiAgICAgICAgICAjIG5ldyBwbGF0Zm9ybSBhcnRpZmFjdCBoYXMgcmVjb25jaWxlZC4KICAgICAgICAgICRkZWFkbGluZT0oR2V0LURhdGUpLkFkZE1pbnV0ZXMoNSkKICAgICAgICAgIGRvewogICAgICAgICAgICBTdGFydC1TbGVlcCA1CiAgICAgICAgICAgICRzcmM9JiAkZW52OktVQkVDVEwgLW4gY296eS1zeXN0ZW0gZ2V0IG9jaXJlcG9zaXRvcnkuc291cmNlLnRvb2xraXQuZmx1eGNkLmlvIGNvenlzdGFjay1wbGF0Zm9ybSAtbyBqc29ufENvbnZlcnRGcm9tLUpzb24KICAgICAgICAgICAgJHI9QCgkc3JjLnN0YXR1cy5jb25kaXRpb25zfFdoZXJlLU9iamVjdHskXy50eXBlIC1lcSAnUmVhZHknfXxTZWxlY3QtT2JqZWN0IC1GaXJzdCAxKQogICAgICAgICAgICAkb2s9KFtzdHJpbmddJHNyYy5zcGVjLnVybCAtZXEgJGVudjpQQUNLQUdFX1VSTCAtYW5kIFtzdHJpbmddJHNyYy5zcGVjLnJlZi5kaWdlc3QgLWVxICRlbnY6UkVMRUFTRV9QQUNLQUdFX0RJR0VTVCAtYW5kICRyLnN0YXR1cyAtZXEgJ1RydWUnIC1hbmQgW3N0cmluZ10kc3JjLnN0YXR1cy5hcnRpZmFjdC5yZXZpc2lvbiAtbWF0Y2ggW3JlZ2V4XTo6RXNjYXBlKCRlbnY6UkVMRUFTRV9QQUNLQUdFX0RJR0VTVCkpCiAgICAgICAgICB9d2hpbGUoLW5vdCRvayAtYW5kIChHZXQtRGF0ZSktbHQkZGVhZGxpbmUpCiAgICAgICAgICBpZigtbm90JG9rKXt0aHJvdyAicmVsZWFzZSBwbGF0Zm9ybSBzb3VyY2UgZGlkIG5vdCBiZWNvbWUgUmVhZHk6ICQoJHIubWVzc2FnZSkifQogICAgICAgICAgV3JpdGUtSG9zdCAiVk1fVVhfUExBVEZPUk1fU09VUkNFPVBBU1MgZGlnZXN0PSRlbnY6UkVMRUFTRV9QQUNLQUdFX0RJR0VTVCIKCg==').decode()
           start = s.index(start_marker)
           end = s.index(end_marker, start)
-          new_step = r'''      - name: Switch operator to immutable VM UX platform source
-        run: |
-          $ErrorActionPreference='Stop'
-          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json|ConvertFrom-Json
-          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
-          $args=New-Object System.Collections.Generic.List[string]
-          $urlSeen=$false;$refSeen=$false
-          foreach($a in @($op.args)){
-            $v=[string]$a
-            if($v -like '--platform-source-url=*'){$args.Add("--platform-source-url=$env:PACKAGE_URL");$urlSeen=$true}
-            elseif($v -like '--platform-source-ref=*'){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST");$refSeen=$true}
-            else{$args.Add($v)}
-          }
-          if(-not$urlSeen){$args.Add("--platform-source-url=$env:PACKAGE_URL")}
-          if(-not$refSeen){$args.Add("--platform-source-ref=digest=$env:RELEASE_PACKAGE_DIGEST")}
-          $container=[ordered]@{name='cozystack-operator';args=@($args)}
-          $patch=[ordered]@{spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@($container)}}}}
-          $f=Join-Path $env:RUNNER_TEMP 'vm-final-operator.json';$patch|ConvertTo-Json -Depth 30|Set-Content $f -Encoding UTF8
-          & $env:KUBECTL -n cozy-system patch deploy cozystack-operator --type=strategic "--patch-file=$f"|Out-Null
-          if($LASTEXITCODE){throw 'operator source patch failed'}
-          & $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=240s|Out-Host
-          if($LASTEXITCODE){throw 'operator rollout failed'}
-          Set-Content (Join-Path $env:RUNNER_TEMP 'vm-final-mutated.flag') 'true'
-
-          # cozystack-platform is owned directly by the operator. Do not race the
-          # platform by forcing its derived cozystack-packages source before the
-          # new platform artifact has reconciled.
-          $deadline=(Get-Date).AddMinutes(5)
-          do{
-            Start-Sleep 5
-            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-platform -o json|ConvertFrom-Json
-            $r=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
-            $ok=([string]$src.spec.url -eq $env:PACKAGE_URL -and [string]$src.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $r.status -eq 'True' -and [string]$src.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
-          }while(-not$ok -and (Get-Date)-lt$deadline)
-          if(-not$ok){throw "release platform source did not become Ready: $($r.message)"}
-          Write-Host "VM_UX_PLATFORM_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
-
-'''
           s = s[:start] + new_step + s[end:]
 
           reconcile_anchor = "          if([string]$p.status.lastHandledReconcileAt -ne $stamp -or $r.status -ne 'True'){throw \"platform reconcile failed: $($r.message)\"}\n\n"
           if s.count(reconcile_anchor) != 1:
               raise SystemExit(f'platform reconcile anchor count={s.count(reconcile_anchor)}')
-          derived_wait = r'''          # The reconciled platform owns the derived cozystack-packages source.
-          # Validate it only after the platform rollout, otherwise the incumbent
-          # platform legitimately restores its own baseline source and races CI.
-          $deadline=(Get-Date).AddMinutes(5)
-          do{
-            Start-Sleep 5
-            $pkg=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io cozystack-packages -o json|ConvertFrom-Json
-            $pkgReady=@($pkg.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
-            $pkgOk=([string]$pkg.spec.url -eq $env:PACKAGE_URL -and [string]$pkg.spec.ref.digest -eq $env:RELEASE_PACKAGE_DIGEST -and $pkgReady.status -eq 'True' -and [string]$pkg.status.artifact.revision -match [regex]::Escape($env:RELEASE_PACKAGE_DIGEST))
-          }while(-not$pkgOk -and (Get-Date)-lt$deadline)
-          if(-not$pkgOk){throw "derived package source did not become Ready after platform reconcile: $($pkgReady.message)"}
-          Write-Host "VM_UX_PACKAGE_SOURCE=PASS digest=$env:RELEASE_PACKAGE_DIGEST"
-
-'''
+          derived_wait = base64.b64decode('ICAgICAgICAgICMgVGhlIHJlY29uY2lsZWQgcGxhdGZvcm0gb3ducyB0aGUgZGVyaXZlZCBjb3p5c3RhY2stcGFja2FnZXMgc291cmNlLgogICAgICAgICAgIyBWYWxpZGF0ZSBpdCBvbmx5IGFmdGVyIHRoZSBwbGF0Zm9ybSByb2xsb3V0LCBvdGhlcndpc2UgdGhlIGluY3VtYmVudAogICAgICAgICAgIyBwbGF0Zm9ybSBsZWdpdGltYXRlbHkgcmVzdG9yZXMgaXRzIG93biBiYXNlbGluZSBzb3VyY2UgYW5kIHJhY2VzIENJLgogICAgICAgICAgJGRlYWRsaW5lPShHZXQtRGF0ZSkuQWRkTWludXRlcyg1KQogICAgICAgICAgZG97CiAgICAgICAgICAgIFN0YXJ0LVNsZWVwIDUKICAgICAgICAgICAgJHBrZz0mICRlbnY6S1VCRUNUTCAtbiBjb3p5LXN5c3RlbSBnZXQgb2NpcmVwb3NpdG9yeS5zb3VyY2UudG9vbGtpdC5mbHV4Y2QuaW8gY296eXN0YWNrLXBhY2thZ2VzIC1vIGpzb258Q29udmVydEZyb20tSnNvbgogICAgICAgICAgICAkcGtnUmVhZHk9QCgkcGtnLnN0YXR1cy5jb25kaXRpb25zfFdoZXJlLU9iamVjdHskXy50eXBlIC1lcSAnUmVhZHknfXxTZWxlY3QtT2JqZWN0IC1GaXJzdCAxKQogICAgICAgICAgICAkcGtnT2s9KFtzdHJpbmddJHBrZy5zcGVjLnVybCAtZXEgJGVudjpQQUNLQUdFX1VSTCAtYW5kIFtzdHJpbmddJHBrZy5zcGVjLnJlZi5kaWdlc3QgLWVxICRlbnY6UkVMRUFTRV9QQUNLQUdFX0RJR0VTVCAtYW5kICRwa2dSZWFkeS5zdGF0dXMgLWVxICdUcnVlJyAtYW5kIFtzdHJpbmddJHBrZy5zdGF0dXMuYXJ0aWZhY3QucmV2aXNpb24gLW1hdGNoIFtyZWdleF06OkVzY2FwZSgkZW52OlJFTEVBU0VfUEFDS0FHRV9ESUdFU1QpKQogICAgICAgICAgfXdoaWxlKC1ub3QkcGtnT2sgLWFuZCAoR2V0LURhdGUpLWx0JGRlYWRsaW5lKQogICAgICAgICAgaWYoLW5vdCRwa2dPayl7dGhyb3cgImRlcml2ZWQgcGFja2FnZSBzb3VyY2UgZGlkIG5vdCBiZWNvbWUgUmVhZHkgYWZ0ZXIgcGxhdGZvcm0gcmVjb25jaWxlOiAkKCRwa2dSZWFkeS5tZXNzYWdlKSJ9CiAgICAgICAgICBXcml0ZS1Ib3N0ICJWTV9VWF9QQUNLQUdFX1NPVVJDRT1QQVNTIGRpZ2VzdD0kZW52OlJFTEVBU0VfUEFDS0FHRV9ESUdFU1QiCgo=').decode()
           s = s.replace(reconcile_anchor, reconcile_anchor + derived_wait, 1)
 
           bad_cleanup = 'if(Test-Path $sap -and Test-Path $cf)'
-          good_cleanup = 'if((Test-Path $sap) -and (Test-Path $cf))'
           if s.count(bad_cleanup) != 1:
               raise SystemExit(f'cleanup syntax anchor count={s.count(bad_cleanup)}')
-          s = s.replace(bad_cleanup, good_cleanup, 1)
-          p.write_text(s)
-      - name: Commit deterministic certification fix
+          s = s.replace(bad_cleanup, 'if((Test-Path $sap) -and (Test-Path $cf))', 1)
+          cert.write_text(s)
+
+          inventory = Path('.github/scripts/layersentry/collect-network-inventory.ps1')
+          n = inventory.read_text()
+          bad_node = 'throw "talosctl failed for node $Node: $($Arguments -join \' \'): $text"'
+          good_node = 'throw "talosctl failed for node ${Node}: $($Arguments -join \' \'): $text"'
+          if n.count(bad_node) != 1:
+              raise SystemExit(f'network parser anchor count={n.count(bad_node)}')
+          inventory.write_text(n.replace(bad_node, good_node, 1))
+      - name: Commit deterministic fixes
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
-          git diff -- .github/workflows/layersentry-dashboard-vm-ux-final-cert.yml
-          git add .github/workflows/layersentry-dashboard-vm-ux-final-cert.yml
+          git add .github/workflows/layersentry-dashboard-vm-ux-final-cert.yml .github/scripts/layersentry/collect-network-inventory.ps1
           git config user.name adaptgurus
           git config user.email 73125939+adaptgurus@users.noreply.github.com
-          git commit -m 'fix(test): reconcile VM package sources in ownership order'
+          git commit -m 'fix(test): reconcile VM sources and parse network inventory safely'
           git fetch origin layersentry-platform
           git rebase origin/layersentry-platform
           git push origin HEAD:layersentry-platform
