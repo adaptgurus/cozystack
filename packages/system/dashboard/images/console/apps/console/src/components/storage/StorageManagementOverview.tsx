@@ -53,14 +53,21 @@ interface CertifiedDisk {
   Device?: string
   Size?: string
   Identity?: string
+  ById?: string
+  Model?: string
+  Transport?: string
   Status?: string
   Reason?: string
+  ExistingDataEvidence?: string
 }
 
 interface CertifiedInventory {
   generatedAt?: string
   sourceCommit?: string
+  sourceRun?: string
+  identityGate?: string
   initializationAllowed?: boolean
+  blockedDevices?: number
   devices?: CertifiedDisk[]
 }
 
@@ -106,6 +113,18 @@ function parseCertifiedInventory(raw: string | undefined): CertifiedInventory | 
   } catch {
     return null
   }
+}
+
+function existingDataEvidence(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function shortCommit(value: string | undefined): string {
+  if (!value) return "unknown"
+  return value.length > 12 ? value.slice(0, 12) : value
 }
 
 function MetricCard({
@@ -204,6 +223,8 @@ export function StorageManagementOverview() {
   const certifiedDisks = certifiedInventory?.devices ?? []
   const candidateDisks = certifiedDisks.filter((device) => device.Status === "CANDIDATE")
   const blockedDisks = certifiedDisks.filter((device) => device.Status !== "CANDIDATE")
+  const inventoryGate = certifiedInventory?.identityGate ?? (blockedDisks.length > 0 ? "BLOCKED" : "UNKNOWN")
+  const blockedDeviceCount = certifiedInventory?.blockedDevices ?? blockedDisks.length
 
   const baseLoading = storageClasses.isLoading || pvs.isLoading || pvcs.isLoading
   const baseError = storageClasses.error || pvs.error || pvcs.error
@@ -281,7 +302,47 @@ export function StorageManagementOverview() {
             </div>
             <StatusBadge tone="warn">Initialization locked</StatusBadge>
           </div>
+
+          {certifiedInventory ? (
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-3 xl:grid-cols-6">
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Inventory gate</p>
+                <p className="mt-1 font-semibold text-slate-800">{inventoryGate}</p>
+              </div>
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Last certified</p>
+                <p className="mt-1 break-all text-slate-800">{certifiedInventory.generatedAt ?? "unknown"}</p>
+              </div>
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Source run</p>
+                <p className="mt-1 font-mono text-slate-800">{certifiedInventory.sourceRun ?? "unknown"}</p>
+              </div>
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Source commit</p>
+                <p className="mt-1 font-mono text-slate-800" title={certifiedInventory.sourceCommit}>
+                  {shortCommit(certifiedInventory.sourceCommit)}
+                </p>
+              </div>
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Blocked devices</p>
+                <p className="mt-1 font-semibold tabular-nums text-slate-800">{blockedDeviceCount}</p>
+              </div>
+              <div>
+                <p className="font-medium uppercase tracking-wide text-slate-500">Initialization</p>
+                <p className="mt-1 font-semibold text-slate-800">
+                  {certifiedInventory.initializationAllowed === true ? "Reported allowed; UI locked" : "Locked"}
+                </p>
+              </div>
+            </div>
+          ) : null}
         </div>
+
+        {certifiedInventory?.initializationAllowed === true ? (
+          <p className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
+            Safety violation: the inventory report unexpectedly advertises initializationAllowed=true. This UI
+            remains locked and exposes no destructive controls.
+          </p>
+        ) : null}
 
         {inventoryForbidden ? (
           <p className="px-4 py-5 text-sm text-red-700">
@@ -304,21 +365,32 @@ export function StorageManagementOverview() {
                   <th className="px-3 py-2 font-medium text-slate-600">Node</th>
                   <th className="px-3 py-2 font-medium text-slate-600">Observed path</th>
                   <th className="px-3 py-2 font-medium text-slate-600">Size</th>
+                  <th className="px-3 py-2 font-medium text-slate-600">Model / transport</th>
                   <th className="px-3 py-2 font-medium text-slate-600">Persistent identity</th>
+                  <th className="px-3 py-2 font-medium text-slate-600">By-id alias</th>
                   <th className="px-3 py-2 font-medium text-slate-600">Certification</th>
                   <th className="px-3 py-2 font-medium text-slate-600">Reason</th>
+                  <th className="px-3 py-2 font-medium text-slate-600">Existing-data evidence</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {certifiedDisks.map((device, index) => {
                   const candidate = device.Status === "CANDIDATE"
+                  const evidence = existingDataEvidence(device.ExistingDataEvidence)
                   return (
                     <tr key={`${device.Node ?? "node"}-${device.Identity ?? device.Device ?? index}`}>
                       <td className="px-3 py-2 font-medium text-slate-800">{device.Node ?? "—"}</td>
                       <td className="px-3 py-2 font-mono text-xs text-slate-600">{device.Device ?? "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{device.Size ?? "—"}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600">
+                        <div>{device.Model || "—"}</div>
+                        <div className="mt-0.5 font-mono text-slate-500">{device.Transport || "—"}</div>
+                      </td>
                       <td className="px-3 py-2 font-mono text-xs text-slate-700">
                         {device.Identity || "NONE"}
+                      </td>
+                      <td className="max-w-[24rem] break-all px-3 py-2 font-mono text-xs text-slate-600">
+                        {device.ById || "—"}
                       </td>
                       <td className="px-3 py-2">
                         <StatusBadge tone={candidate ? "ok" : "error"}>
@@ -326,6 +398,27 @@ export function StorageManagementOverview() {
                         </StatusBadge>
                       </td>
                       <td className="px-3 py-2 text-xs text-slate-600">{device.Reason || "—"}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600">
+                        {evidence.length === 0 ? (
+                          "—"
+                        ) : (
+                          <details className="min-w-[18rem]">
+                            <summary className="cursor-pointer font-medium text-slate-700">
+                              {evidence.length} evidence item{evidence.length === 1 ? "" : "s"}
+                            </summary>
+                            <ul className="mt-2 space-y-1">
+                              {evidence.map((item, evidenceIndex) => (
+                                <li
+                                  key={`${item}-${evidenceIndex}`}
+                                  className="break-all font-mono text-[11px] leading-4 text-slate-600"
+                                >
+                                  {item}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
+                      </td>
                     </tr>
                   )
                 })}
@@ -409,7 +502,11 @@ export function StorageManagementOverview() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {[...pvcItems]
-                    .sort((a, b) => `${b.metadata.namespace}/${b.metadata.name}`.localeCompare(`${a.metadata.namespace}/${a.metadata.name}`))
+                    .sort((a, b) =>
+                      `${b.metadata.namespace}/${b.metadata.name}`.localeCompare(
+                        `${a.metadata.namespace}/${a.metadata.name}`,
+                      ),
+                    )
                     .map((claim) => (
                       <tr key={`${claim.metadata.namespace}/${claim.metadata.name}`}>
                         <td className="px-3 py-2">
@@ -452,25 +549,29 @@ export function StorageManagementOverview() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {[...pvItems].sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)).map((pv) => (
-                    <tr key={pv.metadata.name}>
-                      <td className="px-3 py-2">
-                        <div className="max-w-[14rem] truncate font-medium text-slate-800" title={pv.metadata.name}>
-                          {pv.metadata.name}
-                        </div>
-                        <div className="text-xs text-slate-500">{pv.spec?.storageClassName ?? "no class"}</div>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-slate-600">
-                        {pv.spec?.claimRef?.name
-                          ? `${pv.spec.claimRef.namespace ?? "?"}/${pv.spec.claimRef.name}`
-                          : "—"}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-slate-600">{pv.spec?.csi?.driver ?? "—"}</td>
-                      <td className="px-3 py-2">
-                        <StatusBadge tone={phaseTone(pv.status?.phase)}>{pv.status?.phase ?? "Unknown"}</StatusBadge>
-                      </td>
-                    </tr>
-                  ))}
+                  {[...pvItems]
+                    .sort((a, b) => a.metadata.name.localeCompare(b.metadata.name))
+                    .map((pv) => (
+                      <tr key={pv.metadata.name}>
+                        <td className="px-3 py-2">
+                          <div className="max-w-[14rem] truncate font-medium text-slate-800" title={pv.metadata.name}>
+                            {pv.metadata.name}
+                          </div>
+                          <div className="text-xs text-slate-500">{pv.spec?.storageClassName ?? "no class"}</div>
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-600">
+                          {pv.spec?.claimRef?.name
+                            ? `${pv.spec.claimRef.namespace ?? "?"}/${pv.spec.claimRef.name}`
+                            : "—"}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-slate-600">{pv.spec?.csi?.driver ?? "—"}</td>
+                        <td className="px-3 py-2">
+                          <StatusBadge tone={phaseTone(pv.status?.phase)}>
+                            {pv.status?.phase ?? "Unknown"}
+                          </StatusBadge>
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             </div>
@@ -525,7 +626,9 @@ export function StorageManagementOverview() {
                         : "—"}
                     </td>
                     <td className="px-3 py-2">
-                      <StatusBadge tone={snapshot.status?.readyToUse ? "ok" : snapshot.status?.error ? "error" : "warn"}>
+                      <StatusBadge
+                        tone={snapshot.status?.readyToUse ? "ok" : snapshot.status?.error ? "error" : "warn"}
+                      >
                         {snapshot.status?.readyToUse ? "Ready" : snapshot.status?.error ? "Error" : "Pending"}
                       </StatusBadge>
                     </td>

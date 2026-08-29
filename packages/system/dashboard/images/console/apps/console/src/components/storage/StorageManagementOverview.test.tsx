@@ -107,7 +107,8 @@ function makeClient({ inventory = true }: { inventory?: boolean } = {}): K8sClie
           "inventory.json": JSON.stringify({
             schemaVersion: "storage.layersentry.io/v1alpha1",
             generatedAt: "2026-08-29T16:30:00Z",
-            sourceCommit: "test-commit",
+            sourceCommit: "2c5ddbec00d8271159aab4d0f8a83709c804c765",
+            sourceRun: "12345",
             identityGate: "BLOCKED",
             initializationAllowed: false,
             blockedDevices: 1,
@@ -117,6 +118,9 @@ function makeClient({ inventory = true }: { inventory?: boolean } = {}): K8sClie
                 Device: "/dev/sdb",
                 Size: "322 GB",
                 Identity: "wwid:naa.600224806dc058308dd8a3bf014a297c",
+                ById: "/dev/disk/by-id/wwn-0x600224806dc058308dd8a3bf014a297c",
+                Model: "Virtual Disk",
+                Transport: "storvsc_host",
                 Status: "BLOCKED",
                 Reason: "existing-data-present",
                 ExistingDataEvidence: "child:sdb1;sdb:discovered=gpt",
@@ -133,11 +137,19 @@ function makeClient({ inventory = true }: { inventory?: boolean } = {}): K8sClie
 }
 
 describe("StorageManagementOverview", () => {
-  it("renders certified disk identity and keeps destructive initialization locked", async () => {
+  it("renders certified disk safety evidence and keeps destructive initialization locked", async () => {
     renderWithK8sProvider(<StorageManagementOverview />, { client: makeClient() })
 
     expect(await screen.findByText("wwid:naa.600224806dc058308dd8a3bf014a297c")).toBeInTheDocument()
+    expect(screen.getByText("/dev/disk/by-id/wwn-0x600224806dc058308dd8a3bf014a297c")).toBeInTheDocument()
+    expect(screen.getByText("Virtual Disk")).toBeInTheDocument()
+    expect(screen.getByText("storvsc_host")).toBeInTheDocument()
     expect(screen.getByText("existing-data-present")).toBeInTheDocument()
+    expect(screen.getByText("child:sdb1")).toBeInTheDocument()
+    expect(screen.getByText("sdb:discovered=gpt")).toBeInTheDocument()
+    expect(screen.getByText("2026-08-29T16:30:00Z")).toBeInTheDocument()
+    expect(screen.getByText("12345")).toBeInTheDocument()
+    expect(screen.getByText("2c5ddbec00d8")).toBeInTheDocument()
     expect(screen.getByText("Initialization locked")).toBeInTheDocument()
     expect(screen.getByText("LINSTOR")).toBeInTheDocument()
     expect(screen.getByText("NFS")).toBeInTheDocument()
