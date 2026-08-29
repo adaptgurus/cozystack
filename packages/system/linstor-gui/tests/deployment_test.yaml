@@ -3,6 +3,7 @@ templates:
   - templates/deployment.yaml
   - templates/service.yaml
   - templates/configmap-nginx.yaml
+  - templates/configmap-storage-fabric-wizard.yaml
 
 tests:
   - it: renders a ClusterIP service on port 80 -> http
@@ -45,6 +46,26 @@ tests:
             mountPath: /etc/linstor/client
             readOnly: true
 
+  - it: mounts the Storage Fabric wizard into the hardened GUI container
+    template: templates/deployment.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: storage-fabric-wizard
+            configMap:
+              name: linstor-gui-storage-fabric-wizard
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: storage-fabric-wizard
+            mountPath: /usr/share/nginx/html/storage-fabric/wizard.js
+            subPath: wizard.js
+            readOnly: true
+
   - it: runs as a non-root user with a read-only root filesystem
     template: templates/deployment.yaml
     release:
@@ -78,6 +99,44 @@ tests:
       - matchRegex:
           path: data["nginx.conf"]
           pattern: "proxy_ssl_certificate\\s+/etc/linstor/client/tls.crt"
+
+  - it: keeps Gateway mutations locked by default
+    template: templates/configmap-nginx.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "ProvisioningLocked"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "src=\"/storage-fabric/wizard.js\""
+
+  - it: renders exact Gateway create endpoints and certification header in wizard
+    template: templates/configmap-storage-fabric-wizard.yaml
+    release:
+      name: linstor-gui
+      namespace: cozy-linstor
+    asserts:
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "/gateway/api/v2/iscsi"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "/gateway/api/v2/nfs"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "/gateway/api/v2/nvme-of"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "X-LayerSentry-Provisioning"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "const persistentDiskIdentityCertified = false"
+      - matchRegex:
+          path: data["wizard.js"]
+          pattern: "const agentDataPlaneCertified = false"
 
   - it: overrides linstor endpoint and client secret
     template: templates/configmap-nginx.yaml
