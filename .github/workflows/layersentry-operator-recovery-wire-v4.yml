@@ -1,4 +1,5 @@
 name: LayerSentry Operator Recovery Wiring V4
+# Execute after declared-source divergence proof correction.
 
 on:
   push:
