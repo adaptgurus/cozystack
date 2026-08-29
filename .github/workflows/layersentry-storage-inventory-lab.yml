@@ -21,17 +21,20 @@ defaults:
 
 jobs:
   inventory:
-    name: Certify persistent identity of HCI data disks
+    name: Certify and publish HCI data-disk inventory
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
       TALOSCTL: C:\hci-tools\talosctl.exe
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
       HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
       DATA_DISK: sdb
 
     steps:
-      - name: Read-only Talos disk identity certification
+      - name: Read-only Talos disk identity and existing-data certification
+        id: certify
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
@@ -58,22 +61,23 @@ jobs:
               Sort-Object -Unique)
           }
 
-          function Has-ExistingData([string]$DiscoveredYaml, [string]$DiskId) {
-            # A child partition is existing layout/data regardless of filesystem.
-            if ($DiscoveredYaml -match "(?m)^\s*id:\s*$([regex]::Escape($DiskId))[p]?[0-9]+\s*$") {
-              return $true
-            }
-
-            # Talos reports a discovered format (gpt, xfs, ext4, LVM2_member, etc.)
-            # on the whole-disk DiscoveredVolume when metadata is already present.
+          function Get-ExistingDataEvidence([string]$DiscoveredYaml, [string]$DiskId) {
+            $evidence = New-Object System.Collections.Generic.List[string]
             $docs = [regex]::Split($DiscoveredYaml, '(?m)^---\s*$')
             foreach ($doc in $docs) {
-              if ($doc -notmatch "(?m)^\s*id:\s*$([regex]::Escape($DiskId))\s*$") { continue }
+              $id = Get-Scalar $doc 'id'
+              if (-not $id) { continue }
+              $whole = $id -eq $DiskId
+              $child = $id -match ('^' + [regex]::Escape($DiskId) + 'p?[0-9]+$')
+              if (-not ($whole -or $child)) { continue }
+
               $discovered = Get-Scalar $doc 'discovered'
               $filesystem = Get-Scalar $doc 'filesystem'
-              if ($discovered -or $filesystem) { return $true }
+              if ($child) { $evidence.Add("child:$id") }
+              if ($discovered) { $evidence.Add("${id}:discovered=$discovered") }
+              if ($filesystem) { $evidence.Add("${id}:filesystem=$filesystem") }
             }
-            return $false
+            return @($evidence | Sort-Object -Unique)
           }
 
           $records = @()
@@ -83,22 +87,30 @@ jobs:
             $diskYaml = (& $env:TALOSCTL -n $node -e $node get disk $env:DATA_DISK -o yaml 2>&1 | Out-String)
             if ($LASTEXITCODE -ne 0) {
               $records += [pscustomobject]@{
-                Node = $node; Device = "/dev/$env:DATA_DISK"; Size = '';
-                Identity = ''; Status = 'BLOCKED'; Reason = 'disk-resource-unreadable'
+                Node = $node
+                Device = "/dev/$env:DATA_DISK"
+                Size = ''
+                Model = ''
+                Transport = ''
+                Identity = ''
+                ById = ''
+                Status = 'BLOCKED'
+                Reason = 'disk-resource-unreadable'
+                ExistingDataEvidence = ''
               }
               continue
             }
-            Write-Host $diskYaml
 
             $systemYaml = (& $env:TALOSCTL -n $node -e $node get systemdisk -o yaml 2>&1 | Out-String)
-            if ($LASTEXITCODE -ne 0) { throw "systemdisk discovery failed on $node" }
-
+            $systemOk = $LASTEXITCODE -eq 0
             $volumesYaml = (& $env:TALOSCTL -n $node -e $node get discoveredvolumes -o yaml 2>&1 | Out-String)
-            if ($LASTEXITCODE -ne 0) { throw "discoveredvolumes discovery failed on $node" }
+            $volumesOk = $LASTEXITCODE -eq 0
 
             $devPath = Get-Scalar $diskYaml 'dev_path'
             $size = Get-Scalar $diskYaml 'pretty_size'
             if (-not $size) { $size = Get-Scalar $diskYaml 'size' }
+            $model = Get-Scalar $diskYaml 'model'
+            $transport = Get-Scalar $diskYaml 'transport'
             $readonly = (Get-Scalar $diskYaml 'readonly').ToLowerInvariant()
             $wwid = Get-Scalar $diskYaml 'wwid'
             $serial = Get-Scalar $diskYaml 'serial'
@@ -113,30 +125,41 @@ jobs:
               $identity = "serial:$serial"
             }
 
-            $reasons = @()
-            if ($devPath -ne "/dev/$env:DATA_DISK") { $reasons += "unexpected-dev-path:$devPath" }
-            if (-not $identity) { $reasons += 'no-stable-hardware-identity' }
-            if ($readonly -eq 'true') { $reasons += 'read-only-device' }
-            if ($systemYaml -match "(?m)^\s*disk:\s*$([regex]::Escape($env:DATA_DISK))\s*$" -or
-                $systemYaml -match [regex]::Escape("/dev/$env:DATA_DISK")) {
-              $reasons += 'os-system-disk'
+            $reasons = New-Object System.Collections.Generic.List[string]
+            if ($devPath -ne "/dev/$env:DATA_DISK") { $reasons.Add("unexpected-dev-path:$devPath") }
+            if (-not $identity) { $reasons.Add('no-stable-hardware-identity') }
+            if ($readonly -eq 'true') { $reasons.Add('read-only-device') }
+
+            if (-not $systemOk) {
+              $reasons.Add('system-disk-state-unreadable')
+            } elseif ($systemYaml -match "(?m)^\s*disk:\s*$([regex]::Escape($env:DATA_DISK))\s*$" -or
+                      $systemYaml -match [regex]::Escape("/dev/$env:DATA_DISK")) {
+              $reasons.Add('os-system-disk')
             }
-            if (Has-ExistingData $volumesYaml $env:DATA_DISK) {
-              $reasons += 'existing-partition-or-signature'
+
+            $evidence = @()
+            if (-not $volumesOk) {
+              $reasons.Add('discovered-volume-state-unreadable')
+            } else {
+              $evidence = @(Get-ExistingDataEvidence $volumesYaml $env:DATA_DISK)
+              if ($evidence.Count -gt 0) { $reasons.Add('existing-data-present') }
             }
 
             $records += [pscustomobject]@{
               Node = $node
               Device = $devPath
               Size = $size
+              Model = $model
+              Transport = $transport
               Identity = $identity
+              ById = ($aliases -join ',')
               Status = $(if ($reasons.Count -eq 0) { 'CANDIDATE' } else { 'BLOCKED' })
               Reason = ($reasons -join ',')
+              ExistingDataEvidence = ($evidence -join ';')
             }
           }
 
-          # Persistent identity must also be unique across nodes. Duplicate serials or
-          # WWIDs are unsafe because a controller must never resolve two disks to one ID.
+          # A stable identifier is useful only when it resolves to exactly one disk.
           $duplicates = @($records |
             Where-Object { $_.Identity } |
             Group-Object Identity |
@@ -146,33 +169,99 @@ jobs:
             if ($record.Identity -and $duplicates -contains $record.Identity) {
               $record.Status = 'BLOCKED'
               $record.Reason = (@($record.Reason, 'duplicate-stable-identity') |
-                Where-Object { $_ } ) -join ','
+                Where-Object { $_ }) -join ','
             }
           }
 
+          $blocked = @($records | Where-Object { $_.Status -ne 'CANDIDATE' })
+          $gate = if ($blocked.Count -eq 0) { 'IDENTITY_CERTIFIED' } else { 'BLOCKED' }
+          $report = [ordered]@{
+            schemaVersion = 'storage.layersentry.io/v1alpha1'
+            generatedAt = [DateTime]::UtcNow.ToString('o')
+            sourceCommit = $env:GITHUB_SHA
+            sourceRun = $env:GITHUB_RUN_ID
+            identityGate = $gate
+            initializationAllowed = $false
+            blockedDevices = $blocked.Count
+            devices = @($records)
+          }
+
+          $reportPath = Join-Path $env:RUNNER_TEMP 'layersentry-storage-inventory.json'
+          $json = $report | ConvertTo-Json -Depth 12
+          [IO.File]::WriteAllText($reportPath, $json, (New-Object Text.UTF8Encoding($false)))
+
           Write-Host '===== STORAGE IDENTITY CERTIFICATION ====='
-          $records | Format-Table Node,Device,Size,Identity,Status,Reason -AutoSize
+          $records | Format-Table Node,Device,Size,Identity,Status,Reason,ExistingDataEvidence -AutoSize
+          Write-Host "STORAGE_IDENTITY_CERTIFICATION=$gate"
+          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
 
           @(
             '## LayerSentry Storage Identity Certification',
             '',
-            '| Node | Device | Size | Stable identity | Status | Reason |',
-            '|---|---|---:|---|---|---|'
+            "Identity gate: **$gate**",
+            '',
+            'Initialization allowed: **false**',
+            '',
+            '| Node | Device | Size | Stable identity | Status | Reason | Existing-data evidence |',
+            '|---|---|---:|---|---|---|---|'
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
           foreach ($record in $records) {
             $id = if ($record.Identity) { $record.Identity } else { 'NONE' }
             $reason = if ($record.Reason) { $record.Reason } else { '-' }
-            "| $($record.Node) | $($record.Device) | $($record.Size) | $id | $($record.Status) | $reason |" |
+            $e = if ($record.ExistingDataEvidence) { $record.ExistingDataEvidence } else { '-' }
+            "| $($record.Node) | $($record.Device) | $($record.Size) | $id | $($record.Status) | $reason | $e |" |
               Add-Content -Path $env:GITHUB_STEP_SUMMARY
           }
 
-          $blocked = @($records | Where-Object { $_.Status -ne 'CANDIDATE' })
-          if ($blocked.Count -gt 0) {
-            Write-Host "STORAGE_IDENTITY_CERTIFICATION=BLOCKED"
-            Write-Host "STORAGE_INITIALIZATION_ALLOWED=false"
-            throw "$($blocked.Count) of $($records.Count) data disks failed the persistent identity/data-safety gate"
+          "report_path=$reportPath" | Add-Content -Path $env:GITHUB_OUTPUT
+          "blocked_count=$($blocked.Count)" | Add-Content -Path $env:GITHUB_OUTPUT
+          "identity_gate=$gate" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: Publish read-only inventory to Storage Management API surface
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          foreach ($path in @($env:KUBECTL, $env:KUBECONFIG, '${{ steps.certify.outputs.report_path }}')) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
           }
 
-          Write-Host 'STORAGE_IDENTITY_CERTIFICATION=PASS'
-          Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
-          Write-Host 'IDENTITY_GATE_NOTE=Identity certification alone never authorizes destructive initialization.'
+          & $env:KUBECTL get namespace cozy-system -o name | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'cozy-system namespace is unavailable' }
+
+          $reportPath = '${{ steps.certify.outputs.report_path }}'
+          $manifest = (& $env:KUBECTL -n cozy-system create configmap layersentry-storage-inventory \
+            "--from-file=inventory.json=$reportPath" --dry-run=client -o yaml 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw 'failed to render storage inventory ConfigMap' }
+          $manifest | & $env:KUBECTL apply -f - | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to publish storage inventory ConfigMap' }
+
+          & $env:KUBECTL -n cozy-system label configmap layersentry-storage-inventory \
+            app.kubernetes.io/part-of=layersentry \
+            layersentry.io/storage-inventory=true --overwrite | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'failed to label storage inventory ConfigMap' }
+
+          $published = (& $env:KUBECTL -n cozy-system get configmap layersentry-storage-inventory -o json | ConvertFrom-Json)
+          $payload = $published.data.'inventory.json' | ConvertFrom-Json
+          if ([string]$payload.sourceCommit -ne $env:GITHUB_SHA) {
+            throw "published sourceCommit $($payload.sourceCommit) does not match $env:GITHUB_SHA"
+          }
+          if ([bool]$payload.initializationAllowed) {
+            throw 'safety violation: published inventory unexpectedly enables initialization'
+          }
+          Write-Host "STORAGE_INVENTORY_CONFIGMAP=PASS gate=$($payload.identityGate) blocked=$($payload.blockedDevices)"
+
+      - name: Enforce non-destructive boundary
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Get-Content '${{ steps.certify.outputs.report_path }}' -Raw | ConvertFrom-Json
+          if ([bool]$report.initializationAllowed) {
+            throw 'safety violation: identity workflow must never authorize initialization'
+          }
+          if ([string]$report.identityGate -eq 'BLOCKED') {
+            Write-Host "STORAGE_SAFETY_STATE=BLOCKED blockedDevices=$($report.blockedDevices)"
+            Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+          } else {
+            Write-Host 'STORAGE_SAFETY_STATE=IDENTITY_CERTIFIED'
+            Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
+            Write-Host 'NO_DESTRUCTIVE_ACTION_TAKEN=true'
+          }
