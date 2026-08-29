@@ -77,7 +77,10 @@ spec:
             - --cookie-secure=true
             - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
             - --skip-provider-button
-            - --scope=openid email profile offline_access
+            # Keep dashboard sessions bound to the Keycloak SSO session. In
+            # particular, do not request offline_access: an offline refresh
+            # token can outlive logout and preserve stale Kubernetes claims.
+            - --scope=openid email profile
             {{- if eq $oidcInsecureSkipVerify "true" }}
             - --ssl-insecure-skip-verify=true
             {{- end }}
