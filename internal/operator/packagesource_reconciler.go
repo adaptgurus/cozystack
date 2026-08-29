@@ -450,8 +450,20 @@ func (r *PackageSourceReconciler) updateStatus(ctx context.Context, packageSourc
 		return ctrl.Result{}, fmt.Errorf("failed to get ArtifactGenerator: %w", err)
 	}
 
-	// Find Ready condition in ArtifactGenerator
+	// Ready alone is insufficient: independently compare the current Flux
+	// source hash with source-watcher's persisted source state before trusting it.
 	readyCondition := meta.FindStatusCondition(ag.Status.Conditions, "Ready")
+	sourceDiverged, currentSourceDigest, err := r.artifactGeneratorSourceDiverged(ctx, ag)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("compare current source state with ArtifactGenerator status: %w", err)
+	}
+	realUpstreamFailure := readyCondition != nil && readyCondition.Status == metav1.ConditionFalse && readyCondition.Reason != reasonRecoveryForced
+	initialGraceActive := false
+	if readyCondition == nil {
+		initialGraceActive = ag.CreationTimestamp.Time.Add(stuckGracePeriod).After(now)
+	} else if readyCondition.Status == metav1.ConditionUnknown && readyCondition.ObservedGeneration == ag.Generation {
+		initialGraceActive = readyCondition.LastTransitionTime.Time.Add(stuckGracePeriod).After(now)
+	}
 
 	// Route to the recovery state machine if any of the following holds:
 	//
@@ -503,7 +515,12 @@ func (r *PackageSourceReconciler) updateStatus(ctx context.Context, packageSourc
 	isProgressingInRecovery := attempts > 0 && readyCondition != nil &&
 		readyCondition.Status == metav1.ConditionUnknown &&
 		readyCondition.ObservedGeneration == ag.Generation
-	if isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now) {
+	healthyCurrent := readyCondition != nil && readyCondition.Status == metav1.ConditionTrue && !sourceDiverged
+	recoverySignal := isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now)
+	if sourceDiverged && !initialGraceActive {
+		recoverySignal = true
+	}
+	if !healthyCurrent && !realUpstreamFailure && recoverySignal {
 		repaired, err := r.repairLostArtifactGeneratorReady(ctx, ag, readyCondition, now)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("prove and repair lost ArtifactGenerator Ready condition: %w", err)
@@ -514,11 +531,11 @@ func (r *PackageSourceReconciler) updateStatus(ctx context.Context, packageSourc
 				"packageSource", packageSource.Name, "artifactGenerator", ag.Name,
 				"observedSourcesDigest", ag.Status.ObservedSourcesDigest, "inventory", len(ag.Status.Inventory))
 		} else {
-			logger.V(1).Info("routing to recovery state machine",
-				"packageSource", packageSource.Name,
-				"artifactGenerator", ag.Name,
-				"attempts", attempts,
-				"ownMarker", isOwnMarker,
+			logger.V(1).Info("routing to status-safe recovery state machine",
+				"packageSource", packageSource.Name, "artifactGenerator", ag.Name,
+				"attempts", attempts, "sourceDiverged", sourceDiverged,
+				"currentSourceDigest", currentSourceDigest, "observedSourcesDigest", ag.Status.ObservedSourcesDigest,
+				"initialGraceActive", initialGraceActive, "ownMarker", isOwnMarker,
 				"progressingInRecovery", isProgressingInRecovery)
 			return r.maybeRecoverArtifactGenerator(ctx, packageSource, ag, readyCondition, now)
 		}
@@ -666,9 +683,8 @@ func (r *PackageSourceReconciler) maybeRecoverArtifactGenerator(ctx context.Cont
 	switch decision.action {
 	case recoveryActionGiveUp:
 		message := fmt.Sprintf(
-			"ArtifactGenerator %s/%s has been stuck with a lost Ready condition through %d force-drift attempts; "+
-				"source-watcher is not recovering. See https://github.com/fluxcd/pkg/issues/934. "+
-				"An operator must restart source-watcher or manually inspect the ArtifactGenerator.",
+			"ArtifactGenerator %s/%s did not converge through %d bounded reconcile requests; "+
+				"Cozystack did not mutate Flux-owned status while recovery was in flight. Inspect source-watcher and the ArtifactGenerator before further mutation.",
 			ag.Namespace, ag.Name, maxRecoveryAttempts,
 		)
 		meta.SetStatusCondition(&packageSource.Status.Conditions, metav1.Condition{
@@ -678,7 +694,7 @@ func (r *PackageSourceReconciler) maybeRecoverArtifactGenerator(ctx context.Cont
 			Message:            message,
 			ObservedGeneration: packageSource.Generation,
 		})
-		logger.Info("source-watcher stalled after bounded force-drift attempts; surfacing PackageSource Ready=False",
+		logger.Info("source-watcher stalled after bounded reconcile requests; surfacing PackageSource Ready=False",
 			"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempts", attempts)
 		return ctrl.Result{}, r.Status().Update(ctx, packageSource)
 
@@ -688,8 +704,8 @@ func (r *PackageSourceReconciler) maybeRecoverArtifactGenerator(ctx context.Cont
 			Status: metav1.ConditionUnknown,
 			Reason: reasonAwaitingRecovery,
 			Message: fmt.Sprintf(
-				"ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+
-					"force-drift %d/%d issued, waiting for source-watcher to rebuild.",
+				"ArtifactGenerator source/status convergence is pending; "+
+					"reconcile request %d/%d issued without mutating Flux-owned status.",
 				attempts, maxRecoveryAttempts,
 			),
 			ObservedGeneration: packageSource.Generation,
@@ -701,16 +717,16 @@ func (r *PackageSourceReconciler) maybeRecoverArtifactGenerator(ctx context.Cont
 
 	case recoveryActionForce:
 		nextAttempt := attempts + 1
-		if err := r.forceArtifactGeneratorDrift(ctx, ag, now, nextAttempt); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to force ArtifactGenerator drift: %w", err)
+		if err := r.requestArtifactGeneratorRecovery(ctx, ag, now, nextAttempt); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to request ArtifactGenerator recovery: %w", err)
 		}
 		meta.SetStatusCondition(&packageSource.Status.Conditions, metav1.Condition{
 			Type:   "Ready",
 			Status: metav1.ConditionUnknown,
 			Reason: reasonAwaitingRecovery,
 			Message: fmt.Sprintf(
-				"ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+
-					"forced drift on AG.status.conditions[Ready]=False (attempt %d/%d) so source-watcher rebuilds.",
+				"ArtifactGenerator source/status convergence is pending; "+
+					"requested source-watcher reconcile (attempt %d/%d) without writing AG.status.",
 				nextAttempt, maxRecoveryAttempts,
 			),
 			ObservedGeneration: packageSource.Generation,
@@ -718,7 +734,7 @@ func (r *PackageSourceReconciler) maybeRecoverArtifactGenerator(ctx context.Cont
 		if err := r.Status().Update(ctx, packageSource); err != nil {
 			return ctrl.Result{}, err
 		}
-		logger.Info("forced source-watcher drift via AG status Ready=False patch",
+		logger.Info("requested source-watcher recovery without mutating Flux-owned status",
 			"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt)
 		return ctrl.Result{RequeueAfter: backoffFor(nextAttempt)}, nil
 

@@ -296,7 +296,7 @@ func TestBackoffFor(t *testing.T) {
 		attempt int
 		want    time.Duration
 	}{
-		{0, 30 * time.Second},  // clamped to attempt=1
+		{0, 30 * time.Second}, // clamped to attempt=1
 		{1, 30 * time.Second},
 		{2, 60 * time.Second},
 		{3, 120 * time.Second},
@@ -635,7 +635,7 @@ func TestClearRecoveryTracking_PatchFailure_Rollback(t *testing.T) {
 	original := map[string]string{
 		annotationRecoveryAttempts: "3",
 		annotationLastRecoveryAt:   referenceTime.UTC().Format(time.RFC3339Nano),
-		"unrelated":               "value",
+		"unrelated":                "value",
 	}
 	ag := newAG(cloneAnnotations(original))
 	baseClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(ag).Build()
@@ -856,10 +856,8 @@ func stuckAG(t *testing.T, annotations map[string]string, readyTransition time.T
 }
 
 // TestMaybeRecoverArtifactGenerator_ForceBranch pins the first-time-stuck path:
-// no prior tracking annotations, so decideRecovery returns Force, we patch
-// Ready=False on the AG's status, update tracking annotations, and set the
-// PackageSource to Unknown/AwaitingSourceWatcherRecovery with a RequeueAfter
-// equal to backoffFor(1).
+// no prior tracking annotations, so decideRecovery enqueues source-watcher via
+// metadata only, leaves Flux-owned Ready status untouched, and applies backoff.
 func TestMaybeRecoverArtifactGenerator_ForceBranch(t *testing.T) {
 	ps := &cozyv1alpha1.PackageSource{
 		ObjectMeta: metav1.ObjectMeta{Name: "example", Namespace: "cozy-system", Generation: 1},
@@ -877,17 +875,20 @@ func TestMaybeRecoverArtifactGenerator_ForceBranch(t *testing.T) {
 		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, backoffFor(1))
 	}
 
-	// AG status.Ready must be False in apiserver.
+	// Flux-owned Ready status must remain unchanged; recovery is metadata-only.
 	persistedAG := &sourcewatcherv1beta1.ArtifactGenerator{}
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ag), persistedAG); err != nil {
 		t.Fatalf("Get AG: %v", err)
 	}
 	agReady := meta.FindStatusCondition(persistedAG.Status.Conditions, "Ready")
-	if agReady == nil || agReady.Status != metav1.ConditionFalse {
-		t.Errorf("AG Ready in apiserver = %+v, want False", agReady)
+	if agReady == nil || agReady.Status != metav1.ConditionUnknown || agReady.Reason != "Progressing" {
+		t.Errorf("AG Ready in apiserver = %+v, want unchanged Unknown/Progressing", agReady)
 	}
 	if persistedAG.Annotations[annotationRecoveryAttempts] != "1" {
 		t.Errorf("AG %s annotation = %q, want 1", annotationRecoveryAttempts, persistedAG.Annotations[annotationRecoveryAttempts])
+	}
+	if persistedAG.Annotations[annotationFluxRequestedAt] == "" {
+		t.Error("AG reconcile request annotation missing")
 	}
 
 	// PackageSource must be Unknown/AwaitingSourceWatcherRecovery in apiserver.
