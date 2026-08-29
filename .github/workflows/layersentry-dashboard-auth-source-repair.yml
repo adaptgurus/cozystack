@@ -1,0 +1,348 @@
+name: LayerSentry Dashboard Auth Source Repair
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-auth-source-repair.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-auth-source-repair
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  repair:
+    name: Repair and certify live dashboard tenant authentication on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+      PACKAGE_URL: oci://ghcr.io/adaptgurus/cozystack/cozystack-packages
+      OLD_DIGEST: sha256:737cbd0236fc6ace523a43c6eea1418a53ae4449ebe6c41a24e32c35ac1c8473
+      DESIRED_DIGEST: sha256:652e8b0e41260ae9f35d1a1ba33b5d304156ae19f7689f7df52be30b835b954f
+    steps:
+      - name: Preflight tenant and live package source safety boundary
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not (Test-Path $env:KUBECTL)){throw "kubectl missing: $env:KUBECTL"}
+          if(-not (Test-Path $env:KUBECONFIG)){throw "kubeconfig missing: $env:KUBECONFIG"}
+
+          $tenant=& $env:KUBECTL -n tenant-root get tenant.apps.cozystack.io layersentry -o json | ConvertFrom-Json
+          if(-not $tenant){throw 'layersentry tenant is missing'}
+          $tenantReady=@($tenant.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)
+          if($tenantReady.status -ne 'True'){throw "layersentry tenant is not Ready: $($tenantReady.message)"}
+          $nsPhase=(& $env:KUBECTL get namespace tenant-layersentry -o jsonpath='{.status.phase}' | Out-String).Trim()
+          if($nsPhase -ne 'Active'){throw "tenant-layersentry is not Active: $nsPhase"}
+
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+            if(-not $src){throw "OCIRepository cozy-system/$name is missing"}
+            $digest=[string]$src.spec.ref.digest
+            if($digest -notin @($env:OLD_DIGEST,$env:DESIRED_DIGEST)){
+              throw "SAFETY_ABORT: cozy-system/$name digest changed concurrently to unexpected value $digest"
+            }
+            if([string]$src.spec.url -ne $env:PACKAGE_URL){throw "SAFETY_ABORT: cozy-system/$name URL is unexpected: $($src.spec.url)"}
+            Write-Host "PREFLIGHT_SOURCE name=$name digest=$digest ready=$((@($src.status.conditions)|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1).status)"
+          }
+
+          $dep=& $env:KUBECTL -n cozy-system get deployment cozystack-operator -o json | ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers | Where-Object {$_.name -eq 'cozystack-operator'} | Select-Object -First 1)
+          if(-not $op){throw 'cozystack-operator container is missing'}
+          $sourceRef=@($op.args | Where-Object {$_ -like '--platform-source-ref=*'} | Select-Object -First 1)
+          if($sourceRef -and $sourceRef -notin @("--platform-source-ref=digest=$env:OLD_DIGEST","--platform-source-ref=digest=$env:DESIRED_DIGEST")){
+            throw "SAFETY_ABORT: operator source ref changed concurrently: $sourceRef"
+          }
+          Write-Host "TENANT_PREFLIGHT=PASS tenant=tenant-root/layersentry namespace=tenant-layersentry"
+          Write-Host 'SOURCE_SAFETY_BOUNDARY=PASS'
+
+      - name: Point operator and platform package sources to dashboard-only overlay
+        run: |
+          $ErrorActionPreference='Stop'
+
+          $dep=& $env:KUBECTL -n cozy-system get deployment cozystack-operator -o json | ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers | Where-Object {$_.name -eq 'cozystack-operator'} | Select-Object -First 1)
+          $newArgs=New-Object System.Collections.Generic.List[string]
+          $urlSeen=$false; $refSeen=$false
+          foreach($arg in @($op.args)){
+            $s=[string]$arg
+            if($s -like '--platform-source-url=*'){$newArgs.Add("--platform-source-url=$env:PACKAGE_URL");$urlSeen=$true}
+            elseif($s -like '--platform-source-ref=*'){$newArgs.Add("--platform-source-ref=digest=$env:DESIRED_DIGEST");$refSeen=$true}
+            else{$newArgs.Add($s)}
+          }
+          if(-not $urlSeen){$newArgs.Add("--platform-source-url=$env:PACKAGE_URL")}
+          if(-not $refSeen){$newArgs.Add("--platform-source-ref=digest=$env:DESIRED_DIGEST")}
+          $depPatch=[ordered]@{spec=[ordered]@{template=[ordered]@{spec=[ordered]@{containers=@([ordered]@{name='cozystack-operator';args=@($newArgs)})}}}}}
+          $depFile=Join-Path $env:RUNNER_TEMP 'operator-source-patch.json'
+          $depPatch | ConvertTo-Json -Depth 30 | Set-Content -Path $depFile -Encoding UTF8
+          & $env:KUBECTL -n cozy-system patch deployment cozystack-operator --type=strategic "--patch-file=$depFile" | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to update cozystack-operator package source args'}
+          & $env:KUBECTL -n cozy-system rollout status deployment/cozystack-operator --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'cozystack-operator rollout failed'}
+
+          $sourcePatch=[ordered]@{spec=[ordered]@{url=$env:PACKAGE_URL;ref=[ordered]@{digest=$env:DESIRED_DIGEST;tag=$null;semver=$null;semverFilter=$null}}}
+          $srcFile=Join-Path $env:RUNNER_TEMP 'source-patch.json'
+          $sourcePatch | ConvertTo-Json -Depth 10 | Set-Content -Path $srcFile -Encoding UTF8
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            & $env:KUBECTL -n cozy-system patch ocirepository.source.toolkit.fluxcd.io $name --type=merge "--patch-file=$srcFile" | Out-Null
+            if($LASTEXITCODE -ne 0){throw "failed to update OCIRepository $name"}
+          }
+
+          $deadline=(Get-Date).AddMinutes(4)
+          do{
+            Start-Sleep -Seconds 5
+            $allReady=$true
+            foreach($name in @('cozystack-platform','cozystack-packages')){
+              $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+              $digest=[string]$src.spec.ref.digest
+              $ready=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+              $revision=[string]$src.status.artifact.revision
+              if($digest -ne $env:DESIRED_DIGEST -or $ready.status -ne 'True' -or $revision -notmatch [regex]::Escape($env:DESIRED_DIGEST)){$allReady=$false}
+            }
+            if($allReady){break}
+          }while((Get-Date) -lt $deadline)
+          if(-not $allReady){throw 'dashboard-only OCI package overlay did not become Ready on both platform sources'}
+          Write-Host "LIVE_ROOT_SOURCE=PASS digest=$env:DESIRED_DIGEST"
+          Write-Host "LIVE_PACKAGE_SOURCE=PASS digest=$env:DESIRED_DIGEST"
+
+      - name: Reconcile platform and prove package source durability
+        run: |
+          $ErrorActionPreference='Stop'
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          & $env:KUBECTL -n cozy-system annotate helmrelease cozystack-platform "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to request cozystack-platform reconcile'}
+          $deadline=(Get-Date).AddMinutes(6)
+          do{
+            Start-Sleep -Seconds 5
+            $hr=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json | ConvertFrom-Json
+            $handled=[string]$hr.status.lastHandledReconcileAt
+            $ready=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            if($handled -eq $stamp -and $ready.status -eq 'True'){break}
+          }while((Get-Date) -lt $deadline)
+          if($handled -ne $stamp -or $ready.status -ne 'True'){throw "cozystack-platform reconcile did not complete Ready: handled=$handled ready=$($ready.status)"}
+
+          Start-Sleep -Seconds 15
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+            if([string]$src.spec.ref.digest -ne $env:DESIRED_DIGEST){throw "$name source reverted after platform reconcile: $($src.spec.ref.digest)"}
+            $readySrc=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            if($readySrc.status -ne 'True'){throw "$name source is not Ready after platform reconcile"}
+          }
+          $dep=& $env:KUBECTL -n cozy-system get deployment cozystack-operator -o json | ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          if((@($op.args|Where-Object{$_ -eq "--platform-source-ref=digest=$env:DESIRED_DIGEST"})).Count -ne 1){throw 'operator source ref reverted unexpectedly'}
+          Write-Host 'PACKAGE_SOURCE_DURABILITY=PASS'
+
+      - name: Remove temporary dashboard override and reconcile corrected dashboard chart
+        run: |
+          $ErrorActionPreference='Stop'
+          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+          if(-not $hr){throw 'cozy-dashboard/dashboard HelmRelease missing'}
+          $oldRevision=[string]$hr.status.lastAttemptedRevision
+          Write-Host "DASHBOARD_REVISION_BEFORE=$oldRevision"
+
+          $keep=New-Object System.Collections.ArrayList
+          foreach($renderer in @($hr.spec.postRenderers)){
+            $isTemporary=$false
+            if($renderer.kustomize -and $renderer.kustomize.patches){
+              foreach($p in @($renderer.kustomize.patches)){
+                $kind=[string]$p.target.kind; $name=[string]$p.target.name; $text=[string]$p.patch
+                if(($kind -eq 'Deployment' -and $name -eq 'incloud-web-gatekeeper' -and $text -match '--scope=openid email profile') -or
+                   ($kind -eq 'KeycloakClient' -and $name -eq 'dashboard-client' -and $text -match 'optionalClientScopes')){$isTemporary=$true}
+              }
+            }
+            if(-not $isTemporary){[void]$keep.Add($renderer)}
+          }
+          if(@($hr.spec.postRenderers).Count -ne @($keep).Count){
+            $patch=[ordered]@{spec=[ordered]@{postRenderers=@($keep)}}
+            $file=Join-Path $env:RUNNER_TEMP 'dashboard-remove-temp-renderer.json'
+            $patch | ConvertTo-Json -Depth 40 | Set-Content -Path $file -Encoding UTF8
+            & $env:KUBECTL -n cozy-dashboard patch helmrelease dashboard --type=merge "--patch-file=$file" | Out-Null
+            if($LASTEXITCODE -ne 0){throw 'failed to remove temporary dashboard auth postRenderer'}
+          }
+
+          $deadline=(Get-Date).AddMinutes(6)
+          $newRevision=$oldRevision
+          do{
+            Start-Sleep -Seconds 5
+            $cur=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+            $newRevision=[string]$cur.status.lastAttemptedRevision
+            if($newRevision -and $newRevision -ne $oldRevision){break}
+          }while((Get-Date) -lt $deadline)
+          if($newRevision -eq $oldRevision){
+            Write-Host 'Dashboard revision did not change automatically; requesting exact reconcile against refreshed source.'
+          }else{Write-Host "DASHBOARD_REVISION_AFTER_SOURCE=$newRevision"}
+
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          & $env:KUBECTL -n cozy-dashboard annotate helmrelease dashboard "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to request dashboard reconcile'}
+          $deadline=(Get-Date).AddMinutes(6)
+          do{
+            Start-Sleep -Seconds 5
+            $cur=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+            $handled=[string]$cur.status.lastHandledReconcileAt
+            $ready=@($cur.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            if($handled -eq $stamp -and $ready.status -eq 'True'){break}
+          }while((Get-Date) -lt $deadline)
+          if($handled -ne $stamp -or $ready.status -ne 'True'){throw "dashboard reconcile did not complete Ready: handled=$handled ready=$($ready.status) message=$($ready.message)"}
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/incloud-web-gatekeeper --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'dashboard gatekeeper rollout failed'}
+
+          $dep=& $env:KUBECTL -n cozy-dashboard get deployment incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'auth-proxy'}|Select-Object -First 1)
+          $scope=@($proxy.args|Where-Object{$_ -like '--scope=*'})
+          if($scope.Count -ne 1 -or $scope[0] -ne '--scope=openid email profile'){throw "live dashboard scope is still wrong: $($scope -join ',')"}
+          if(($proxy.args -join ' ') -match 'offline_access'){throw 'offline_access remains in live dashboard gatekeeper args'}
+          $kc=& $env:KUBECTL -n cozy-dashboard get keycloakclient dashboard-client -o json 2>$null | ConvertFrom-Json
+          if($kc -and @($kc.spec.optionalClientScopes) -contains 'offline_access'){throw 'offline_access remains in live Keycloak dashboard client'}
+          Write-Host "DASHBOARD_SCOPE=PASS scope=$($scope[0])"
+          Write-Host 'DASHBOARD_KEYCLOAK_SCOPE=PASS offlineAccess=false'
+
+      - name: Prove corrected dashboard survives a second Helm reconciliation
+        run: |
+          $ErrorActionPreference='Stop'
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          & $env:KUBECTL -n cozy-dashboard annotate helmrelease dashboard "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to request dashboard durability reconcile'}
+          $deadline=(Get-Date).AddMinutes(6)
+          do{
+            Start-Sleep -Seconds 5
+            $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+            $handled=[string]$hr.status.lastHandledReconcileAt
+            $ready=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            if($handled -eq $stamp -and $ready.status -eq 'True'){break}
+          }while((Get-Date) -lt $deadline)
+          if($handled -ne $stamp -or $ready.status -ne 'True'){throw 'dashboard durability reconcile did not finish Ready'}
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/incloud-web-gatekeeper --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'dashboard gatekeeper not Ready after durability reconcile'}
+          $dep=& $env:KUBECTL -n cozy-dashboard get deployment incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'auth-proxy'}|Select-Object -First 1)
+          $scope=@($proxy.args|Where-Object{$_ -like '--scope=*'})
+          if($scope.Count -ne 1 -or $scope[0] -ne '--scope=openid email profile' -or (($proxy.args -join ' ') -match 'offline_access')){throw 'dashboard auth configuration reverted on second Helm reconcile'}
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+            if([string]$src.spec.ref.digest -ne $env:DESIRED_DIGEST){throw "$name source reverted during dashboard durability test"}
+          }
+          Write-Host 'DASHBOARD_HELM_DURABILITY=PASS'
+
+      - name: Invalidate stale OAuth sessions and restart dashboard gatekeeper
+        run: |
+          $ErrorActionPreference='Stop'
+          $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+          $bytes=New-Object byte[] 16
+          $rng.GetBytes($bytes)
+          $cookie=[Convert]::ToBase64String($bytes)
+          Write-Output "::add-mask::$cookie"
+          $encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookie))
+          Write-Output "::add-mask::$encoded"
+          $patch=[ordered]@{data=[ordered]@{cookieSecret=$encoded}}
+          $file=Join-Path $env:RUNNER_TEMP 'dashboard-cookie-rotate.json'
+          $patch | ConvertTo-Json -Compress -Depth 5 | Set-Content -Path $file -Encoding ASCII
+          & $env:KUBECTL -n cozy-dashboard patch secret dashboard-auth-config --type=merge "--patch-file=$file" | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'dashboard cookie secret rotation failed'}
+          & $env:KUBECTL -n cozy-dashboard rollout restart deployment/incloud-web-gatekeeper | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'dashboard gatekeeper restart request failed'}
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/incloud-web-gatekeeper --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'dashboard gatekeeper restart did not become Ready'}
+          Write-Host 'STALE_OAUTH_SESSION_INVALIDATION=PASS'
+
+      - name: Prove fresh browser OAuth session and Kubernetes APIs end to end
+        run: |
+          $ErrorActionPreference='Stop'
+          $pwdB64=(& $env:KUBECTL -n cozy-system get secret layersentry-gui-admin-password -o jsonpath='{.data.password}' | Out-String).Trim()
+          if(-not $pwdB64){throw 'layersentry GUI admin password secret is empty'}
+          Write-Output "::add-mask::$pwdB64"
+          $password=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pwdB64))
+          Write-Output "::add-mask::$password"
+
+          $ing=& $env:KUBECTL -n cozy-dashboard get ingress -o json | ConvertFrom-Json
+          $dashboardHost=@($ing.items | ForEach-Object {$_.spec.rules[0].host} | Where-Object {$_ -like 'dashboard.*'} | Select-Object -First 1)
+          if(-not $dashboardHost){throw 'dashboard ingress host not found'}
+          $startUrl="https://$dashboardHost/marketplace/tenant"
+          $jar=Join-Path $env:RUNNER_TEMP 'dashboard-browser.cookies'
+
+          $h1=Join-Path $env:RUNNER_TEMP 'start.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h1 -o NUL --max-time 30 $startUrl
+          if($LASTEXITCODE -ne 0){throw 'initial dashboard request failed'}
+          $headers1=Get-Content $h1 -Raw
+          $status1=[regex]::Match($headers1,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $location1=([regex]::Match($headers1,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if($status1 -notin @('302','303') -or $location1 -notmatch '/realms/cozy/protocol/openid-connect/auth'){throw "dashboard did not initiate OIDC login: HTTP=$status1 location=$location1"}
+
+          $h2=Join-Path $env:RUNNER_TEMP 'login.headers'; $b2=Join-Path $env:RUNNER_TEMP 'login.html'
+          & curl.exe -k -sS -c $jar -b $jar -D $h2 -o $b2 --max-time 30 $location1
+          if($LASTEXITCODE -ne 0){throw 'Keycloak login page request failed'}
+          $html=Get-Content $b2 -Raw
+          $form=[regex]::Match($html,'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if(-not $form.Success){$form=[regex]::Match($html,'<form[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)}
+          if(-not $form.Success){throw 'Keycloak login form not found'}
+          $action=[Net.WebUtility]::HtmlDecode($form.Groups[1].Value)
+
+          $h3=Join-Path $env:RUNNER_TEMP 'submit.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h3 -o NUL --max-time 30 -X POST $action --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'credentialId='
+          if($LASTEXITCODE -ne 0){throw 'Keycloak credential submit failed'}
+          $headers3=Get-Content $h3 -Raw
+          $status3=[regex]::Match($headers3,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $location3=([regex]::Match($headers3,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if($status3 -notin @('302','303') -or $location3 -notlike "https://$dashboardHost/oauth2/callback*"){throw "credentials did not reach dashboard callback: HTTP=$status3 location=$location3"}
+
+          $h4=Join-Path $env:RUNNER_TEMP 'callback.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h4 -o NUL --max-time 30 $location3
+          if($LASTEXITCODE -ne 0){throw 'dashboard OAuth callback failed'}
+          $headers4=Get-Content $h4 -Raw
+          $status4=[regex]::Match($headers4,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $location4=([regex]::Match($headers4,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if($status4 -notin @('302','303')){throw "dashboard callback returned HTTP $status4"}
+          if((Get-Content $jar -Raw) -notmatch "`tkc-access`t"){throw 'authenticated dashboard session cookie kc-access is missing'}
+
+          if(-not $location4){$location4='/marketplace/tenant'}
+          if($location4.StartsWith('/')){$finalUrl="https://$dashboardHost$location4"}else{$finalUrl=$location4}
+          $h5=Join-Path $env:RUNNER_TEMP 'page.headers'; $b5=Join-Path $env:RUNNER_TEMP 'page.html'
+          & curl.exe -k -sS -c $jar -b $jar -D $h5 -o $b5 --max-time 30 $finalUrl
+          if($LASTEXITCODE -ne 0){throw 'authenticated dashboard page request failed'}
+          $status5=[regex]::Match((Get-Content $h5 -Raw),'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if($status5 -ne '200'){throw "authenticated dashboard page returned HTTP $status5"}
+
+          function Get-DashboardApi([string]$path,[string]$label){
+            $body=Join-Path $env:RUNNER_TEMP ($label+'.json')
+            $code=(& curl.exe -k -sS -c $jar -b $jar -o $body -w '%{http_code}' --max-time 30 "https://$dashboardHost$path" | Out-String).Trim()
+            if($LASTEXITCODE -ne 0){throw "$label transport failed"}
+            if($code -ne '200'){$safe=(Get-Content $body -Raw -ErrorAction SilentlyContinue);throw "$label expected HTTP 200, got $code body=$safe"}
+            return (Get-Content $body -Raw)
+          }
+
+          $tenantRaw=Get-DashboardApi '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 'tenantnamespaces'
+          $tenantObj=$tenantRaw | ConvertFrom-Json
+          $names=@($tenantObj.items|ForEach-Object{$_.metadata.name})
+          if('tenant-layersentry' -notin $names){throw "tenant-layersentry missing from browser TenantNamespaces response: $($names -join ',')"}
+
+          $planRaw=Get-DashboardApi '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/plans.backups.cozystack.io' 'plan-crd'
+          $plan=$planRaw | ConvertFrom-Json
+          $storage=@($plan.spec.versions|Where-Object{$_.storage -eq $true}|Select-Object -First 1)
+          if(-not $storage.schema.openAPIV3Schema.properties.spec){throw 'Plan CRD browser response lacks spec schema'}
+
+          [void](Get-DashboardApi '/apis/cozystack.io/v1alpha1/applicationdefinitions' 'applicationdefinitions')
+
+          $ssarBody=Join-Path $env:RUNNER_TEMP 'ssar-request.json'
+          @{apiVersion='authorization.k8s.io/v1';kind='SelfSubjectAccessReview';spec=@{resourceAttributes=@{verb='list';group='core.cozystack.io';resource='tenantnamespaces'}}} | ConvertTo-Json -Depth 8 | Set-Content -Path $ssarBody -Encoding UTF8
+          $ssarOut=Join-Path $env:RUNNER_TEMP 'ssar-response.json'
+          $ssarCode=(& curl.exe -k -sS -c $jar -b $jar -o $ssarOut -w '%{http_code}' --max-time 30 -X POST -H 'Content-Type: application/json' --data-binary "@$ssarBody" "https://$dashboardHost/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" | Out-String).Trim()
+          if($LASTEXITCODE -ne 0 -or $ssarCode -notin @('200','201')){throw "SSAR expected authenticated 200/201, got $ssarCode"}
+          $ssar=Get-Content $ssarOut -Raw | ConvertFrom-Json
+          if($ssar.status.allowed -ne $true){throw "fresh dashboard user is authenticated but TenantNamespaces SSAR is not allowed: reason=$($ssar.status.reason)"}
+
+          Write-Host "BROWSER_DASHBOARD_PAGE=PASS http=200 url=$finalUrl"
+          Write-Host 'BROWSER_TENANTNAMESPACES_API=PASS http=200 contains=tenant-layersentry'
+          Write-Host 'BROWSER_PLAN_CRD_API=PASS http=200 specSchema=true'
+          Write-Host 'BROWSER_APPLICATIONDEFINITIONS_API=PASS http=200'
+          Write-Host "BROWSER_SSAR_API=PASS http=$ssarCode allowed=true"
+          Write-Host 'LAYERSENTRY_DASHBOARD_TENANT_AUTH_REPAIR=PASS'
