@@ -1,0 +1,107 @@
+name: LayerSentry Storage Phase 1 Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-phase1-preflight.yml
+
+concurrency:
+  group: layersentry-storage-phase1-preflight
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  preflight:
+    name: Read-only storage and auth preflight on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      TALOSCTL: C:\hci-tools\talosctl.exe
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+
+    steps:
+      - name: Verify branch, tooling and node health
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          foreach ($path in @($env:KUBECTL, $env:TALOSCTL, $env:KUBECONFIG, $env:TALOSCONFIG)) {
+            if (-not (Test-Path $path)) { throw "required TESTSER asset missing: $path" }
+          }
+          & $env:KUBECTL wait --for=condition=Ready nodes --all --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'one or more Kubernetes nodes are not Ready' }
+          & $env:KUBECTL get nodes -o wide
+
+      - name: Capture platform OIDC, publishing and optional package state
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = (& $env:KUBECTL get package.cozystack.io cozystack.cozystack-platform -o json | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0) { throw 'failed to read cozystack.cozystack-platform' }
+          $values = $pkg.spec.components.platform.values
+          Write-Host "variant=$($pkg.spec.variant)"
+          Write-Host "root_host=$($values.publishing.host)"
+          Write-Host ('exposed_services=' + (@($values.publishing.exposedServices) -join ','))
+          Write-Host ('enabled_packages=' + (@($values.bundles.enabledPackages) -join ','))
+          if ($null -ne $values.authentication -and $null -ne $values.authentication.oidc) {
+            Write-Host "oidc_enabled=$($values.authentication.oidc.enabled)"
+            Write-Host "oidc_insecure_skip_verify=$($values.authentication.oidc.insecureSkipVerify)"
+          } else {
+            Write-Host 'oidc_enabled=false (implicit default)'
+          }
+          Write-Host '===== CERTIFICATE ISSUERS ====='
+          & $env:KUBECTL get clusterissuer,issuer -A 2>$null
+          Write-Host '===== CERT-MANAGER ====='
+          & $env:KUBECTL get pods -A -o wide 2>$null | Select-String -Pattern 'cert-manager' -CaseSensitive:$false
+
+      - name: Verify Talos HCI storage extensions on every node
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @('drbd','zfs')
+          $informational = @('iscsi','multipath','nfs','nvme','trident-iscsi','util-linux')
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            Write-Host "===== TALOS STORAGE EXTENSIONS $node ====="
+            $text = (& $env:TALOSCTL -n $node -e $node get extensions -o yaml 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "talos extension discovery failed on $node" }
+            Write-Host $text
+            foreach ($name in $required) {
+              if ($text -notmatch [regex]::Escape($name)) { throw "required Blockstor host extension '$name' not found on $node" }
+              Write-Host "required_extension[$node][$name]=present"
+            }
+            foreach ($name in $informational) {
+              $present = $text -match [regex]::Escape($name)
+              Write-Host "storage_extension[$node][$name]=$present"
+            }
+            Write-Host "===== TALOS STORAGE SERVICES $node ====="
+            (& $env:TALOSCTL -n $node -e $node get services -o yaml 2>$null) | Select-String -Pattern 'drbd|zfs|iscsi|multipath|nfs|nvme' -CaseSensitive:$false
+          }
+          Write-Host 'BLOCKSTOR_HOST_EXTENSION_PREFLIGHT=PASS'
+
+      - name: Capture existing storage control planes without mutation
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '===== STORAGE CLASSES ====='
+          & $env:KUBECTL get storageclass -o wide
+          Write-Host '===== CSI DRIVERS ====='
+          & $env:KUBECTL get csidriver -o wide
+          Write-Host '===== SNAPSHOT CLASSES ====='
+          & $env:KUBECTL get volumesnapshotclass -o wide 2>$null
+          Write-Host '===== LINSTOR/PIRAEUS ====='
+          & $env:KUBECTL get package.cozystack.io cozystack.linstor -o yaml
+          if ($LASTEXITCODE -ne 0) { throw 'current LINSTOR Package is missing' }
+          & $env:KUBECTL get pods -A -o wide | Select-String -Pattern 'linstor|piraeus|drbd' -CaseSensitive:$false
+          Write-Host '===== BLOCKSTOR PRESENCE CHECK ====='
+          & $env:KUBECTL get namespace blockstor-system 2>$null
+          & $env:KUBECTL get crd -o name 2>$null | Select-String -Pattern 'blockstor.cozystack.io' -CaseSensitive:$false
+          Write-Host 'SAFETY: no disks, pools, VGs, zpools, DRBD resources, iSCSI sessions or NVMe connections were created or modified.'
+          Write-Host 'STORAGE_PHASE1_PREFLIGHT=PASS'
