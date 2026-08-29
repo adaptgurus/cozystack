@@ -4,12 +4,23 @@
 image:
   repository: ghcr.io/cozystack/cozystack/linstor-gui
   tag: v1.6.2@sha256:6e11829de86709f5e21636cdd1a1ada1239a7dcc1741f91e9d95d9f6ade603a2
+
 ## @section Deployment
 ## @param replicas Number of linstor-gui replicas
 replicas: 1
+
 ## @section LINSTOR controller connection
 ## @param linstor.endpoint In-cluster URL of the LINSTOR controller REST API (HTTPS, mTLS)
 ## @param linstor.clientSecret Kubernetes Secret with `tls.crt`, `tls.key`, `ca.crt` used as the mTLS client certificate against the LINSTOR controller. Created by the `linstor` package.
 linstor:
   endpoint: "https://linstor-controller.cozy-linstor.svc:3371"
   clientSecret: "linstor-client-tls"
+
+## @section LayerSentry Storage Fabric
+## @param gateway.endpoint In-cluster LINSTOR Gateway REST endpoint. The browser never talks to this address directly; nginx exposes it same-origin under `/gateway/`.
+## @param gateway.provisioningEnabled Enables mutating Gateway API methods through the GUI proxy. Keep false until persistent disk identity and Gateway agent prerequisites are certified.
+## @param gateway.provisioningDisabledReason User-facing explanation shown while Storage Fabric is in safe/read-only mode.
+gateway:
+  endpoint: "http://linstor-gateway.cozy-linstor.svc:8337"
+  provisioningEnabled: false
+  provisioningDisabledReason: "Provisioning is locked until stable persistent disk identity (WWID/by-id) and LINSTOR Gateway agent prerequisites are certified."
