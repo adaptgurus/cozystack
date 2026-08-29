@@ -55,6 +55,7 @@ jobs:
               "storageclasses",
               "volumesnapshots",
               "layersentry-storage-inventory",
+              "layersentry-storage-backend-inventory",
           )
           for token in required:
               if token not in text:
