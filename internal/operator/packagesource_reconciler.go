@@ -504,13 +504,24 @@ func (r *PackageSourceReconciler) updateStatus(ctx context.Context, packageSourc
 		readyCondition.Status == metav1.ConditionUnknown &&
 		readyCondition.ObservedGeneration == ag.Generation
 	if isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now) {
-		logger.V(1).Info("routing to recovery state machine",
-			"packageSource", packageSource.Name,
-			"artifactGenerator", ag.Name,
-			"attempts", attempts,
-			"ownMarker", isOwnMarker,
-			"progressingInRecovery", isProgressingInRecovery)
-		return r.maybeRecoverArtifactGenerator(ctx, packageSource, ag, readyCondition, now)
+		repaired, err := r.repairLostArtifactGeneratorReady(ctx, ag, readyCondition, now)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("prove and repair lost ArtifactGenerator Ready condition: %w", err)
+		}
+		if repaired {
+			readyCondition = meta.FindStatusCondition(ag.Status.Conditions, "Ready")
+			logger.Info("repaired source-watcher lost Ready condition from current-source artifact evidence",
+				"packageSource", packageSource.Name, "artifactGenerator", ag.Name,
+				"observedSourcesDigest", ag.Status.ObservedSourcesDigest, "inventory", len(ag.Status.Inventory))
+		} else {
+			logger.V(1).Info("routing to recovery state machine",
+				"packageSource", packageSource.Name,
+				"artifactGenerator", ag.Name,
+				"attempts", attempts,
+				"ownMarker", isOwnMarker,
+				"progressingInRecovery", isProgressingInRecovery)
+			return r.maybeRecoverArtifactGenerator(ctx, packageSource, ag, readyCondition, now)
+		}
 	}
 
 	// AG is not stuck and not mid-recovery — clear any recovery-tracking
@@ -1019,4 +1030,3 @@ func (r *PackageSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&sourcewatcherv1beta1.ArtifactGenerator{}).
 		Complete(r)
 }
-
