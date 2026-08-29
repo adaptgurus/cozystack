@@ -25,6 +25,13 @@ function pod(name: string, namespace: string, phase: string, ready: boolean, res
   }
 }
 
+async function backendRow(name: string): Promise<HTMLElement> {
+  const cell = await screen.findByText(name, { selector: "td", exact: true })
+  const row = cell.closest("tr")
+  if (!row) throw new Error(`backend row not found for ${name}`)
+  return row
+}
+
 function makeClient(): K8sClient {
   const client = new K8sClient()
   vi.spyOn(client, "list").mockImplementation(async (_group, _version, plural) => {
@@ -70,17 +77,17 @@ describe("StorageBackendHealth", () => {
 
     expect(await screen.findByText("Backend operational health")).toBeInTheDocument()
 
-    const linstorRow = await screen.findByRole("row", { name: /LINSTOR/ })
+    const linstorRow = await backendRow("LINSTOR")
     expect(within(linstorRow).getByText("2 classes")).toBeInTheDocument()
     expect(within(linstorRow).getByText("4 / 4 ready")).toBeInTheDocument()
     expect(within(linstorRow).getByText("Workloads ready")).toBeInTheDocument()
 
-    const blockstorRow = screen.getByRole("row", { name: /Blockstor/ })
+    const blockstorRow = await backendRow("Blockstor")
     expect(within(blockstorRow).getByText("None observed")).toBeInTheDocument()
     expect(within(blockstorRow).getByText("2 / 5 ready")).toBeInTheDocument()
     expect(within(blockstorRow).getByText("Degraded")).toBeInTheDocument()
 
-    const nfsRow = screen.getByRole("row", { name: /NFS service/ })
+    const nfsRow = await backendRow("NFS service")
     expect(within(nfsRow).getByText("2 / 2 ready")).toBeInTheDocument()
     expect(within(nfsRow).getByText("Workloads ready")).toBeInTheDocument()
 
