@@ -247,14 +247,12 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --backend-logout-url=http://keycloak-http.cozy-keycloak.svc:8080/realms/cozy/protocol/openid-connect/logout?id_token_hint={id_token}
 
-  - it: creates client + cookie Secrets and a KeycloakClient CRD
+  - it: creates client + cookie Secrets and a KeycloakClient when OIDC is enabled
     template: templates/keycloakclient.yaml
-    capabilities:
-      apiVersions:
-        - v1.edp.epam.com/v1
     set:
       _cluster:
         root-host: dev10.example.org
+        oidc-enabled: "true"
     asserts:
       - hasDocuments:
           count: 3
@@ -284,11 +282,12 @@ tests:
           path: spec.redirectUris
           content: "https://linstor-gui.dev10.example.org/oauth2/callback/*"
 
-  - it: skips the KeycloakClient CRD when the API is absent, still creates Secrets
+  - it: skips the KeycloakClient when OIDC is disabled, still creates Secrets
     template: templates/keycloakclient.yaml
     set:
       _cluster:
         root-host: example.org
+        oidc-enabled: "false"
     asserts:
       - hasDocuments:
           count: 2
