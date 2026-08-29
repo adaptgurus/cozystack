@@ -101,7 +101,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Storage Management component tests
-        run: pnpm --filter @cozystack/console test -- StorageManagementOverview.test.tsx
+        run: pnpm --filter @cozystack/console exec vitest run src/components/storage/StorageManagementOverview.test.tsx
 
       - name: Type-check console
         run: pnpm --filter @cozystack/console typecheck
