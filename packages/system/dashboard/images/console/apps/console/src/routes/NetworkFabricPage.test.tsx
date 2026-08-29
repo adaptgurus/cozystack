@@ -94,14 +94,14 @@ describe("NetworkFabricPage", () => {
     expect(screen.getByText(/build host and vm networking without yaml/i)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Purpose/i })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Review/i })).toBeInTheDocument()
-    expect(await screen.findByText("Live 3/3")).toBeInTheDocument()
+    expect((await screen.findAllByText("Live 3/3")).length).toBeGreaterThanOrEqual(2)
     expect(screen.queryByText(/machine:\s*network/i)).not.toBeInTheDocument()
   })
 
   it("walks from purpose into live node selection", async () => {
     renderNetworkFabric()
 
-    expect(await screen.findByText("Live 3/3")).toBeInTheDocument()
+    expect((await screen.findAllByText("Live 3/3")).length).toBeGreaterThanOrEqual(2)
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
     expect(screen.getByRole("heading", { name: "2. Select nodes" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /sen1/i })).toBeInTheDocument()
