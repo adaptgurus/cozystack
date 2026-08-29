@@ -1,0 +1,49 @@
+name: LayerSentry VM Artifact Chain Diagnose
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-vm-artifact-chain-diagnose.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Trace dashboard artifact generation chain
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($n in @('cozystack-platform','cozystack-packages')){
+            $o=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $n -o json|ConvertFrom-Json
+            $r=@($o.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+            Write-Host "OCI name=$n specDigest=$($o.spec.ref.digest) revision=$($o.status.artifact.revision) ready=$($r.status)"
+          }
+          $ps=& $env:KUBECTL get packagesource.cozystack.io cozystack.cozystack-engine -o json|ConvertFrom-Json
+          Write-Host "PACKAGESOURCE name=$($ps.metadata.name) generation=$($ps.metadata.generation) observed=$($ps.status.observedGeneration) sourceKind=$($ps.spec.sourceRef.kind) sourceName=$($ps.spec.sourceRef.name) sourceNS=$($ps.spec.sourceRef.namespace) sourcePath=$($ps.spec.sourceRef.path)"
+          Write-Host "PACKAGESOURCE_STATUS=$($ps.status|ConvertTo-Json -Depth 12 -Compress)"
+          $ag=& $env:KUBECTL -n cozy-system get artifactgenerator.source.extensions.fluxcd.io cozystack.cozystack-engine -o json|ConvertFrom-Json
+          $agr=@($ag.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          Write-Host "ARTIFACTGENERATOR name=$($ag.metadata.name) generation=$($ag.metadata.generation) observed=$($ag.status.observedGeneration) ready=$($agr.status) reason=$($agr.reason) message=$($agr.message)"
+          Write-Host "ARTIFACTGENERATOR_STATUS=$($ag.status|ConvertTo-Json -Depth 15 -Compress)"
+          $ea=& $env:KUBECTL -n cozy-system get externalartifact.source.extensions.fluxcd.io cozystack-cozystack-engine-oidc-dashboard -o json|ConvertFrom-Json
+          $ear=@($ea.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          Write-Host "EXTERNALARTIFACT name=$($ea.metadata.name) generation=$($ea.metadata.generation) observed=$($ea.status.observedGeneration) ready=$($ear.status) revision=$($ea.status.artifact.revision) digest=$($ea.status.artifact.digest) url=$($ea.status.artifact.url)"
+          Write-Host "EXTERNALARTIFACT_META labels=$($ea.metadata.labels|ConvertTo-Json -Compress) annotations=$($ea.metadata.annotations|ConvertTo-Json -Compress)"
+          $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json|ConvertFrom-Json
+          $hrr=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          $dep=& $env:KUBECTL -n cozy-dashboard get deploy cozy-dashboard-console -o json|ConvertFrom-Json
+          $img=[string](@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'console'}|Select-Object -First 1).image)
+          Write-Host "HELMRELEASE chartRef=$($hr.spec.chartRef.name) attempted=$($hr.status.lastAttemptedRevision) applied=$($hr.status.lastAppliedRevision) ready=$($hrr.status) postRenderers=$(@($hr.spec.postRenderers).Count)"
+          Write-Host "HELM_VALUES=$($hr.spec.values|ConvertTo-Json -Depth 20 -Compress)"
+          Write-Host "DEPLOYED_CONSOLE_IMAGE=$img"
