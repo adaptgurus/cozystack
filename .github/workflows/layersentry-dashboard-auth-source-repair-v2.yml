@@ -1,0 +1,148 @@
+name: LayerSentry Dashboard Auth Source Repair V2
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-auth-source-repair-v2.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-auth-source-repair-v2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  repair-source:
+    name: Switch live dashboard package source safely on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      PACKAGE_URL: oci://ghcr.io/adaptgurus/cozystack/cozystack-packages
+      OLD_DIGEST: sha256:737cbd0236fc6ace523a43c6eea1418a53ae4449ebe6c41a24e32c35ac1c8473
+      DESIRED_DIGEST: sha256:652e8b0e41260ae9f35d1a1ba33b5d304156ae19f7689f7df52be30b835b954f
+    steps:
+      - name: Preflight existing tenant and source digests
+        run: |
+          $ErrorActionPreference='Stop'
+          $tenant=& $env:KUBECTL -n tenant-root get tenant.apps.cozystack.io layersentry -o json | ConvertFrom-Json
+          $ready=@($tenant.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          if($ready.status -ne 'True'){throw 'layersentry tenant is not Ready'}
+          $phase=(& $env:KUBECTL get ns tenant-layersentry -o jsonpath='{.status.phase}' | Out-String).Trim()
+          if($phase -ne 'Active'){throw "tenant-layersentry is not Active: $phase"}
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+            $digest=[string]$src.spec.ref.digest
+            if($digest -notin @($env:OLD_DIGEST,$env:DESIRED_DIGEST)){throw "SAFETY_ABORT unexpected $name digest: $digest"}
+            if([string]$src.spec.url -ne $env:PACKAGE_URL){throw "SAFETY_ABORT unexpected $name URL: $($src.spec.url)"}
+            Write-Host "PRE_SOURCE name=$name digest=$digest"
+          }
+          Write-Host 'SOURCE_REPAIR_PREFLIGHT=PASS'
+
+      - name: Update cozystack operator desired platform source
+        run: |
+          $ErrorActionPreference='Stop'
+          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json | ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          if(-not $op){throw 'cozystack-operator container missing'}
+          $newArgs=New-Object System.Collections.Generic.List[string]
+          $urlSeen=$false
+          $refSeen=$false
+          foreach($arg in @($op.args)){
+            $s=[string]$arg
+            if($s -like '--platform-source-url=*'){
+              $newArgs.Add("--platform-source-url=$env:PACKAGE_URL")
+              $urlSeen=$true
+            } elseif($s -like '--platform-source-ref=*'){
+              $newArgs.Add("--platform-source-ref=digest=$env:DESIRED_DIGEST")
+              $refSeen=$true
+            } else {
+              $newArgs.Add($s)
+            }
+          }
+          if(-not $urlSeen){$newArgs.Add("--platform-source-url=$env:PACKAGE_URL")}
+          if(-not $refSeen){$newArgs.Add("--platform-source-ref=digest=$env:DESIRED_DIGEST")}
+
+          $container=[ordered]@{
+            name='cozystack-operator'
+            args=@($newArgs)
+          }
+          $podSpec=[ordered]@{containers=@($container)}
+          $template=[ordered]@{spec=$podSpec}
+          $spec=[ordered]@{template=$template}
+          $patch=[ordered]@{spec=$spec}
+          $file=Join-Path $env:RUNNER_TEMP 'operator-source.json'
+          $patch | ConvertTo-Json -Depth 20 | Set-Content -Path $file -Encoding UTF8
+          & $env:KUBECTL -n cozy-system patch deploy cozystack-operator --type=strategic "--patch-file=$file" | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to patch cozystack-operator'}
+          & $env:KUBECTL -n cozy-system rollout status deploy/cozystack-operator --timeout=180s
+          if($LASTEXITCODE -ne 0){throw 'cozystack-operator rollout failed'}
+          $after=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json | ConvertFrom-Json
+          $afterOp=@($after.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          if((@($afterOp.args|Where-Object{$_ -eq "--platform-source-ref=digest=$env:DESIRED_DIGEST"})).Count -ne 1){throw 'operator source ref not updated'}
+          Write-Host 'OPERATOR_PLATFORM_SOURCE=PASS'
+
+      - name: Update root and cloned OCI package sources
+        run: |
+          $ErrorActionPreference='Stop'
+          $ref=[ordered]@{
+            digest=$env:DESIRED_DIGEST
+            tag=$null
+            semver=$null
+            semverFilter=$null
+          }
+          $spec=[ordered]@{url=$env:PACKAGE_URL;ref=$ref}
+          $patch=[ordered]@{spec=$spec}
+          $file=Join-Path $env:RUNNER_TEMP 'oci-source.json'
+          $patch | ConvertTo-Json -Depth 10 | Set-Content -Path $file -Encoding UTF8
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            & $env:KUBECTL -n cozy-system patch ocirepository.source.toolkit.fluxcd.io $name --type=merge "--patch-file=$file" | Out-Null
+            if($LASTEXITCODE -ne 0){throw "failed to patch OCIRepository $name"}
+          }
+          $deadline=(Get-Date).AddMinutes(4)
+          do{
+            Start-Sleep -Seconds 5
+            $ok=$true
+            foreach($name in @('cozystack-platform','cozystack-packages')){
+              $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+              $r=@($src.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+              $revision=[string]$src.status.artifact.revision
+              if([string]$src.spec.ref.digest -ne $env:DESIRED_DIGEST -or $r.status -ne 'True' -or $revision -notmatch [regex]::Escape($env:DESIRED_DIGEST)){$ok=$false}
+            }
+          }while(-not $ok -and (Get-Date) -lt $deadline)
+          if(-not $ok){throw 'dashboard-only overlay sources did not become Ready'}
+          Write-Host "LIVE_ROOT_SOURCE=PASS digest=$env:DESIRED_DIGEST"
+          Write-Host "LIVE_PACKAGE_SOURCE=PASS digest=$env:DESIRED_DIGEST"
+
+      - name: Reconcile platform and prove package source survives
+        run: |
+          $ErrorActionPreference='Stop'
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          & $env:KUBECTL -n cozy-system annotate helmrelease cozystack-platform "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'failed to request platform reconcile'}
+          $deadline=(Get-Date).AddMinutes(5)
+          do{
+            Start-Sleep -Seconds 5
+            $hr=& $env:KUBECTL -n cozy-system get helmrelease cozystack-platform -o json | ConvertFrom-Json
+            $handled=[string]$hr.status.lastHandledReconcileAt
+            $r=@($hr.status.conditions|Where-Object{$_.type -eq 'Ready'}|Select-Object -First 1)
+          }while(($handled -ne $stamp -or $r.status -ne 'True') -and (Get-Date) -lt $deadline)
+          if($handled -ne $stamp -or $r.status -ne 'True'){throw "platform reconcile failed: handled=$handled ready=$($r.status)"}
+          Start-Sleep -Seconds 15
+          foreach($name in @('cozystack-platform','cozystack-packages')){
+            $src=& $env:KUBECTL -n cozy-system get ocirepository.source.toolkit.fluxcd.io $name -o json | ConvertFrom-Json
+            if([string]$src.spec.ref.digest -ne $env:DESIRED_DIGEST){throw "$name reverted to $($src.spec.ref.digest)"}
+          }
+          $dep=& $env:KUBECTL -n cozy-system get deploy cozystack-operator -o json | ConvertFrom-Json
+          $op=@($dep.spec.template.spec.containers|Where-Object{$_.name -eq 'cozystack-operator'}|Select-Object -First 1)
+          if((@($op.args|Where-Object{$_ -eq "--platform-source-ref=digest=$env:DESIRED_DIGEST"})).Count -ne 1){throw 'operator source ref reverted'}
+          Write-Host 'PACKAGE_SOURCE_DURABILITY=PASS'
+          Write-Host 'LAYERSENTRY_DASHBOARD_SOURCE_REPAIR=PASS'
