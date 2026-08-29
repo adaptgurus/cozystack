@@ -40,19 +40,28 @@ jobs:
           if ($scopeIndex -lt 0) { throw 'gatekeeper has no --scope argument' }
           Write-Host "Current scope: $($args[$scopeIndex])"
           if ($args[$scopeIndex] -ne '--scope=openid email profile groups') {
-            $patch = @(
-              [ordered]@{
-                op = 'replace'
-                path = "/spec/template/spec/containers/0/args/$scopeIndex"
-                value = '--scope=openid email profile groups'
-              },
-              [ordered]@{
-                op = 'add'
-                path = '/spec/template/metadata/annotations/layersentry.io~1oauth-fix'
-                value = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+            $args[$scopeIndex] = '--scope=openid email profile groups'
+            $patchObject = [ordered]@{
+              spec = [ordered]@{
+                template = [ordered]@{
+                  metadata = [ordered]@{
+                    annotations = [ordered]@{
+                      'layersentry.io/oauth-fix' = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+                    }
+                  }
+                  spec = [ordered]@{
+                    containers = @(
+                      [ordered]@{
+                        name = 'auth-proxy'
+                        args = $args
+                      }
+                    )
+                  }
+                }
               }
-            ) | ConvertTo-Json -Depth 10 -Compress
-            & $env:KUBECTL patch deployment linstor-gui-gatekeeper -n cozy-linstor --type=json -p $patch
+            }
+            $patch = $patchObject | ConvertTo-Json -Depth 20 -Compress
+            & $env:KUBECTL patch deployment linstor-gui-gatekeeper -n cozy-linstor --type=strategic -p $patch
             if ($LASTEXITCODE -ne 0) { throw 'failed to patch live gatekeeper scope' }
           }
 
@@ -61,7 +70,7 @@ jobs:
           $live = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
           $liveArgs = @($live.spec.template.spec.containers[0].args)
           if ('--scope=openid email profile groups' -notin $liveArgs) { throw 'live gatekeeper does not contain corrected scope' }
-          if ($liveArgs -match 'offline_access') { throw 'live gatekeeper still requests offline_access' }
+          if (($liveArgs -join "`n") -match 'offline_access') { throw 'live gatekeeper still requests offline_access' }
           Write-Host 'LIVE_OAUTH_SCOPE_FIX=PASS scope=openid,email,profile,groups'
 
       - name: Certify complete browser-style OAuth login with cookies
@@ -99,9 +108,9 @@ jobs:
           $loginHtml = Get-Content $loginBody -Raw
           $loginStatus = [regex]::Match((Get-Content $loginHeaders -Raw), 'HTTP/\S+\s+(\d{3})').Groups[1].Value
           if ($loginStatus -ne '200') { throw "Keycloak login page returned HTTP $loginStatus" }
-          $actionMatch = [regex]::Match($loginHtml, '<form[^>]+(?:id="kc-form-login"[^>]+)?action="([^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          $actionMatch = [regex]::Match($loginHtml, '<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
           if (-not $actionMatch.Success) {
-            $actionMatch = [regex]::Match($loginHtml, 'action="([^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $actionMatch = [regex]::Match($loginHtml, '<form[^>]+action="([^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
           }
           if (-not $actionMatch.Success) { throw 'could not locate Keycloak login form action' }
           $formAction = [Net.WebUtility]::HtmlDecode($actionMatch.Groups[1].Value)
@@ -154,7 +163,7 @@ jobs:
       - name: Verify no new offline-token callback failures
         run: |
           $ErrorActionPreference = 'Stop'
-          $logs = (& $env:KUBECTL logs deployment/linstor-gui-gatekeeper -n cozy-linstor --since=5m 2>&1 | Out-String)
+          $logs = (& $env:KUBECTL logs deployment/linstor-gui-gatekeeper -n cozy-linstor --since=2m 2>&1 | Out-String)
           $recent = $logs -split "`r?`n" | Where-Object { $_ -match '(?i)Offline tokens not allowed|Error redeeming code.*invalid_grant' }
           if ($recent.Count -gt 0) {
             $recent | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
