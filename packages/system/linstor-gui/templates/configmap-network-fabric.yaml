@@ -1,0 +1,1284 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linstor-gui-network-fabric
+  labels:
+    {{- include "linstor-gui.labels" . | nindent 4 }}
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta name="color-scheme" content="light dark">
+      <title>LayerSentry Network Fabric</title>
+      <style>
+        :root {
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color-scheme: dark;
+          --bg: #0b1020;
+          --panel: #121a2d;
+          --panel-2: #17223a;
+          --panel-3: #0d1628;
+          --text: #eef3ff;
+          --muted: #9eabc4;
+          --line: #293650;
+          --line-2: #3a4a69;
+          --accent: #67e8f9;
+          --accent-soft: rgba(103,232,249,.10);
+          --good: #5ee6a8;
+          --warn: #f6c65b;
+          --bad: #ff7b8a;
+          --violet: #c4b5fd;
+          --shadow: 0 18px 55px rgba(0,0,0,.28);
+        }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          min-height: 100vh;
+          color: var(--text);
+          background:
+            radial-gradient(circle at 82% 0%, rgba(103,232,249,.10), transparent 34rem),
+            radial-gradient(circle at 5% 25%, rgba(196,181,253,.07), transparent 28rem),
+            linear-gradient(180deg, #0b1020 0%, #0d1425 100%);
+        }
+        button, input, select, textarea { font: inherit; }
+        button, a { -webkit-tap-highlight-color: transparent; }
+        a { color: inherit; }
+        .shell { max-width: 1500px; margin: 0 auto; padding: 26px; }
+        .topbar {
+          display: flex; align-items: center; justify-content: space-between; gap: 18px;
+          margin-bottom: 20px;
+        }
+        .brand { display: flex; align-items: center; gap: 13px; min-width: 0; }
+        .logo {
+          width: 44px; height: 44px; border-radius: 13px; flex: 0 0 auto;
+          display: grid; place-items: center; font-weight: 850; letter-spacing: -.05em;
+          border: 1px solid rgba(103,232,249,.36);
+          background: linear-gradient(145deg, rgba(103,232,249,.26), rgba(103,232,249,.05));
+          box-shadow: inset 0 0 30px rgba(103,232,249,.08);
+        }
+        .brand h1 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+        .brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+        .top-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+        .button {
+          appearance: none; border: 1px solid var(--line); border-radius: 10px;
+          background: rgba(255,255,255,.035); color: var(--text);
+          padding: 9px 13px; cursor: pointer; text-decoration: none; transition: .16s ease;
+        }
+        .button:hover:not(:disabled) { border-color: #51617d; transform: translateY(-1px); }
+        .button.primary {
+          border-color: rgba(103,232,249,.42); background: var(--accent-soft); color: #c9faff;
+        }
+        .button.good {
+          border-color: rgba(94,230,168,.38); background: rgba(94,230,168,.08); color: #c7f8de;
+        }
+        .button.danger {
+          border-color: rgba(255,123,138,.38); background: rgba(255,123,138,.07); color: #ffc2ca;
+        }
+        .button:disabled { opacity: .40; cursor: not-allowed; transform: none; }
+        .hero {
+          border: 1px solid var(--line); border-radius: 17px; background: rgba(18,26,45,.86);
+          box-shadow: var(--shadow); padding: 21px; display: grid; grid-template-columns: 1fr auto;
+          align-items: center; gap: 20px; margin-bottom: 15px;
+        }
+        .hero h2 { margin: 0 0 7px; font-size: 25px; letter-spacing: -.035em; }
+        .hero p { margin: 0; color: var(--muted); max-width: 900px; line-height: 1.5; font-size: 13px; }
+        .mode {
+          min-width: 225px; padding: 13px 15px; border-radius: 12px;
+          border: 1px solid rgba(246,198,91,.34); background: rgba(246,198,91,.07);
+        }
+        .mode strong { display: block; color: var(--warn); text-transform: uppercase; letter-spacing: .08em; font-size: 12px; }
+        .mode span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+        .tabs {
+          display: flex; gap: 7px; overflow-x: auto; padding: 4px 0 12px; scrollbar-width: thin;
+        }
+        .tab {
+          white-space: nowrap; border: 1px solid var(--line); background: rgba(255,255,255,.022);
+          color: var(--muted); border-radius: 999px; padding: 8px 12px; cursor: pointer; font-size: 12px;
+        }
+        .tab.active { color: #c9faff; border-color: rgba(103,232,249,.38); background: var(--accent-soft); }
+        .notice {
+          border: 1px solid rgba(246,198,91,.28); background: rgba(246,198,91,.06);
+          color: #f6dfa8; border-radius: 11px; padding: 12px 13px; font-size: 12px; line-height: 1.48;
+        }
+        .good-note {
+          border-color: rgba(94,230,168,.30); background: rgba(94,230,168,.06); color: #bdf7dc;
+        }
+        .bad-note {
+          border-color: rgba(255,123,138,.33); background: rgba(255,123,138,.07); color: #ffc2c9;
+        }
+        .grid { display: grid; gap: 14px; }
+        .metrics { grid-template-columns: repeat(4,minmax(0,1fr)); margin-bottom: 14px; }
+        .two { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        .three { grid-template-columns: repeat(3,minmax(0,1fr)); }
+        .card {
+          border: 1px solid var(--line); border-radius: 14px; background: rgba(18,26,45,.82);
+          padding: 17px; min-width: 0;
+        }
+        .eyebrow { color: var(--muted); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; }
+        .metric { display: flex; gap: 8px; align-items: baseline; margin-top: 9px; }
+        .metric strong { font-size: 25px; letter-spacing: -.045em; }
+        .metric span { color: var(--muted); font-size: 11px; }
+        .state { display: flex; align-items: center; gap: 7px; color: var(--muted); margin-top: 9px; font-size: 11px; }
+        .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--muted); flex: 0 0 auto; }
+        .dot.good { background: var(--good); box-shadow: 0 0 13px rgba(94,230,168,.42); }
+        .dot.warn { background: var(--warn); }
+        .dot.bad { background: var(--bad); }
+        .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+        .section-head h3 { margin: 0; font-size: 15px; }
+        .section-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+        .pill {
+          display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+          border-radius: 999px; padding: 4px 8px; color: var(--muted); font-size: 10px; white-space: nowrap;
+        }
+        .pill.good { color: #bdf7dc; border-color: rgba(94,230,168,.30); background: rgba(94,230,168,.05); }
+        .pill.warn { color: #f6dfa8; border-color: rgba(246,198,91,.30); background: rgba(246,198,91,.05); }
+        .pill.bad { color: #ffc2c9; border-color: rgba(255,123,138,.30); background: rgba(255,123,138,.05); }
+        .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 11px; }
+        table { width: 100%; border-collapse: collapse; min-width: 720px; font-size: 11px; }
+        th, td { padding: 10px 11px; text-align: left; border-bottom: 1px solid rgba(41,54,80,.78); }
+        th { color: var(--muted); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 650; }
+        tr:last-child td { border-bottom: 0; }
+        td strong { font-weight: 680; }
+        .muted { color: var(--muted); }
+        .empty {
+          padding: 25px; border: 1px dashed var(--line-2); border-radius: 11px; text-align: center;
+          color: var(--muted); font-size: 12px; line-height: 1.5;
+        }
+        .topology {
+          display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 6px 1px 12px;
+        }
+        .topo-node {
+          min-width: 150px; max-width: 220px; flex: 1 0 150px; border: 1px solid var(--line);
+          background: var(--panel-3); border-radius: 11px; padding: 12px;
+        }
+        .topo-node strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
+        .topo-node small { display: block; color: var(--muted); margin-top: 4px; font-size: 10px; line-height: 1.4; }
+        .topo-arrow { align-self: center; color: #60708d; font-size: 18px; flex: 0 0 auto; }
+        .quick-actions { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+        .quick {
+          border: 1px solid var(--line); background: rgba(255,255,255,.018); border-radius: 11px;
+          padding: 13px; cursor: pointer; color: var(--text); text-align: left;
+        }
+        .quick:hover { border-color: #51617d; }
+        .quick b { display: block; font-size: 12px; }
+        .quick span { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; line-height: 1.4; }
+        .footer { margin-top: 17px; color: var(--muted); font-size: 10px; text-align: right; }
+        .modal-backdrop {
+          display: none; position: fixed; inset: 0; z-index: 2147483600; padding: 18px;
+          background: rgba(3,7,18,.76); backdrop-filter: blur(5px); align-items: center; justify-content: center;
+        }
+        .modal-backdrop.open { display: flex; }
+        .dialog {
+          width: min(1040px,100%); max-height: calc(100vh - 36px); overflow: auto;
+          border: 1px solid #33425e; border-radius: 18px; background: #10192b; box-shadow: 0 30px 90px rgba(0,0,0,.55);
+        }
+        .dialog-head {
+          position: sticky; top: 0; z-index: 5; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px;
+          padding: 19px 22px 16px; border-bottom: 1px solid var(--line); background: #10192b;
+        }
+        .dialog-head h2 { margin: 0; font-size: 20px; letter-spacing: -.025em; }
+        .dialog-head p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+        .close {
+          width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--line-2);
+          background: transparent; color: var(--text); cursor: pointer; font-size: 19px;
+        }
+        .steps {
+          display: grid; grid-template-columns: repeat(9,minmax(70px,1fr)); gap: 6px; padding: 13px 22px 0;
+          overflow-x: auto;
+        }
+        .step {
+          border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; color: #7f8ca5; font-size: 9px;
+          white-space: nowrap;
+        }
+        .step.active { color: #c9faff; border-color: #4c8b9b; background: var(--accent-soft); }
+        .step.done { color: #9cebc8; border-color: rgba(94,230,168,.24); }
+        .dialog-body { padding: 19px 22px; }
+        .wizard-title { margin: 0 0 4px; font-size: 17px; }
+        .wizard-copy { margin: 0 0 15px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+        .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+        .span { grid-column: 1 / -1; }
+        .field { display: grid; gap: 6px; min-width: 0; }
+        .field label { font-size: 11px; font-weight: 680; }
+        .help { color: var(--muted); font-size: 10px; line-height: 1.45; }
+        .field input, .field select, .field textarea {
+          width: 100%; min-width: 0; border: 1px solid #33425e; background: #0c1424; color: var(--text);
+          border-radius: 9px; padding: 10px 11px; outline: none;
+        }
+        .field textarea { min-height: 86px; resize: vertical; }
+        .field input:focus, .field select:focus, .field textarea:focus {
+          border-color: #4c8b9b; box-shadow: 0 0 0 3px rgba(103,232,249,.08);
+        }
+        .choice-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+        .choice {
+          display: block; border: 1px solid var(--line); border-radius: 10px; padding: 11px; cursor: pointer;
+          background: rgba(255,255,255,.018);
+        }
+        .choice:has(input:checked) { border-color: rgba(103,232,249,.42); background: var(--accent-soft); }
+        .choice input { margin-right: 7px; }
+        .choice b { font-size: 11px; }
+        .choice small { display: block; color: var(--muted); margin: 5px 0 0 23px; font-size: 9px; line-height: 1.4; }
+        .checkrow { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.45; }
+        .checkrow input { margin-top: 2px; }
+        .validation-list { display: grid; gap: 7px; }
+        .validation-item {
+          display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 9px;
+          border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px;
+        }
+        .validation-item b { font-size: 10px; }
+        .validation-item small { color: var(--muted); font-size: 9px; }
+        .review-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+        .review-item { border: 1px solid var(--line); border-radius: 9px; padding: 10px; background: rgba(255,255,255,.018); }
+        .review-item b { display: block; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+        .review-item span { display: block; margin-top: 5px; font-size: 11px; overflow-wrap: anywhere; }
+        details { border: 1px solid var(--line); border-radius: 10px; background: #0a1323; }
+        summary { cursor: pointer; padding: 10px 12px; color: #cce6ed; font-size: 11px; }
+        pre {
+          margin: 0; border-top: 1px solid var(--line); padding: 13px; max-height: 300px; overflow: auto;
+          color: #cce6ed; font: 10px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; white-space: pre-wrap;
+        }
+        .rollout { display: grid; gap: 7px; }
+        .rollout-row {
+          display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center;
+          border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px;
+        }
+        .rollout-index {
+          width: 25px; height: 25px; border-radius: 999px; display: grid; place-items: center;
+          background: rgba(103,232,249,.08); color: #bff8ff; font-size: 9px;
+        }
+        .rollout-row b { display: block; font-size: 10px; }
+        .rollout-row small { display: block; color: var(--muted); margin-top: 2px; font-size: 9px; }
+        .error-box {
+          display: none; margin: 0 22px 14px; border: 1px solid rgba(255,123,138,.36);
+          background: rgba(255,123,138,.08); color: #ffc2c9; border-radius: 9px; padding: 10px 12px;
+          font-size: 11px; white-space: pre-wrap;
+        }
+        .error-box.show { display: block; }
+        .dialog-foot {
+          position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+          padding: 14px 22px 18px; border-top: 1px solid var(--line); background: #10192b;
+        }
+        .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+        .toast {
+          position: fixed; right: 22px; top: 22px; z-index: 2147483647; max-width: 430px;
+          border: 1px solid rgba(94,230,168,.35); background: #10291f; color: #c7f8de;
+          border-radius: 11px; padding: 12px 14px; box-shadow: 0 18px 45px rgba(0,0,0,.36); font-size: 11px;
+        }
+        @media (max-width: 1050px) {
+          .metrics, .quick-actions { grid-template-columns: repeat(2,minmax(0,1fr)); }
+          .review-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+          .three { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 720px) {
+          .shell { padding: 15px; }
+          .topbar, .hero { display: block; }
+          .top-actions { justify-content: flex-start; margin-top: 13px; }
+          .hero .mode { margin-top: 15px; }
+          .metrics, .two, .quick-actions, .form-grid, .choice-grid, .review-grid { grid-template-columns: 1fr; }
+          .span { grid-column: auto; }
+          .dialog-foot { align-items: flex-start; flex-direction: column; }
+          .dialog-actions { width: 100%; }
+          .dialog-actions .button { flex: 1; }
+        }
+      </style>
+    </head>
+    <body>
+      <main class="shell">
+        <header class="topbar">
+          <div class="brand">
+            <div class="logo" aria-hidden="true">LS</div>
+            <div>
+              <h1>LayerSentry Network Fabric</h1>
+              <p>GUI-first host, VLAN and VM network workflow</p>
+            </div>
+          </div>
+          <nav class="top-actions" aria-label="Network Fabric actions">
+            <a class="button" href="/storage-fabric/">Storage Fabric</a>
+            <a class="button" href="/">LINSTOR Console</a>
+            <button id="create-network" class="button primary" type="button">Create network</button>
+          </nav>
+        </header>
+
+        <section class="hero">
+          <div>
+            <h2>Build host and VM networking without YAML</h2>
+            <p>Create a draft topology from physical uplinks through bond/LACP, Linux bridge, VLAN, host IP/routes and VM Network. Local safety checks, topology preview and a staged rollout plan are available now; live host mutation remains fail-closed until a certified Network Fabric controller API is connected.</p>
+          </div>
+          <div class="mode">
+            <strong>Dry-run mode</strong>
+            <span>Live Apply locked · controller integration required</span>
+          </div>
+        </section>
+
+        <div class="tabs" role="tablist" aria-label="Network Fabric sections">
+          <button class="tab active" data-tab="overview" type="button">Overview</button>
+          <button class="tab" data-tab="interfaces" type="button">Interfaces</button>
+          <button class="tab" data-tab="bonds" type="button">Bonds</button>
+          <button class="tab" data-tab="bridges" type="button">Bridges</button>
+          <button class="tab" data-tab="vlans" type="button">VLANs</button>
+          <button class="tab" data-tab="vmnetworks" type="button">VM Networks</button>
+          <button class="tab" data-tab="iproutes" type="button">IP / Routes</button>
+          <button class="tab" data-tab="topology" type="button">Topology</button>
+          <button class="tab" data-tab="changes" type="button">Changes</button>
+        </div>
+
+        <section id="content" aria-live="polite"></section>
+        <div class="footer">LayerSentry Network Fabric · GUI workflow · live mutation intentionally locked until controller certification</div>
+      </main>
+
+      <div id="wizard-backdrop" class="modal-backdrop" role="presentation">
+        <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="wizard-heading">
+          <header class="dialog-head">
+            <div>
+              <h2 id="wizard-heading">Create Network</h2>
+              <p>NIC → Bond/LACP → Bridge → VLAN → IP/Routes → VM Network → Validate → Review → Safe Apply</p>
+            </div>
+            <button id="wizard-close" class="close" type="button" aria-label="Close wizard">×</button>
+          </header>
+          <div id="wizard-steps" class="steps" aria-label="Workflow steps"></div>
+          <div id="wizard-body" class="dialog-body"></div>
+          <div id="wizard-error" class="error-box" role="alert"></div>
+          <footer class="dialog-foot">
+            <div id="wizard-safety" class="help"></div>
+            <div class="dialog-actions">
+              <button id="wizard-back" class="button" type="button">Back</button>
+              <button id="wizard-next" class="button primary" type="button">Continue</button>
+            </div>
+          </footer>
+        </section>
+      </div>
+
+      <script>
+        (() => {
+          "use strict";
+
+          const STORAGE_KEY = "layersentry-network-fabric-drafts-v1";
+          const LIVE_APPLY_ENABLED = false;
+          const APPLY_LOCK_REASON = "Network mutation is locked until the LayerSentry Network Fabric controller API, management-path safety checks and rollback contract are certified.";
+
+          const purposeMeta = {
+            management: ["Management", "Cluster and Talos management traffic"],
+            vm: ["VM / Tenant", "Guest and tenant workload traffic"],
+            storage: ["Storage", "LINSTOR, iSCSI, NFS or NVMe/TCP data path"],
+            migration: ["Migration", "KubeVirt live migration traffic"],
+            backup: ["Backup", "Backup and restore data movement"],
+            kubernetes: ["Kubernetes", "Kubernetes infrastructure traffic"],
+            custom: ["Custom", "Operator-defined network purpose"]
+          };
+
+          const stepLabels = [
+            "1 · Purpose",
+            "2 · Uplinks",
+            "3 · Bond",
+            "4 · Bridge",
+            "5 · VLAN",
+            "6 · IP / Routes",
+            "7 · VM Network",
+            "8 · Validate",
+            "9 · Review"
+          ];
+
+          const defaults = {
+            purpose: "vm",
+            nodes: "",
+            architecture: "bond",
+            uplinks: "",
+            bondName: "bond0",
+            bondMode: "802.3ad",
+            lacpRate: "fast",
+            hashPolicy: "layer3+4",
+            miimon: "100",
+            minLinks: "1",
+            bridgeName: "br-vm",
+            vlanAware: true,
+            stp: false,
+            mtu: "1500",
+            vlanName: "production-web",
+            vlanId: "120",
+            ipMode: "none",
+            address: "",
+            gateway: "",
+            dns: "",
+            routes: "",
+            vmNetworkName: "production-web",
+            attachable: true,
+            sriov: false,
+            rdma: false,
+            roce: false,
+            policyRouting: false,
+            managementAck: false
+          };
+
+          const state = {
+            tab: "overview",
+            step: 0,
+            draft: Object.assign({}, defaults),
+            rolloutRun: 0
+          };
+
+          const content = document.getElementById("content");
+          const backdrop = document.getElementById("wizard-backdrop");
+          const wizardBody = document.getElementById("wizard-body");
+          const wizardSteps = document.getElementById("wizard-steps");
+          const wizardError = document.getElementById("wizard-error");
+          const wizardSafety = document.getElementById("wizard-safety");
+          const backButton = document.getElementById("wizard-back");
+          const nextButton = document.getElementById("wizard-next");
+
+          function escapeHtml(value) {
+            return String(value ?? "")
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+              .replaceAll('"', "&quot;")
+              .replaceAll("'", "&#039;");
+          }
+
+          function splitList(value) {
+            return String(value || "")
+              .split(/\r?\n|,/)
+              .map((item) => item.trim())
+              .filter(Boolean);
+          }
+
+          function unique(items) {
+            return Array.from(new Set(items));
+          }
+
+          function isName(value) {
+            return /^[a-z][a-z0-9-]{1,62}$/.test(String(value || ""));
+          }
+
+          function isIPv4(ip) {
+            const parts = String(ip || "").split(".");
+            return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+          }
+
+          function isIPv6(ip) {
+            const raw = String(ip || "");
+            return raw.includes(":") && /^[0-9A-Fa-f:]+$/.test(raw);
+          }
+
+          function isIP(ip) {
+            return isIPv4(ip) || isIPv6(ip);
+          }
+
+          function isCIDR(value) {
+            const raw = String(value || "").trim();
+            const index = raw.lastIndexOf("/");
+            if (index <= 0) return false;
+            const ip = raw.slice(0, index);
+            const prefix = Number(raw.slice(index + 1));
+            if (!Number.isInteger(prefix)) return false;
+            if (isIPv4(ip)) return prefix >= 0 && prefix <= 32;
+            if (isIPv6(ip)) return prefix >= 0 && prefix <= 128;
+            return false;
+          }
+
+          function isRoute(value) {
+            const parts = String(value || "").trim().split(/\s+via\s+/i);
+            return parts.length === 2 && isCIDR(parts[0]) && isIP(parts[1]);
+          }
+
+          function currentRisk() {
+            if (state.draft.purpose === "management") return "High";
+            if (state.draft.ipMode === "static" || state.draft.architecture === "bond") return "Medium";
+            return "Low";
+          }
+
+          function statusPill(text, kind) {
+            return '<span class="pill ' + (kind || "") + '">' + escapeHtml(text) + "</span>";
+          }
+
+          function field(id, label, type, help, options) {
+            const value = state.draft[id] ?? "";
+            const span = options && options.span ? " span" : "";
+            let control = "";
+            if (type === "textarea") {
+              control = '<textarea id="nf-' + id + '">' + escapeHtml(value) + "</textarea>";
+            } else if (type === "select") {
+              control = '<select id="nf-' + id + '">';
+              (options.items || []).forEach((item) => {
+                control += '<option value="' + escapeHtml(item[0]) + '"' + (String(value) === String(item[0]) ? " selected" : "") + ">" + escapeHtml(item[1]) + "</option>";
+              });
+              control += "</select>";
+            } else {
+              const attrs = options && options.attrs ? " " + options.attrs : "";
+              control = '<input id="nf-' + id + '" type="' + type + '" value="' + escapeHtml(value) + '"' + attrs + ">";
+            }
+            return '<div class="field' + span + '"><label for="nf-' + id + '">' + escapeHtml(label) + "</label>" + control + (help ? '<div class="help">' + escapeHtml(help) + "</div>" : "") + "</div>";
+          }
+
+          function checkbox(id, label, help) {
+            return '<label class="checkrow"><input id="nf-' + id + '" type="checkbox"' + (state.draft[id] ? " checked" : "") + '><span><b>' + escapeHtml(label) + "</b>" + (help ? '<br><span class="help">' + escapeHtml(help) + "</span>" : "") + "</span></label>";
+          }
+
+          function bindField(id, parser) {
+            const node = document.getElementById("nf-" + id);
+            if (!node) return;
+            const eventName = node.type === "checkbox" || node.tagName === "SELECT" ? "change" : "input";
+            node.addEventListener(eventName, () => {
+              state.draft[id] = parser ? parser(node) : node.value;
+              hideWizardError();
+              if (id === "purpose" || id === "architecture" || id === "ipMode") renderWizard();
+              else renderContent();
+            });
+          }
+
+          function bindCommon(ids) {
+            ids.forEach((id) => bindField(id));
+            ["vlanAware", "stp", "attachable", "sriov", "rdma", "roce", "policyRouting", "managementAck"].forEach((id) => {
+              if (ids.includes(id)) bindField(id, (node) => node.checked);
+            });
+          }
+
+          function renderSteps() {
+            wizardSteps.innerHTML = stepLabels.map((label, index) => {
+              let cls = "step";
+              if (index === state.step) cls += " active";
+              else if (index < state.step) cls += " done";
+              return '<div class="' + cls + '">' + escapeHtml(label) + "</div>";
+            }).join("");
+          }
+
+          function renderPurpose() {
+            const cards = Object.entries(purposeMeta).map(([key, meta]) => {
+              return '<label class="choice"><input name="purpose" type="radio" value="' + key + '"' + (state.draft.purpose === key ? " checked" : "") + '><b>' + escapeHtml(meta[0]) + '</b><small>' + escapeHtml(meta[1]) + "</small></label>";
+            }).join("");
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Network purpose and scope</h3>' +
+              '<p class="wizard-copy">Choose why the network exists, then scope the draft to the nodes that will eventually receive the host configuration.</p>' +
+              '<div class="choice-grid span">' + cards + "</div>" +
+              '<div class="form-grid" style="margin-top:14px">' +
+                field("nodes", "Target nodes", "textarea", "Enter node names separated by commas or new lines. Live node discovery will replace this manual field when the Network Fabric controller inventory API is connected.", {span: true}) +
+              "</div>" +
+              (state.draft.purpose === "management"
+                ? '<div class="notice bad-note" style="margin-top:14px">Management networking is a high-risk change. LayerSentry will require a staged node-by-node rollout, out-of-band recovery path and connectivity verification before live Apply can ever be enabled.</div>'
+                : "");
+            document.querySelectorAll('input[name="purpose"]').forEach((node) => {
+              node.addEventListener("change", () => {
+                state.draft.purpose = node.value;
+                hideWizardError();
+                renderWizard();
+                renderContent();
+              });
+            });
+            bindCommon(["nodes"]);
+          }
+
+          function renderUplinks() {
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Physical uplinks</h3>' +
+              '<p class="wizard-copy">Select a single physical NIC or multiple NICs for a resilient bond. Inventory is manual in this first GUI delivery because the live controller inventory contract is not present in the current branch.</p>' +
+              '<div class="form-grid">' +
+                field("uplinks", "Physical interfaces", "textarea", "Examples: enp1s0, enp2s0. The controller will later populate link state, MAC, speed, duplex, PCI address, driver, SR-IOV and RDMA capability automatically.", {span: true}) +
+              "</div>" +
+              '<div class="choice-grid" style="margin-top:14px">' +
+                '<label class="choice"><input name="architecture" type="radio" value="bond"' + (state.draft.architecture === "bond" ? " checked" : "") + '><b>Bond / LACP</b><small>Recommended for production redundancy and aggregate bandwidth.</small></label>' +
+                '<label class="choice"><input name="architecture" type="radio" value="single"' + (state.draft.architecture === "single" ? " checked" : "") + '><b>Single uplink</b><small>Use one physical interface without a host bond.</small></label>' +
+                '<label class="choice"><input type="radio" disabled><b>SR-IOV direct</b><small>Advanced hardware path; shown here but live capability discovery is not connected yet.</small></label>' +
+              "</div>";
+            document.querySelectorAll('input[name="architecture"]').forEach((node) => {
+              node.addEventListener("change", () => {
+                state.draft.architecture = node.value;
+                hideWizardError();
+                renderWizard();
+                renderContent();
+              });
+            });
+            bindCommon(["uplinks"]);
+          }
+
+          function renderBond() {
+            if (state.draft.architecture === "single") {
+              wizardBody.innerHTML =
+                '<h3 class="wizard-title">Bond configuration</h3>' +
+                '<p class="wizard-copy">This step is not required for the selected single-uplink architecture.</p>' +
+                '<div class="notice good-note">Single uplink selected. The physical interface will attach directly to the Linux bridge.</div>';
+              return;
+            }
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Bond / LACP</h3>' +
+              '<p class="wizard-copy">Use 802.3ad LACP for production where the upstream switch is configured for the same LAG. Active/backup is available when switch-side LACP is not desired.</p>' +
+              '<div class="form-grid">' +
+                field("bondName", "Bond name", "text", "Linux bond interface name.", {}) +
+                field("bondMode", "Bond mode", "select", "802.3ad is the recommended production default.", {items: [["802.3ad","LACP / 802.3ad"],["active-backup","Active / Backup"],["balance-xor","Balance XOR"]]}) +
+                field("lacpRate", "LACP rate", "select", "Fast requests 1-second LACPDU transmission.", {items: [["fast","Fast"],["slow","Slow"]]}) +
+                field("hashPolicy", "Transmit hash policy", "select", "layer3+4 is a common VM/storage traffic choice.", {items: [["layer3+4","Layer 3 + 4"],["layer2+3","Layer 2 + 3"],["layer2","Layer 2"]]}) +
+                field("miimon", "Link monitor (ms)", "number", "MII link monitoring interval.", {attrs: 'min="0" max="5000" step="10"'}) +
+                field("minLinks", "Minimum active links", "number", "Fail readiness if fewer members are active.", {attrs: 'min="1" max="32" step="1"'}) +
+              "</div>";
+            bindCommon(["bondName","bondMode","lacpRate","hashPolicy","miimon","minLinks"]);
+          }
+
+          function renderBridge() {
+            const uplink = state.draft.architecture === "bond" ? state.draft.bondName : (splitList(state.draft.uplinks)[0] || "physical interface");
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Linux bridge</h3>' +
+              '<p class="wizard-copy">The bridge is the host attachment point for VLAN subinterfaces and VM networks. Parent uplink: <b>' + escapeHtml(uplink) + "</b>.</p>" +
+              '<div class="form-grid">' +
+                field("bridgeName", "Bridge name", "text", "Example: br-vm, br-storage or br-migration.", {}) +
+                field("mtu", "MTU", "number", "Use 1500 unless the entire physical path is certified for jumbo frames.", {attrs: 'min="576" max="9216" step="1"'}) +
+                '<div class="field">' + checkbox("vlanAware", "VLAN-aware bridge", "Recommended when multiple tagged networks share the bridge.") + "</div>" +
+                '<div class="field">' + checkbox("stp", "Enable STP", "Enable only when your host/switch topology requires spanning-tree protection.") + "</div>" +
+              "</div>";
+            bindCommon(["bridgeName","mtu","vlanAware","stp"]);
+          }
+
+          function renderVlan() {
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">VLAN</h3>' +
+              '<p class="wizard-copy">Create the tagged Layer-2 segment that will sit on the Linux bridge. VLAN IDs 1–4094 are accepted by local validation.</p>' +
+              '<div class="form-grid">' +
+                field("vlanName", "VLAN name", "text", "Friendly lowercase name used throughout the GUI.", {}) +
+                field("vlanId", "VLAN ID", "number", "802.1Q tag.", {attrs: 'min="1" max="4094" step="1"'}) +
+                '<div class="field"><label>Parent bridge</label><input value="' + escapeHtml(state.draft.bridgeName) + '" disabled><div class="help">Inherited from the bridge step.</div></div>' +
+                '<div class="field"><label>MTU</label><input value="' + escapeHtml(state.draft.mtu) + '" disabled><div class="help">Inherited from the bridge to prevent a child MTU mismatch.</div></div>' +
+              "</div>";
+            bindCommon(["vlanName","vlanId"]);
+          }
+
+          function renderIPRoutes() {
+            const staticFields = state.draft.ipMode === "static"
+              ? field("address", "Host address / CIDR", "text", "Example: 10.20.120.11/24.", {}) +
+                field("gateway", "Gateway", "text", "Optional. Do not add an unintended default route on storage or migration-only networks.", {}) +
+                field("dns", "DNS servers", "textarea", "Comma or newline separated IPv4/IPv6 addresses.", {span: true}) +
+                field("routes", "Static routes", "textarea", "One per line using: CIDR via gateway. Example: 10.30.0.0/16 via 10.20.120.1", {span: true})
+              : "";
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Host IP and routes</h3>' +
+              '<p class="wizard-copy">A VM-only Layer-2 network does not require a host IP. Management, storage and migration networks commonly do.</p>' +
+              '<div class="form-grid">' +
+                field("ipMode", "Host IP mode", "select", "Select No host IP for a pure VM trunk/bridge network.", {items: [["none","No host IP"],["dhcp","DHCP"],["static","Static"]]}) +
+                '<div class="field"><label>VLAN interface</label><input value="' + escapeHtml(state.draft.bridgeName + "." + state.draft.vlanId) + '" disabled><div class="help">Preview name only; the controller will own final reconciliation.</div></div>' +
+                staticFields +
+              "</div>";
+            bindCommon(["ipMode","address","gateway","dns","routes"]);
+          }
+
+          function renderVMNetwork() {
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">VM Network and advanced capabilities</h3>' +
+              '<p class="wizard-copy">Expose a simple VM Network object to users so VM creation can select a friendly network instead of requiring Multus/NAD YAML.</p>' +
+              '<div class="form-grid">' +
+                field("vmNetworkName", "VM Network name", "text", "Example: production-web, production-db or migration.", {}) +
+                '<div class="field"><label>Backing</label><input value="VLAN ' + escapeHtml(state.draft.vlanId) + " on " + escapeHtml(state.draft.bridgeName) + '" disabled><div class="help">Derived from the host network steps.</div></div>' +
+                '<div class="field">' + checkbox("attachable", "Available to VMs", "Show this network in the VM network dropdown.") + "</div>" +
+              "</div>" +
+              '<div class="card" style="margin-top:14px">' +
+                '<div class="section-head"><div><h3>Advanced</h3><p>Advertise intent now; capability discovery and controller enforcement remain required before live use.</p></div>' + statusPill("Controller-gated","warn") + "</div>" +
+                '<div class="form-grid">' +
+                  '<div class="field">' + checkbox("sriov", "SR-IOV", "Request VF-backed networking where supported.") + "</div>" +
+                  '<div class="field">' + checkbox("rdma", "RDMA", "Request RDMA-capable interfaces and validation.") + "</div>" +
+                  '<div class="field">' + checkbox("roce", "RoCE", "Request RoCE validation for converged Ethernet.") + "</div>" +
+                  '<div class="field">' + checkbox("policyRouting", "Policy routing", "Reserve advanced policy-routing intent for the controller.") + "</div>" +
+                "</div>" +
+              "</div>";
+            bindCommon(["vmNetworkName","attachable","sriov","rdma","roce","policyRouting"]);
+          }
+
+          function validateDraft() {
+            const checks = [];
+            const nodes = splitList(state.draft.nodes);
+            const uplinks = splitList(state.draft.uplinks);
+            const nodeUnique = unique(nodes);
+            const uplinkUnique = unique(uplinks);
+            const mtu = Number(state.draft.mtu);
+            const vlan = Number(state.draft.vlanId);
+            const minLinks = Number(state.draft.minLinks);
+
+            function check(name, ok, detail) {
+              checks.push({name, ok, detail, deferred: false});
+            }
+            function deferred(name, detail) {
+              checks.push({name, ok: null, detail, deferred: true});
+            }
+
+            check("Target nodes supplied", nodes.length > 0 && nodes.length === nodeUnique.length, nodes.length ? nodes.length + " unique node(s)" : "Enter at least one target node.");
+            check("Physical uplinks supplied", uplinks.length > 0 && uplinks.length === uplinkUnique.length, uplinks.length ? uplinks.length + " unique interface(s)" : "Enter at least one interface.");
+            if (state.draft.architecture === "bond") {
+              check("Bond member count", uplinks.length >= 2, "A bond requires at least two physical interfaces.");
+              check("Bond name", isName(state.draft.bondName), "Use lowercase letters, digits and hyphens; start with a letter.");
+              check("Minimum active links", Number.isInteger(minLinks) && minLinks >= 1 && minLinks <= Math.max(uplinks.length,1), "min-links must not exceed the number of members.");
+            }
+            check("Bridge name", isName(state.draft.bridgeName), "Bridge name must be a valid lowercase identifier.");
+            check("MTU range", Number.isInteger(mtu) && mtu >= 576 && mtu <= 9216, "Supported local range is 576–9216.");
+            check("VLAN ID", Number.isInteger(vlan) && vlan >= 1 && vlan <= 4094, "802.1Q VLAN ID must be 1–4094.");
+            check("VLAN name", isName(state.draft.vlanName), "VLAN name must be a valid lowercase identifier.");
+            if (state.draft.ipMode === "static") {
+              check("Static address", isCIDR(state.draft.address), "Static host mode requires a valid IPv4/IPv6 CIDR.");
+              check("Gateway", !state.draft.gateway || isIP(state.draft.gateway), "Gateway is optional but must be a valid IP when present.");
+              const dns = splitList(state.draft.dns);
+              check("DNS servers", dns.every(isIP), dns.length ? dns.length + " server(s)" : "No DNS servers requested.");
+              const routes = splitList(state.draft.routes);
+              check("Static routes", routes.every(isRoute), routes.length ? routes.length + " route(s)" : "No static routes requested.");
+            }
+            check("VM Network name", isName(state.draft.vmNetworkName), "Use a friendly lowercase identifier for VM selection.");
+            if (state.draft.purpose === "management") {
+              check("Management change acknowledgement", state.draft.managementAck === true, "High-risk management changes require explicit acknowledgement.");
+            }
+
+            deferred("Interface inventory", "Controller must verify every interface exists, link state/speed, driver, PCI identity and hardware capabilities on every selected node.");
+            deferred("Interface ownership conflicts", "Controller must prove no selected NIC is already owned by another bond, bridge, CNI or protected management path.");
+            deferred("Cross-node MTU compatibility", "Controller must compare MTU across physical NICs, bond, bridge, VLAN and upstream path.");
+            deferred("Management path protection", "Controller must detect the active management path and require out-of-band recovery before mutating it.");
+            deferred("Kernel / Talos capability", "Controller must certify bonding, bridge, 802.1Q and requested SR-IOV/RDMA capabilities.");
+            deferred("VM Network references", "Controller must validate KubeVirt/Multus consumers and migration-network constraints.");
+            return checks;
+          }
+
+          function localChecksPass() {
+            return validateDraft().filter((item) => !item.deferred).every((item) => item.ok);
+          }
+
+          function validationMarkup() {
+            const checks = validateDraft();
+            return '<div class="validation-list">' + checks.map((item) => {
+              const kind = item.deferred ? "warn" : item.ok ? "good" : "bad";
+              const label = item.deferred ? "Deferred" : item.ok ? "Pass" : "Fail";
+              return '<div class="validation-item"><span class="dot ' + kind + '"></span><div><b>' + escapeHtml(item.name) + '</b><br><small>' + escapeHtml(item.detail) + '</small></div>' + statusPill(label,kind) + "</div>";
+            }).join("") + "</div>";
+          }
+
+          function renderValidation() {
+            const checks = validateDraft();
+            const local = checks.filter((item) => !item.deferred);
+            const failed = local.filter((item) => !item.ok).length;
+            const deferred = checks.filter((item) => item.deferred).length;
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Preflight validation</h3>' +
+              '<p class="wizard-copy">LayerSentry performs every deterministic browser-side check now and explicitly marks cluster-dependent checks as deferred instead of pretending they passed.</p>' +
+              '<div class="grid two" style="margin-bottom:13px">' +
+                '<div class="notice ' + (failed ? "bad-note" : "good-note") + '"><b>' + (failed ? failed + " local check(s) failed" : "Local checks passed") + '</b><br>' + local.length + " deterministic checks evaluated.</div>" +
+                '<div class="notice"><b>' + deferred + ' cluster check(s) deferred</b><br>Live inventory, ownership, management-path and capability evidence require the controller.</div>' +
+              "</div>" +
+              validationMarkup() +
+              (state.draft.purpose === "management"
+                ? '<div style="margin-top:13px">' + checkbox("managementAck", "I understand this affects management connectivity", "A live implementation must use a staged rollout with out-of-band recovery and automatic rollback.") + "</div>"
+                : "");
+            if (state.draft.purpose === "management") bindCommon(["managementAck"]);
+          }
+
+          function planObject() {
+            const nodes = splitList(state.draft.nodes);
+            const uplinks = splitList(state.draft.uplinks);
+            return {
+              schemaVersion: 1,
+              planType: "LayerSentryNetworkDraft",
+              purpose: state.draft.purpose,
+              scope: {nodes},
+              uplinks: {
+                architecture: state.draft.architecture,
+                members: uplinks
+              },
+              bond: state.draft.architecture === "bond" ? {
+                name: state.draft.bondName,
+                mode: state.draft.bondMode,
+                lacpRate: state.draft.lacpRate,
+                transmitHashPolicy: state.draft.hashPolicy,
+                miimonMs: Number(state.draft.miimon),
+                minLinks: Number(state.draft.minLinks)
+              } : null,
+              bridge: {
+                name: state.draft.bridgeName,
+                vlanAware: state.draft.vlanAware,
+                stp: state.draft.stp,
+                mtu: Number(state.draft.mtu)
+              },
+              vlan: {
+                name: state.draft.vlanName,
+                id: Number(state.draft.vlanId),
+                parent: state.draft.bridgeName,
+                mtu: Number(state.draft.mtu)
+              },
+              hostIP: {
+                mode: state.draft.ipMode,
+                address: state.draft.ipMode === "static" ? state.draft.address : null,
+                gateway: state.draft.ipMode === "static" ? state.draft.gateway || null : null,
+                dns: state.draft.ipMode === "static" ? splitList(state.draft.dns) : [],
+                routes: state.draft.ipMode === "static" ? splitList(state.draft.routes) : []
+              },
+              vmNetwork: {
+                name: state.draft.vmNetworkName,
+                vlanId: Number(state.draft.vlanId),
+                bridge: state.draft.bridgeName,
+                mtu: Number(state.draft.mtu),
+                attachable: state.draft.attachable
+              },
+              advanced: {
+                sriov: state.draft.sriov,
+                rdma: state.draft.rdma,
+                roce: state.draft.roce,
+                policyRouting: state.draft.policyRouting
+              },
+              safety: {
+                managementProtection: true,
+                stagedRolloutRequired: true,
+                liveApplyEnabled: LIVE_APPLY_ENABLED,
+                liveApplyLockReason: APPLY_LOCK_REASON
+              }
+            };
+          }
+
+          function topologyMarkup() {
+            const uplinks = splitList(state.draft.uplinks);
+            const first = uplinks.length ? uplinks.join(" + ") : "Select NICs";
+            const items = [
+              ["Physical NICs", first, "Uplinks"],
+              state.draft.architecture === "bond" ? ["Bond", state.draft.bondName || "bond", state.draft.bondMode] : null,
+              ["Linux Bridge", state.draft.bridgeName || "bridge", "MTU " + state.draft.mtu],
+              ["VLAN " + (state.draft.vlanId || "—"), state.draft.vlanName || "VLAN", state.draft.vlanAware ? "Tagged / VLAN-aware" : "Tagged"],
+              state.draft.ipMode !== "none" ? ["Host IP", state.draft.ipMode === "static" ? state.draft.address || "Static" : "DHCP", "Routes / DNS"] : null,
+              ["VM Network", state.draft.vmNetworkName || "VM network", state.draft.attachable ? "Attachable" : "Hidden from VM picker"]
+            ].filter(Boolean);
+            return '<div class="topology">' + items.map((item, index) => {
+              const card = '<div class="topo-node"><small>' + escapeHtml(item[0]) + '</small><strong>' + escapeHtml(item[1]) + '</strong><small>' + escapeHtml(item[2]) + "</small></div>";
+              return card + (index < items.length - 1 ? '<div class="topo-arrow" aria-hidden="true">→</div>' : "");
+            }).join("") + "</div>";
+          }
+
+          function rolloutMarkup(simulating) {
+            const nodes = splitList(state.draft.nodes);
+            const rows = [
+              ["Validate desired state", "Schema, duplicate, dependency and policy checks"],
+              ["Controller dry run", "Resolve exact node/interface mutations before any host change"]
+            ];
+            nodes.forEach((node) => {
+              rows.push(["Apply " + node, "One node at a time; preserve cluster quorum and workload availability"]);
+              rows.push(["Verify " + node, "Talos API, Kubernetes, gateway and LayerSentry health probes"]);
+            });
+            rows.push(["Final reconciliation", "Confirm desired state, drift-free topology and VM Network readiness"]);
+            return '<div class="rollout">' + rows.map((row, index) => {
+              const status = simulating ? statusPill(index === 0 ? "Preview" : "Queued", index === 0 ? "good" : "") : statusPill("Planned","");
+              return '<div class="rollout-row"><span class="rollout-index">' + (index + 1) + '</span><div><b>' + escapeHtml(row[0]) + '</b><small>' + escapeHtml(row[1]) + "</small></div>" + status + "</div>";
+            }).join("") + "</div>";
+          }
+
+          function renderReview() {
+            const nodes = splitList(state.draft.nodes);
+            const uplinkLabel = state.draft.architecture === "bond"
+              ? state.draft.bondName + " (" + splitList(state.draft.uplinks).length + " members)"
+              : (splitList(state.draft.uplinks)[0] || "—");
+            wizardBody.innerHTML =
+              '<h3 class="wizard-title">Review and safe apply</h3>' +
+              '<p class="wizard-copy">Review exactly what the GUI intends to create. Live Apply is deliberately disabled because this branch does not expose a verified Network Fabric mutation API or rollback contract.</p>' +
+              '<div class="review-grid">' +
+                reviewItem("Purpose", purposeMeta[state.draft.purpose][0]) +
+                reviewItem("Nodes", nodes.length ? nodes.join(", ") : "—") +
+                reviewItem("Risk", currentRisk()) +
+                reviewItem("Uplink", uplinkLabel) +
+                reviewItem("Bridge", state.draft.bridgeName + " · MTU " + state.draft.mtu) +
+                reviewItem("VLAN", state.draft.vlanId + " · " + state.draft.vlanName) +
+                reviewItem("Host IP", state.draft.ipMode === "static" ? state.draft.address : state.draft.ipMode) +
+                reviewItem("VM Network", state.draft.vmNetworkName) +
+                reviewItem("Apply", LIVE_APPLY_ENABLED ? "Enabled" : "Locked") +
+              "</div>" +
+              '<div class="card" style="margin-top:13px"><div class="section-head"><div><h3>Topology preview</h3><p>Desired host-to-VM data path.</p></div>' + statusPill("Draft","warn") + "</div>" + topologyMarkup() + "</div>" +
+              '<div class="card" style="margin-top:13px"><div class="section-head"><div><h3>Safe staged rollout</h3><p>No simultaneous all-node mutation.</p></div>' + statusPill("Preview only","warn") + "</div>" + rolloutMarkup(false) + '<div class="top-actions" style="justify-content:flex-start;margin-top:11px"><button id="preview-rollout" class="button good" type="button">Preview rollout</button></div></div>' +
+              '<div class="notice bad-note" style="margin-top:13px"><b>Safe Apply locked</b><br>' + escapeHtml(APPLY_LOCK_REASON) + "</div>" +
+              '<details style="margin-top:13px"><summary>Expert · View generated Network Plan JSON</summary><pre id="plan-json">' + escapeHtml(JSON.stringify(planObject(), null, 2)) + "</pre></details>" +
+              '<div class="top-actions" style="justify-content:flex-start;margin-top:12px"><button id="copy-plan" class="button" type="button">Copy plan JSON</button><button id="save-draft" class="button primary" type="button">Save draft</button><button class="button" type="button" disabled title="' + escapeHtml(APPLY_LOCK_REASON) + '">Safe Apply locked</button></div>';
+            document.getElementById("copy-plan").addEventListener("click", copyPlan);
+            document.getElementById("save-draft").addEventListener("click", saveDraft);
+            document.getElementById("preview-rollout").addEventListener("click", previewRollout);
+          }
+
+          function reviewItem(label, value) {
+            return '<div class="review-item"><b>' + escapeHtml(label) + '</b><span>' + escapeHtml(value) + "</span></div>";
+          }
+
+          function renderWizard() {
+            renderSteps();
+            wizardError.classList.remove("show");
+            wizardError.textContent = "";
+            backButton.disabled = state.step === 0;
+            nextButton.textContent = state.step === stepLabels.length - 1 ? "Close" : "Continue";
+            if (state.step === 0) renderPurpose();
+            if (state.step === 1) renderUplinks();
+            if (state.step === 2) renderBond();
+            if (state.step === 3) renderBridge();
+            if (state.step === 4) renderVlan();
+            if (state.step === 5) renderIPRoutes();
+            if (state.step === 6) renderVMNetwork();
+            if (state.step === 7) renderValidation();
+            if (state.step === 8) renderReview();
+
+            if (state.step < 7) wizardSafety.textContent = "Draft only · no cluster changes are sent.";
+            else if (state.step === 7) wizardSafety.textContent = localChecksPass() ? "Local checks pass; cluster checks remain deferred." : "Fix failed local checks before review.";
+            else wizardSafety.textContent = "Live Apply locked; draft and rollout preview remain available.";
+          }
+
+          function validateStep(step) {
+            const d = state.draft;
+            if (step === 0 && splitList(d.nodes).length === 0) return "Enter at least one target node.";
+            if (step === 1) {
+              const uplinks = splitList(d.uplinks);
+              if (!uplinks.length) return "Enter at least one physical interface.";
+              if (unique(uplinks).length !== uplinks.length) return "Physical interface names must be unique.";
+              if (d.architecture === "bond" && uplinks.length < 2) return "Bond/LACP requires at least two physical interfaces.";
+            }
+            if (step === 2 && d.architecture === "bond") {
+              if (!isName(d.bondName)) return "Enter a valid lowercase bond name.";
+              if (!Number.isInteger(Number(d.minLinks)) || Number(d.minLinks) < 1 || Number(d.minLinks) > splitList(d.uplinks).length) return "Minimum active links must be between 1 and the number of bond members.";
+            }
+            if (step === 3) {
+              if (!isName(d.bridgeName)) return "Enter a valid lowercase bridge name.";
+              if (!Number.isInteger(Number(d.mtu)) || Number(d.mtu) < 576 || Number(d.mtu) > 9216) return "MTU must be between 576 and 9216.";
+            }
+            if (step === 4) {
+              if (!isName(d.vlanName)) return "Enter a valid lowercase VLAN name.";
+              if (!Number.isInteger(Number(d.vlanId)) || Number(d.vlanId) < 1 || Number(d.vlanId) > 4094) return "VLAN ID must be between 1 and 4094.";
+            }
+            if (step === 5 && d.ipMode === "static") {
+              if (!isCIDR(d.address)) return "Static host mode requires a valid address/CIDR.";
+              if (d.gateway && !isIP(d.gateway)) return "Gateway must be a valid IP address.";
+              if (!splitList(d.dns).every(isIP)) return "Every DNS entry must be a valid IP address.";
+              if (!splitList(d.routes).every(isRoute)) return "Each route must use the format: CIDR via gateway.";
+            }
+            if (step === 6 && !isName(d.vmNetworkName)) return "Enter a valid lowercase VM Network name.";
+            if (step === 7 && !localChecksPass()) return "Resolve failed local preflight checks before continuing.";
+            return "";
+          }
+
+          function showWizardError(message) {
+            wizardError.textContent = message;
+            wizardError.classList.add("show");
+          }
+
+          function hideWizardError() {
+            wizardError.classList.remove("show");
+            wizardError.textContent = "";
+          }
+
+          function openWizard(step) {
+            state.step = Number.isInteger(step) ? step : 0;
+            backdrop.classList.add("open");
+            document.body.style.overflow = "hidden";
+            renderWizard();
+          }
+
+          function closeWizard() {
+            backdrop.classList.remove("open");
+            document.body.style.overflow = "";
+            hideWizardError();
+            renderContent();
+          }
+
+          function loadDrafts() {
+            try {
+              const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+              return [];
+            }
+          }
+
+          function saveDraft() {
+            if (!localChecksPass()) {
+              showWizardError("Local validation must pass before saving the draft.");
+              return;
+            }
+            const drafts = loadDrafts();
+            const record = {
+              id: "draft-" + Date.now(),
+              createdAt: new Date().toISOString(),
+              name: state.draft.vmNetworkName || state.draft.vlanName || "network-draft",
+              risk: currentRisk(),
+              plan: planObject()
+            };
+            drafts.unshift(record);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts.slice(0, 30)));
+            showToast("Network draft saved locally. No cluster changes were sent.");
+            state.tab = "changes";
+            document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("active", node.dataset.tab === "changes"));
+            closeWizard();
+          }
+
+          async function copyPlan() {
+            const text = JSON.stringify(planObject(), null, 2);
+            try {
+              await navigator.clipboard.writeText(text);
+              showToast("Network Plan JSON copied.");
+            } catch (error) {
+              showToast("Clipboard access was blocked by the browser.");
+            }
+          }
+
+          function previewRollout() {
+            state.rolloutRun += 1;
+            const run = state.rolloutRun;
+            const container = document.querySelector(".rollout");
+            if (!container) return;
+            const nodes = splitList(state.draft.nodes);
+            const rows = [
+              ["Validate desired state", "Schema, duplicate, dependency and policy checks"],
+              ["Controller dry run", "Resolve exact node/interface mutations before any host change"]
+            ];
+            nodes.forEach((node) => {
+              rows.push(["Apply " + node, "Simulated only — no host mutation sent"]);
+              rows.push(["Verify " + node, "Simulated health gate"]);
+            });
+            rows.push(["Final reconciliation", "Simulated desired-state convergence"]);
+            container.innerHTML = rows.map((row, index) => {
+              return '<div class="rollout-row" data-rollout="' + index + '"><span class="rollout-index">' + (index + 1) + '</span><div><b>' + escapeHtml(row[0]) + '</b><small>' + escapeHtml(row[1]) + '</small></div>' + statusPill(index === 0 ? "Running" : "Queued",index === 0 ? "warn" : "") + "</div>";
+            }).join("");
+            rows.forEach((row, index) => {
+              setTimeout(() => {
+                if (run !== state.rolloutRun) return;
+                const current = document.querySelector('[data-rollout="' + index + '"] .pill');
+                if (current) {
+                  current.className = "pill good";
+                  current.textContent = "Preview pass";
+                }
+                const next = document.querySelector('[data-rollout="' + (index + 1) + '"] .pill');
+                if (next) {
+                  next.className = "pill warn";
+                  next.textContent = "Running";
+                }
+                if (index === rows.length - 1) showToast("Staged rollout preview completed. No cluster changes were sent.");
+              }, 260 * (index + 1));
+            });
+          }
+
+          function showToast(message) {
+            const existing = document.querySelector(".toast");
+            if (existing) existing.remove();
+            const toast = document.createElement("div");
+            toast.className = "toast";
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 4200);
+          }
+
+          function draftCounts() {
+            const uplinks = splitList(state.draft.uplinks);
+            return {
+              interfaces: uplinks.length,
+              bonds: state.draft.architecture === "bond" && uplinks.length ? 1 : 0,
+              bridges: state.draft.bridgeName ? 1 : 0,
+              vlans: state.draft.vlanId ? 1 : 0,
+              vm: state.draft.vmNetworkName ? 1 : 0
+            };
+          }
+
+          function overview() {
+            const checks = validateDraft();
+            const local = checks.filter((item) => !item.deferred);
+            const pass = local.length && local.every((item) => item.ok);
+            const counts = draftCounts();
+            return '<div class="grid metrics">' +
+                metricCard("Interfaces", counts.interfaces, "Draft physical uplinks", counts.interfaces ? "good" : "warn") +
+                metricCard("Bond / Bridge", counts.bonds + " / " + counts.bridges, "Draft host aggregation", counts.bridges ? "good" : "warn") +
+                metricCard("VLAN / VM Network", counts.vlans + " / " + counts.vm, "Draft tenant connectivity", counts.vm ? "good" : "warn") +
+                metricCard("Preflight", pass ? "Local pass" : "Needs input", checks.filter((item) => item.deferred).length + " cluster checks deferred", pass ? "good" : "warn") +
+              "</div>" +
+              '<div class="grid two">' +
+                '<article class="card"><div class="section-head"><div><h3>Draft topology</h3><p>Build a network from physical NICs to a VM-selectable network.</p></div>' + statusPill(currentRisk() + " risk", currentRisk() === "High" ? "bad" : "warn") + "</div>" + topologyMarkup() + '<button class="button primary" type="button" data-open-step="0">Edit workflow</button></article>' +
+                '<article class="card"><div class="section-head"><div><h3>Safety boundary</h3><p>Fail-closed until the controller contract is certified.</p></div>' + statusPill("Apply locked","warn") + '</div><div class="notice"><b>No fabricated live status</b><br>This GUI does not claim interface discovery, ownership safety, management-path verification or successful host mutation without a real controller response.</div><div class="notice good-note" style="margin-top:9px"><b>Available now</b><br>Interactive workflow, deterministic validation, topology visualization, generated plan, staged-rollout preview and local draft history.</div></article>' +
+              "</div>" +
+              '<article class="card" style="margin-top:14px"><div class="section-head"><div><h3>Common workflows</h3><p>Start with a purpose; the wizard keeps advanced networking out of the normal path.</p></div></div><div class="quick-actions">' +
+                quickAction("VM / Tenant VLAN","Bond → bridge → VLAN → VM Network","vm") +
+                quickAction("Storage network","Jumbo/RDMA intent can be exposed under Advanced","storage") +
+                quickAction("Migration network","Dedicated KubeVirt migration traffic","migration") +
+                quickAction("Management network","High-risk staged rollout with extra acknowledgement","management") +
+              "</div></article>";
+          }
+
+          function metricCard(label, value, detail, kind) {
+            return '<article class="card"><div class="eyebrow">' + escapeHtml(label) + '</div><div class="metric"><strong>' + escapeHtml(value) + '</strong></div><div class="state"><span class="dot ' + kind + '"></span><span>' + escapeHtml(detail) + "</span></div></article>";
+          }
+
+          function quickAction(title, copy, purpose) {
+            return '<button class="quick" type="button" data-purpose="' + purpose + '"><b>' + escapeHtml(title) + '</b><span>' + escapeHtml(copy) + "</span></button>";
+          }
+
+          function interfacesView() {
+            const nodes = splitList(state.draft.nodes);
+            const uplinks = splitList(state.draft.uplinks);
+            if (!uplinks.length) return emptyView("No draft interfaces yet", "Start Create Network and enter the intended physical uplinks. Live inventory will populate this view when the controller API is available.");
+            const rows = uplinks.map((nic) => '<tr><td><strong>' + escapeHtml(nic) + '</strong></td><td>Physical</td><td class="muted">Controller required</td><td class="muted">Controller required</td><td>' + escapeHtml(state.draft.architecture === "bond" ? state.draft.bondName : state.draft.bridgeName) + '</td><td>' + escapeHtml(nodes.length ? nodes.join(", ") : "Unscoped") + "</td></tr>").join("");
+            return tableCard("Interfaces","Draft interface intent; live link/MAC/speed/driver/capability data is intentionally not invented.",["Interface","Type","Link / Speed","Capabilities","Assignment","Nodes"],rows);
+          }
+
+          function bondsView() {
+            if (state.draft.architecture !== "bond" || !splitList(state.draft.uplinks).length) return emptyView("No draft bond", "Select Bond / LACP in the Create Network wizard.");
+            const rows = '<tr><td><strong>' + escapeHtml(state.draft.bondName) + '</strong></td><td>' + escapeHtml(state.draft.bondMode) + '</td><td>' + escapeHtml(splitList(state.draft.uplinks).join(", ")) + '</td><td>' + escapeHtml(state.draft.lacpRate) + '</td><td>' + escapeHtml(state.draft.hashPolicy) + '</td><td>' + escapeHtml(state.draft.mtu) + "</td></tr>";
+            return tableCard("Bonds","Production bond/LACP intent from the current draft.",["Bond","Mode","Members","LACP rate","Hash policy","MTU"],rows);
+          }
+
+          function bridgesView() {
+            if (!state.draft.bridgeName) return emptyView("No draft bridge", "Create a Linux bridge through the guided workflow.");
+            const uplink = state.draft.architecture === "bond" ? state.draft.bondName : (splitList(state.draft.uplinks)[0] || "—");
+            const rows = '<tr><td><strong>' + escapeHtml(state.draft.bridgeName) + '</strong></td><td>' + escapeHtml(uplink) + '</td><td>' + (state.draft.vlanAware ? "Enabled" : "Disabled") + '</td><td>' + (state.draft.stp ? "Enabled" : "Disabled") + '</td><td>' + escapeHtml(state.draft.mtu) + "</td></tr>";
+            return tableCard("Bridges","Linux bridge intent from the current draft.",["Bridge","Uplink","VLAN aware","STP","MTU"],rows);
+          }
+
+          function vlansView() {
+            if (!state.draft.vlanId) return emptyView("No draft VLAN", "Add an 802.1Q VLAN through Create Network.");
+            const rows = '<tr><td><strong>' + escapeHtml(state.draft.vlanName) + '</strong></td><td>' + escapeHtml(state.draft.vlanId) + '</td><td>' + escapeHtml(state.draft.bridgeName) + '</td><td>' + escapeHtml(state.draft.mtu) + '</td><td>' + escapeHtml(purposeMeta[state.draft.purpose][0]) + "</td></tr>";
+            return tableCard("VLANs","Tagged network intent from the current draft.",["Name","VLAN ID","Parent bridge","MTU","Purpose"],rows);
+          }
+
+          function vmNetworksView() {
+            if (!state.draft.vmNetworkName) return emptyView("No draft VM Network", "Create a friendly VM Network so VM users can select networking without Multus YAML.");
+            const rows = '<tr><td><strong>' + escapeHtml(state.draft.vmNetworkName) + '</strong></td><td>VLAN</td><td>' + escapeHtml(state.draft.vlanId) + '</td><td>' + escapeHtml(state.draft.bridgeName) + '</td><td>' + escapeHtml(state.draft.mtu) + '</td><td>' + (state.draft.attachable ? statusPill("VM attachable","good") : statusPill("Hidden","warn")) + "</td></tr>";
+            return tableCard("VM Networks","GUI-facing VM network abstraction; controller reconciliation to KubeVirt/Multus remains a live integration boundary.",["Name","Type","VLAN","Bridge","MTU","Availability"],rows);
+          }
+
+          function ipRoutesView() {
+            const routes = splitList(state.draft.routes);
+            return '<div class="grid two">' +
+              '<article class="card"><div class="section-head"><div><h3>Host IP</h3><p>Draft address assignment on the VLAN interface.</p></div>' + statusPill(state.draft.ipMode,"") + '</div><div class="review-grid">' +
+                reviewItem("Interface", state.draft.bridgeName + "." + state.draft.vlanId) +
+                reviewItem("Mode", state.draft.ipMode) +
+                reviewItem("Address", state.draft.ipMode === "static" ? state.draft.address || "—" : "—") +
+                reviewItem("Gateway", state.draft.ipMode === "static" ? state.draft.gateway || "—" : "—") +
+                reviewItem("DNS", splitList(state.draft.dns).join(", ") || "—") +
+              "</div></article>" +
+              '<article class="card"><div class="section-head"><div><h3>Routes</h3><p>Explicit routes only; cluster conflict checks require the controller.</p></div>' + statusPill(routes.length + " route(s)","") + '</div>' + (routes.length ? '<div class="validation-list">' + routes.map((route) => '<div class="validation-item"><span class="dot good"></span><div><b>' + escapeHtml(route) + '</b><br><small>Draft route</small></div>' + statusPill("Draft","warn") + "</div>").join("") + "</div>" : '<div class="empty">No static routes requested.</div>') + "</article>" +
+            "</div>";
+          }
+
+          function topologyView() {
+            return '<article class="card"><div class="section-head"><div><h3>Network topology</h3><p>Visual desired state. This is not presented as live cluster inventory.</p></div>' + statusPill("Draft","warn") + "</div>" + topologyMarkup() + '<div style="margin-top:14px">' + validationMarkup() + "</div></article>";
+          }
+
+          function changesView() {
+            const drafts = loadDrafts();
+            if (!drafts.length) return emptyView("No saved Network Fabric drafts", "Use Review → Save draft to create local workflow history. A real audit trail will come from the controller once live mutation exists.");
+            const rows = drafts.map((record) => {
+              const created = new Date(record.createdAt).toLocaleString();
+              const nodes = record.plan && record.plan.scope && Array.isArray(record.plan.scope.nodes) ? record.plan.scope.nodes.length : 0;
+              return '<tr><td><strong>' + escapeHtml(record.name) + '</strong></td><td>' + escapeHtml(created) + '</td><td>' + escapeHtml(record.risk) + '</td><td>' + nodes + '</td><td>' + statusPill("Local draft","warn") + '</td><td><button class="button" type="button" data-load-draft="' + escapeHtml(record.id) + '">Load</button></td></tr>';
+            }).join("");
+            return tableCard("Changes","Browser-local draft history only; it does not claim to be the authoritative cluster audit log.",["Draft","Saved","Risk","Nodes","Result","Action"],rows);
+          }
+
+          function tableCard(title, copy, headers, rows) {
+            return '<article class="card"><div class="section-head"><div><h3>' + escapeHtml(title) + '</h3><p>' + escapeHtml(copy) + '</p></div>' + statusPill("Draft view","warn") + '</div><div class="table-wrap"><table><thead><tr>' + headers.map((header) => "<th>" + escapeHtml(header) + "</th>").join("") + "</tr></thead><tbody>" + rows + "</tbody></table></div></article>";
+          }
+
+          function emptyView(title, copy) {
+            return '<article class="card"><div class="section-head"><div><h3>' + escapeHtml(title) + '</h3><p>' + escapeHtml(copy) + '</p></div></div><div class="empty">' + escapeHtml(copy) + '<br><br><button class="button primary" type="button" data-open-step="0">Create network</button></div></article>';
+          }
+
+          function renderContent() {
+            if (state.tab === "overview") content.innerHTML = overview();
+            if (state.tab === "interfaces") content.innerHTML = interfacesView();
+            if (state.tab === "bonds") content.innerHTML = bondsView();
+            if (state.tab === "bridges") content.innerHTML = bridgesView();
+            if (state.tab === "vlans") content.innerHTML = vlansView();
+            if (state.tab === "vmnetworks") content.innerHTML = vmNetworksView();
+            if (state.tab === "iproutes") content.innerHTML = ipRoutesView();
+            if (state.tab === "topology") content.innerHTML = topologyView();
+            if (state.tab === "changes") content.innerHTML = changesView();
+
+            document.querySelectorAll("[data-open-step]").forEach((node) => {
+              node.addEventListener("click", () => openWizard(Number(node.dataset.openStep)));
+            });
+            document.querySelectorAll("[data-purpose]").forEach((node) => {
+              node.addEventListener("click", () => {
+                state.draft.purpose = node.dataset.purpose;
+                openWizard(0);
+              });
+            });
+            document.querySelectorAll("[data-load-draft]").forEach((node) => {
+              node.addEventListener("click", () => {
+                const record = loadDrafts().find((item) => item.id === node.dataset.loadDraft);
+                if (!record || !record.plan) return;
+                hydrateFromPlan(record.plan);
+                showToast("Draft loaded into the workflow.");
+                state.tab = "overview";
+                document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === "overview"));
+                renderContent();
+              });
+            });
+          }
+
+          function hydrateFromPlan(plan) {
+            const d = Object.assign({}, defaults);
+            d.purpose = plan.purpose || d.purpose;
+            d.nodes = plan.scope && Array.isArray(plan.scope.nodes) ? plan.scope.nodes.join(", ") : "";
+            d.architecture = plan.uplinks && plan.uplinks.architecture || d.architecture;
+            d.uplinks = plan.uplinks && Array.isArray(plan.uplinks.members) ? plan.uplinks.members.join(", ") : "";
+            if (plan.bond) {
+              d.bondName = plan.bond.name || d.bondName;
+              d.bondMode = plan.bond.mode || d.bondMode;
+              d.lacpRate = plan.bond.lacpRate || d.lacpRate;
+              d.hashPolicy = plan.bond.transmitHashPolicy || d.hashPolicy;
+              d.miimon = String(plan.bond.miimonMs ?? d.miimon);
+              d.minLinks = String(plan.bond.minLinks ?? d.minLinks);
+            }
+            if (plan.bridge) {
+              d.bridgeName = plan.bridge.name || d.bridgeName;
+              d.vlanAware = Boolean(plan.bridge.vlanAware);
+              d.stp = Boolean(plan.bridge.stp);
+              d.mtu = String(plan.bridge.mtu ?? d.mtu);
+            }
+            if (plan.vlan) {
+              d.vlanName = plan.vlan.name || d.vlanName;
+              d.vlanId = String(plan.vlan.id ?? d.vlanId);
+            }
+            if (plan.hostIP) {
+              d.ipMode = plan.hostIP.mode || d.ipMode;
+              d.address = plan.hostIP.address || "";
+              d.gateway = plan.hostIP.gateway || "";
+              d.dns = Array.isArray(plan.hostIP.dns) ? plan.hostIP.dns.join(", ") : "";
+              d.routes = Array.isArray(plan.hostIP.routes) ? plan.hostIP.routes.join("\n") : "";
+            }
+            if (plan.vmNetwork) {
+              d.vmNetworkName = plan.vmNetwork.name || d.vmNetworkName;
+              d.attachable = Boolean(plan.vmNetwork.attachable);
+            }
+            if (plan.advanced) {
+              d.sriov = Boolean(plan.advanced.sriov);
+              d.rdma = Boolean(plan.advanced.rdma);
+              d.roce = Boolean(plan.advanced.roce);
+              d.policyRouting = Boolean(plan.advanced.policyRouting);
+            }
+            state.draft = d;
+          }
+
+          document.querySelectorAll(".tab").forEach((node) => {
+            node.addEventListener("click", () => {
+              state.tab = node.dataset.tab;
+              document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab === node));
+              renderContent();
+            });
+          });
+
+          document.getElementById("create-network").addEventListener("click", () => openWizard(0));
+          document.getElementById("wizard-close").addEventListener("click", closeWizard);
+          backdrop.addEventListener("click", (event) => {
+            if (event.target === backdrop) closeWizard();
+          });
+          document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && backdrop.classList.contains("open")) closeWizard();
+          });
+          backButton.addEventListener("click", () => {
+            if (state.step > 0) {
+              state.step -= 1;
+              renderWizard();
+            }
+          });
+          nextButton.addEventListener("click", () => {
+            if (state.step === stepLabels.length - 1) {
+              closeWizard();
+              return;
+            }
+            const error = validateStep(state.step);
+            if (error) {
+              showWizardError(error);
+              return;
+            }
+            state.step += 1;
+            renderWizard();
+          });
+
+          renderContent();
+        })();
+      </script>
+    </body>
+    </html>
