@@ -1,0 +1,103 @@
+name: LayerSentry Operator Recovery Wiring
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-operator-recovery-wire.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-operator-recovery-wire
+  cancel-in-progress: false
+
+jobs:
+  wire-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact branch state
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Wire source-divergence recovery without Flux status writes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('internal/operator/packagesource_reconciler.go')
+          s = p.read_text()
+
+          old = '''\t// Find Ready condition in ArtifactGenerator\n\treadyCondition := meta.FindStatusCondition(ag.Status.Conditions, "Ready")\n'''
+          new = '''\t// Find Ready condition in ArtifactGenerator. A condition by itself is not\n\t// sufficient: fluxcd/pkg#934 can expose Ready=True for an older source\n\t// state while status is being serially patched. Independently compare the\n\t// current Flux source hash with what source-watcher has persisted before\n\t// trusting Ready.\n\treadyCondition := meta.FindStatusCondition(ag.Status.Conditions, "Ready")\n\tsourceDiverged, currentSourceDigest, err := r.artifactGeneratorSourceDiverged(ctx, ag)\n\tif err != nil {\n\t\treturn ctrl.Result{}, fmt.Errorf("compare current source state with ArtifactGenerator status: %w", err)\n\t}\n\trealUpstreamFailure := readyCondition != nil && readyCondition.Status == metav1.ConditionFalse && readyCondition.Reason != reasonRecoveryForced\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'ready anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\tif isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now) {'''
+          new = '''\tif !realUpstreamFailure && (sourceDiverged || isOwnMarker || isProgressingInRecovery || artifactGeneratorStuck(ag, readyCondition, now)) {'''
+          if s.count(old) != 1:
+              raise SystemExit(f'recovery route anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\t\tlogger.V(1).Info("routing to recovery state machine",\n\t\t\t\t"packageSource", packageSource.Name,\n\t\t\t\t"artifactGenerator", ag.Name,\n\t\t\t\t"attempts", attempts,\n\t\t\t\t"ownMarker", isOwnMarker,\n\t\t\t\t"progressingInRecovery", isProgressingInRecovery)'''
+          new = '''\t\t\tlogger.V(1).Info("routing to status-safe recovery state machine",\n\t\t\t\t"packageSource", packageSource.Name,\n\t\t\t\t"artifactGenerator", ag.Name,\n\t\t\t\t"attempts", attempts,\n\t\t\t\t"sourceDiverged", sourceDiverged,\n\t\t\t\t"currentSourceDigest", currentSourceDigest,\n\t\t\t\t"observedSourcesDigest", ag.Status.ObservedSourcesDigest,\n\t\t\t\t"ownMarker", isOwnMarker,\n\t\t\t\t"progressingInRecovery", isProgressingInRecovery)'''
+          if s.count(old) != 1:
+              raise SystemExit(f'logging anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\tmessage := fmt.Sprintf(\n\t\t\t"ArtifactGenerator %s/%s has been stuck with a lost Ready condition through %d force-drift attempts; "+\n\t\t\t\t"source-watcher is not recovering. See https://github.com/fluxcd/pkg/issues/934. "+\n\t\t\t\t"An operator must restart source-watcher or manually inspect the ArtifactGenerator.",\n\t\t\tag.Namespace, ag.Name, maxRecoveryAttempts,\n\t\t)'''
+          new = '''\t\tmessage := fmt.Sprintf(\n\t\t\t"ArtifactGenerator %s/%s did not converge through %d bounded reconcile requests; "+\n\t\t\t\t"Cozystack did not mutate Flux-owned status while recovery was in flight. "+\n\t\t\t\t"Inspect source-watcher and the ArtifactGenerator before further mutation.",\n\t\t\tag.Namespace, ag.Name, maxRecoveryAttempts,\n\t\t)'''
+          if s.count(old) != 1:
+              raise SystemExit(f'give-up anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\t\tMessage: fmt.Sprintf(\n\t\t\t\t"ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+\n\t\t\t\t\t"force-drift %d/%d issued, waiting for source-watcher to rebuild.",\n\t\t\t\tattempts, maxRecoveryAttempts,\n\t\t\t),'''
+          new = '''\t\t\tMessage: fmt.Sprintf(\n\t\t\t\t"ArtifactGenerator source/status convergence is pending; "+\n\t\t\t\t\t"reconcile request %d/%d issued without mutating Flux-owned status.",\n\t\t\t\tattempts, maxRecoveryAttempts,\n\t\t\t),'''
+          if s.count(old) != 1:
+              raise SystemExit(f'wait message anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\tif err := r.forceArtifactGeneratorDrift(ctx, ag, now, nextAttempt); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf("failed to force ArtifactGenerator drift: %w", err)\n\t\t}'''
+          new = '''\t\tif err := r.requestArtifactGeneratorRecovery(ctx, ag, now, nextAttempt); err != nil {\n\t\t\treturn ctrl.Result{}, fmt.Errorf("failed to request ArtifactGenerator recovery: %w", err)\n\t\t}'''
+          if s.count(old) != 1:
+              raise SystemExit(f'force call anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\t\tMessage: fmt.Sprintf(\n\t\t\t\t"ArtifactGenerator Ready condition lost to fluxcd/pkg#934 patch.Helper race; "+\n\t\t\t\t\t"forced drift on AG.status.conditions[Ready]=False (attempt %d/%d) so source-watcher rebuilds.",\n\t\t\t\tnextAttempt, maxRecoveryAttempts,\n\t\t\t),'''
+          new = '''\t\t\tMessage: fmt.Sprintf(\n\t\t\t\t"ArtifactGenerator source/status convergence is pending; "+\n\t\t\t\t\t"requested source-watcher reconcile (attempt %d/%d) without writing AG.status.",\n\t\t\t\tnextAttempt, maxRecoveryAttempts,\n\t\t\t),'''
+          if s.count(old) != 1:
+              raise SystemExit(f'force message anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old = '''\t\tlogger.Info("forced source-watcher drift via AG status Ready=False patch",\n\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt)'''
+          new = '''\t\tlogger.Info("requested source-watcher recovery without mutating Flux-owned status",\n\t\t\t"packageSource", packageSource.Name, "artifactGenerator", ag.Name, "attempt", nextAttempt,\n\t\t\t"currentSourceDigest", currentSourceDigest, "observedSourcesDigest", ag.Status.ObservedSourcesDigest)'''
+          if s.count(old) != 1:
+              raise SystemExit(f'force log anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+      - name: Format and run complete operator regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          gofmt -w internal/operator/packagesource_reconciler.go internal/operator/packagesource_recovery_request.go internal/operator/packagesource_recovery_request_test.go
+          go test ./internal/operator -count=1
+          echo 'STATUS_SAFE_SOURCE_RECOVERY_TEST_GATE=PASS'
+
+      - name: Commit tested operator wiring on latest branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add internal/operator/packagesource_reconciler.go internal/operator/packagesource_recovery_request.go internal/operator/packagesource_recovery_request_test.go
+          git config user.name adaptgurus
+          git config user.email 73125939+adaptgurus@users.noreply.github.com
+          git commit -m 'fix(operator): avoid source-watcher status write races'
+          git fetch origin layersentry-platform
+          git rebase origin/layersentry-platform
+          go test ./internal/operator -count=1
+          git push origin HEAD:layersentry-platform
