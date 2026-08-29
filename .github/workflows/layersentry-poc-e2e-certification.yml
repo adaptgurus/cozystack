@@ -34,8 +34,17 @@ jobs:
       KUBECTL: C:\hci-tools\kubectl.exe
       TALOSCTL: C:\hci-tools\talosctl.exe
     steps:
-      - name: Checkout certification source
-        uses: actions/checkout@v4
+      - name: Fetch exact certification source without repository checkout
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE '.github\scripts\layersentry\collect-network-inventory.ps1'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $scriptPath) | Out-Null
+          $url = "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$env:GITHUB_SHA/.github/scripts/layersentry/collect-network-inventory.ps1"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $scriptPath
+          if (-not (Test-Path $scriptPath) -or (Get-Item $scriptPath).Length -lt 100) {
+            throw "failed to fetch exact certification source: $url"
+          }
+          Write-Host "certification_source=$url bytes=$((Get-Item $scriptPath).Length)"
 
       - name: Assert runner assets and Hyper-V topology
         run: |
