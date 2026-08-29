@@ -1,0 +1,109 @@
+name: LayerSentry Create Tenant
+
+on:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-create-tenant.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  create-and-verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+    steps:
+      - name: Validate supported Tenant API and dry-run
+        run: |
+          $ErrorActionPreference='Stop'
+          $k='C:\hci-tools\kubectl.exe'
+          if (-not (Test-Path $k)) { throw "kubectl missing: $k" }
+          if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
+
+          & $k get applicationdefinitions.cozystack.io tenant -o name
+          if ($LASTEXITCODE -ne 0) { throw 'Tenant ApplicationDefinition is unavailable' }
+
+          $api = & $k api-resources --api-group=apps.cozystack.io -o name
+          if ($LASTEXITCODE -ne 0 -or -not ($api -match '^tenants$|^tenants\.apps\.cozystack\.io$')) {
+            throw 'Generated Tenant API is unavailable'
+          }
+
+          $yaml=@'
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Tenant
+metadata:
+  name: layersentry
+  namespace: tenant-root
+spec:
+  host: ""
+  etcd: false
+  monitoring: false
+  ingress: false
+  seaweedfs: false
+  schedulingClass: ""
+  resourceQuotas: {}
+'@
+          $yaml | & $k apply --dry-run=server -f - -o yaml
+          if ($LASTEXITCODE -ne 0) { throw 'Tenant server-side dry-run failed' }
+
+      - name: Create or reconcile layersentry tenant
+        run: |
+          $ErrorActionPreference='Stop'
+          $k='C:\hci-tools\kubectl.exe'
+          $yaml=@'
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Tenant
+metadata:
+  name: layersentry
+  namespace: tenant-root
+spec:
+  host: ""
+  etcd: false
+  monitoring: false
+  ingress: false
+  seaweedfs: false
+  schedulingClass: ""
+  resourceQuotas: {}
+'@
+          $yaml | & $k apply -f -
+          if ($LASTEXITCODE -ne 0) { throw 'Tenant apply failed' }
+
+          & $k -n tenant-root wait --for=condition=Ready tenant.apps.cozystack.io/layersentry --timeout=12m
+          if ($LASTEXITCODE -ne 0) {
+            & $k -n tenant-root get tenant.apps.cozystack.io/layersentry -o yaml
+            & $k get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant.*layersentry|layersentry' -CaseSensitive:$false
+            throw 'layersentry Tenant did not become Ready'
+          }
+
+      - name: Verify generated namespace reconciliation and admin visibility
+        run: |
+          $ErrorActionPreference='Stop'
+          $k='C:\hci-tools\kubectl.exe'
+
+          $ns=& $k -n tenant-root get tenant.apps.cozystack.io/layersentry -o jsonpath='{.status.namespace}'
+          if ($LASTEXITCODE -ne 0 -or -not $ns) { throw 'Tenant status.namespace is unavailable' }
+          Write-Host "generatedNamespace=$ns"
+          if ($ns -ne 'tenant-layersentry') { throw "Unexpected generated namespace: $ns" }
+
+          & $k wait --for=jsonpath='{.status.phase}'=Active namespace/$ns --timeout=3m
+          if ($LASTEXITCODE -ne 0) { throw "$ns did not become Active" }
+
+          Write-Host '===== Tenant object ====='
+          & $k -n tenant-root get tenant.apps.cozystack.io/layersentry -o wide
+          Write-Host '===== TenantNamespace child visible under tenant-root ====='
+          & $k get tenantnamespaces.core.cozystack.io -l 'tenant.cozystack.io/tenant-root' -o wide
+          Write-Host '===== Tenant HelmRelease ====='
+          & $k get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant.*layersentry|layersentry' -CaseSensitive:$false
+          Write-Host '===== Cluster-admin group can list child tenants ====='
+          $can=& $k auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenantnamespaces.core.cozystack.io
+          Write-Host $can
+          if ($can -ne 'yes') { throw 'cozystack-cluster-admin cannot list TenantNamespaces' }
