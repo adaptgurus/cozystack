@@ -41,7 +41,7 @@ jobs:
           $realm = (& $env:KUBECTL get clusterkeycloakrealms.v1.edp.epam.com keycloakrealm-cozy --ignore-not-found -o name | Out-String).Trim()
           if (-not $realm) { throw 'ClusterKeycloakRealm keycloakrealm-cozy is missing' }
 
-          $ing = (& $env:KUBECTL get ingress linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+          $ing = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o json | ConvertFrom-Json)
           $host = $ing.spec.rules[0].host
           if (-not $host) { throw 'linstor-gui Ingress host is empty' }
 
@@ -112,7 +112,7 @@ jobs:
           & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor --timeout=120s
           if ($LASTEXITCODE -ne 0) { throw 'linstor-gui-gatekeeper deployment is not Ready' }
 
-          $ing = (& $env:KUBECTL get ingress linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+          $ing = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o json | ConvertFrom-Json)
           $host = $ing.spec.rules[0].host
           $backend = $ing.spec.rules[0].http.paths[0].backend.service.name
           if ($backend -ne 'linstor-gui-gatekeeper') { throw "SECURITY FAILURE: ingress backend is $backend instead of linstor-gui-gatekeeper" }
