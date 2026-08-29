@@ -1,0 +1,147 @@
+name: LayerSentry LINSTOR GUI Keycloak Offline Role Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-keycloak-offline-role-fix.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  fix-and-certify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Grant native Keycloak offline_access role without rotating password
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($hr in @('keycloak-operator','keycloak','keycloak-configure')) {
+            & $env:KUBECTL wait --for=condition=Ready "helmrelease/$hr" -n cozy-keycloak --timeout=120s
+            if ($LASTEXITCODE -ne 0) { throw "Keycloak HelmRelease $hr is not Ready" }
+          }
+          & $env:KUBECTL wait --for=condition=Ready helmrelease/linstor-gui -n cozy-linstor --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'linstor-gui HelmRelease is not Ready' }
+
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          $scope = @($dep.spec.template.spec.containers[0].args | Where-Object { $_ -like '--scope=*' })
+          if ($scope.Count -ne 1) { throw "expected exactly one gatekeeper scope argument, found $($scope.Count)" }
+          Write-Host "DEPLOYED_GATEKEEPER_SCOPE=$($scope[0])"
+
+          $u = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com layersentry-gui-admin -n cozy-system -o json | ConvertFrom-Json)
+          if ($u.spec.username -ne $env:GUI_USERNAME) { throw 'unexpected KeycloakRealmUser username' }
+          if ('cozystack-cluster-admin' -notin @($u.spec.groups)) { throw 'user lost cozystack-cluster-admin group' }
+          $roles = New-Object System.Collections.Generic.List[string]
+          foreach ($r in @($u.spec.roles)) { if ($r -and -not $roles.Contains([string]$r)) { $roles.Add([string]$r) } }
+          if (-not $roles.Contains('offline_access')) { $roles.Add('offline_access') }
+
+          $patchObj = [ordered]@{ spec = [ordered]@{ roles = @($roles) } }
+          $patchFile = Join-Path $env:RUNNER_TEMP 'layersentry-user-offline-role.json'
+          $patchObj | ConvertTo-Json -Depth 10 | Set-Content -Path $patchFile -Encoding UTF8
+          & $env:KUBECTL patch keycloakrealmusers.v1.edp.epam.com layersentry-gui-admin -n cozy-system --type=merge "--patch-file=$patchFile"
+          if ($LASTEXITCODE -ne 0) { throw 'failed to add offline_access role to KeycloakRealmUser' }
+
+          $deadline = (Get-Date).AddMinutes(3)
+          do {
+            $u2 = (& $env:KUBECTL get keycloakrealmusers.v1.edp.epam.com layersentry-gui-admin -n cozy-system -o json | ConvertFrom-Json)
+            $failures = 0
+            if ($null -ne $u2.status.failureCount) { $failures = [int]$u2.status.failureCount }
+            if (($u2.status.value -eq 'OK') -and ($failures -eq 0) -and ('offline_access' -in @($u2.spec.roles))) { break }
+            if ($failures -gt 0) { throw "KeycloakRealmUser reconcile failed: failures=$failures status=$($u2.status.value)" }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+          if ($u2.status.value -ne 'OK' -or $failures -ne 0) { throw "KeycloakRealmUser did not reconcile: status=$($u2.status.value) failures=$failures" }
+          if ('offline_access' -notin @($u2.spec.roles)) { throw 'offline_access role is absent after reconcile' }
+          Write-Host 'KEYCLOAK_OFFLINE_ACCESS_ROLE=PASS user=layersentry-admin realm=cozy'
+
+      - name: Certify deployed browser OAuth flow with current Flux-rendered scope
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pwdB64 = (& $env:KUBECTL get secret layersentry-gui-admin-password -n cozy-system -o jsonpath='{.data.password}' | Out-String).Trim()
+          if (-not $pwdB64) { throw 'GUI admin password Secret is missing' }
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pwdB64))
+          Write-Output "::add-mask::$pwdB64"
+          Write-Output "::add-mask::$password"
+
+          $guiHostName = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o jsonpath='{.spec.rules[0].host}' | Out-String).Trim()
+          $guiUrl = "https://$guiHostName/"
+          $jar = Join-Path $env:RUNNER_TEMP 'role-fix-browser.cookies'
+
+          $h1f = Join-Path $env:RUNNER_TEMP 'role-root.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h1f -o NUL --max-time 30 $guiUrl
+          if ($LASTEXITCODE -ne 0) { throw 'initial GUI request failed' }
+          $h1 = Get-Content $h1f -Raw
+          $s1 = [regex]::Match($h1,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc1 = ([regex]::Match($h1,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s1 -notin @('302','303','307') -or -not $loc1) { throw "initial auth redirect invalid: HTTP=$s1 location=$loc1" }
+          if ((Get-Content $jar -Raw) -notmatch 'kc-access_csrf') { throw 'oauth2-proxy CSRF cookie missing' }
+
+          $h2f = Join-Path $env:RUNNER_TEMP 'role-login.headers'
+          $b2f = Join-Path $env:RUNNER_TEMP 'role-login.html'
+          & curl.exe -k -sS -c $jar -b $jar -D $h2f -o $b2f --max-time 30 $loc1
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak login page failed' }
+          $s2 = [regex]::Match((Get-Content $h2f -Raw),'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($s2 -ne '200') { throw "Keycloak login page returned HTTP $s2" }
+          $html = Get-Content $b2f -Raw
+          $m = [regex]::Match($html,'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if (-not $m.Success) { $m = [regex]::Match($html,'<form[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+          if (-not $m.Success) { throw 'Keycloak login form action not found' }
+          $action = [Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+          if ($action.StartsWith('/')) { $u=[Uri]$loc1; $action="$($u.Scheme)://$($u.Authority)$action" }
+
+          $h3f = Join-Path $env:RUNNER_TEMP 'role-submit.headers'
+          $b3f = Join-Path $env:RUNNER_TEMP 'role-submit.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h3f -o $b3f --max-time 30 -X POST $action --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'credentialId='
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak credential submit failed' }
+          $h3 = Get-Content $h3f -Raw
+          $s3 = [regex]::Match($h3,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc3 = ([regex]::Match($h3,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s3 -notin @('302','303')) { throw "Keycloak credential submit returned HTTP $s3" }
+          if ($loc3 -notlike "https://$guiHostName/oauth2/callback*") { throw "unexpected OAuth callback URL: $loc3" }
+          Write-Host 'KEYCLOAK_BROWSER_CREDENTIALS=PASS'
+
+          $h4f = Join-Path $env:RUNNER_TEMP 'role-callback.headers'
+          $b4f = Join-Path $env:RUNNER_TEMP 'role-callback.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h4f -o $b4f --max-time 30 $loc3
+          if ($LASTEXITCODE -ne 0) { throw 'OAuth callback request failed' }
+          $h4 = Get-Content $h4f -Raw
+          $s4 = [regex]::Match($h4,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc4 = ([regex]::Match($h4,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s4 -eq '500') { throw 'OAuth callback still returns HTTP 500' }
+          if ($s4 -notin @('302','303')) { throw "OAuth callback returned HTTP $s4" }
+          if ((Get-Content $jar -Raw) -notmatch "`tkc-access`t") { throw 'authenticated kc-access session cookie missing' }
+          Write-Host "OAUTH_CALLBACK=PASS http=$s4 sessionCookie=true"
+
+          if (-not $loc4) { $loc4='/' }
+          if ($loc4.StartsWith('/')) { $finalUrl="https://$guiHostName$loc4" } else { $finalUrl=$loc4 }
+          $h5f = Join-Path $env:RUNNER_TEMP 'role-final.headers'
+          $b5f = Join-Path $env:RUNNER_TEMP 'role-final.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h5f -o $b5f --max-time 30 $finalUrl
+          if ($LASTEXITCODE -ne 0) { throw 'authenticated GUI request failed' }
+          $s5 = [regex]::Match((Get-Content $h5f -Raw),'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($s5 -ne '200') { throw "authenticated GUI returned HTTP $s5" }
+          $body5 = Get-Content $b5f -Raw
+          if ($body5 -match '(?i)Internal Server Error|Oops! Something went wrong') { throw 'authenticated GUI still returned server-error page' }
+          Write-Host "LINSTOR_GUI_LOGIN_FINAL=PASS username=$env:GUI_USERNAME callback500=false authenticatedHttp=200 url=$guiUrl"
+
+      - name: Confirm original error is absent in new gatekeeper logs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $logs = (& $env:KUBECTL logs deployment/linstor-gui-gatekeeper -n cozy-linstor --since=3m 2>&1 | Out-String)
+          $bad = @($logs -split "`r?`n" | Where-Object { $_ -match '(?i)Offline tokens not allowed for the user or client' })
+          if ($bad.Count -gt 0) {
+            $bad | Select-Object -Last 20 | ForEach-Object { Write-Host $_ }
+            throw 'new offline-token rejection detected after role fix'
+          }
+          Write-Host 'ORIGINAL_500_CAUSE_POSTCHECK=PASS noNewOfflineTokenRejection=true'
