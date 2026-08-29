@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
@@ -23,132 +23,134 @@ jobs:
     env:
       KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
     steps:
-      - name: Verify runner and cluster access
+      - uses: actions/checkout@v4
+        with:
+          ref: layersentry-platform
+          fetch-depth: 0
+
+      - name: Collect sanitized live tenant and Plan-schema evidence
         run: |
           $ErrorActionPreference = 'Stop'
           $kubectl = 'C:\hci-tools\kubectl.exe'
           if (-not (Test-Path $kubectl)) { throw "kubectl missing: $kubectl" }
           if (-not (Test-Path $env:KUBECONFIG)) { throw "kubeconfig missing: $env:KUBECONFIG" }
-          & $kubectl version
-          & $kubectl get nodes -o wide
-          if ($LASTEXITCODE -ne 0) { throw 'cluster access failed' }
 
-      - name: Inspect tenant APIs and current tenant objects
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $kubectl = 'C:\hci-tools\kubectl.exe'
-
-          Write-Host '===== API RESOURCES MATCHING TENANT / PLAN ====='
-          & $kubectl api-resources -o wide | Select-String -Pattern 'tenant|plan' -CaseSensitive:$false
-
-          Write-Host '===== API SERVICES MATCHING COZYSTACK ====='
-          & $kubectl get apiservice -o wide | Select-String -Pattern 'cozystack' -CaseSensitive:$false
-
-          Write-Host '===== TENANT NAMESPACES THROUGH AGGREGATED API ====='
-          & $kubectl get tenantnamespaces.core.cozystack.io -o yaml
-          Write-Host "tenantnamespace_exit=$LASTEXITCODE"
-
-          Write-Host '===== RAW TENANTNAMESPACES ENDPOINT ====='
-          & $kubectl get --raw '/apis/core.cozystack.io/v1alpha1/tenantnamespaces'
-          Write-Host "raw_tenant_exit=$LASTEXITCODE"
-
-          Write-Host '===== TENANT ROOT NAMESPACE ====='
-          & $kubectl get namespace tenant-root -o yaml
-
-          Write-Host '===== TENANT-RELATED HELMRELEASES ====='
-          & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant' -CaseSensitive:$false
-
-          Write-Host '===== TENANT APPLICATION OBJECTS, IF SERVED ====='
-          & $kubectl get tenants.apps.cozystack.io -A -o yaml 2>$null
-          Write-Host "tenant_app_exit=$LASTEXITCODE"
-
-      - name: Inspect OpenAPI and Plan schema exposure
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $kubectl = 'C:\hci-tools\kubectl.exe'
-
-          Write-Host '===== OPENAPI V3 DISCOVERY ====='
-          $discovery = & $kubectl get --raw '/openapi/v3' 2>$null
-          Write-Output $discovery
-          Write-Host "openapi_discovery_exit=$LASTEXITCODE"
-
-          if ($discovery) {
+          $report = Join-Path $env:RUNNER_TEMP 'layersentry-dashboard-tenant-latest.md'
+          $lines = New-Object System.Collections.Generic.List[string]
+          function Add-Line([string]$s = '') { $script:lines.Add($s) | Out-Null }
+          function Add-Command([string]$title, [scriptblock]$command) {
+            Add-Line "## $title"
+            Add-Line '```text'
             try {
-              $obj = $discovery | ConvertFrom-Json
-              $paths = @($obj.paths.PSObject.Properties.Name)
-              foreach ($p in $paths | Where-Object { $_ -match 'cozystack|backup|plan' }) {
-                Write-Host "===== OPENAPI PATH $p ====="
-                $schema = & $kubectl get --raw "/openapi/v3/$p" 2>$null
-                if ($schema) {
-                  $text = [string]$schema
-                  Write-Host "bytes=$($text.Length) contains_plan=$($text -match '(?i)plan') contains_tenant=$($text -match '(?i)tenant')"
-                  if ($text -match '(?i)plan') {
-                    $matches = [regex]::Matches($text, '.{0,100}(?i:plan).{0,180}')
-                    $matches | Select-Object -First 8 | ForEach-Object { Write-Output $_.Value }
-                  }
-                }
-                Write-Host "schema_exit=$LASTEXITCODE"
-              }
+              $output = & $command 2>&1 | Out-String
+              Add-Line $output.TrimEnd()
+              Add-Line "exit=$LASTEXITCODE"
             } catch {
-              Write-Warning "failed to parse OpenAPI discovery: $($_.Exception.Message)"
+              Add-Line "ERROR: $($_.Exception.Message)"
             }
+            Add-Line '```'
+            Add-Line
           }
 
-          Write-Host '===== APPS COZYSTACK DISCOVERY ====='
-          & $kubectl get --raw '/apis/apps.cozystack.io/v1alpha1' 2>$null
-          Write-Host "apps_discovery_exit=$LASTEXITCODE"
+          Add-Line '# LayerSentry TESTSER dashboard tenant / Plan schema evidence'
+          Add-Line
+          Add-Line "Generated (UTC): $([DateTime]::UtcNow.ToString('o'))"
+          Add-Line "Workflow commit: $env:GITHUB_SHA"
+          Add-Line 'Safety: read-only Kubernetes inspection. No Secret contents, credentials, disk mutation, StoragePool creation, apply, patch, or delete operations are included.'
+          Add-Line
 
-          Write-Host '===== BACKUPS COZYSTACK DISCOVERY ====='
-          & $kubectl get --raw '/apis/backups.cozystack.io/v1alpha1' 2>$null
-          Write-Host "backups_discovery_exit=$LASTEXITCODE"
+          Add-Command 'Kubernetes nodes' { & $kubectl get nodes -o wide }
+          Add-Command 'Tenant / Plan API resources' { & $kubectl api-resources -o wide | Select-String -Pattern 'tenant|plan|backup' -CaseSensitive:$false }
+          Add-Command 'Cozystack APIService health' { & $kubectl get apiservice -o wide | Select-String -Pattern 'cozystack' -CaseSensitive:$false }
+          Add-Command 'TenantNamespaces aggregated API' { & $kubectl get tenantnamespaces.core.cozystack.io -o wide }
+          Add-Command 'tenant-root Namespace' { & $kubectl get namespace tenant-root -o jsonpath='{.metadata.name}{" phase="}{.status.phase}{"\n"}' }
+          Add-Command 'Tenant HelmReleases' { & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant' -CaseSensitive:$false }
+          Add-Command 'Tenant ApplicationDefinition candidates' { & $kubectl get applicationdefinitions -A -o wide 2>$null | Select-String -Pattern 'tenant' -CaseSensitive:$false }
+          Add-Command 'Tenant ApplicationDefinition YAML (non-secret)' { & $kubectl get applicationdefinitions tenant -o yaml 2>$null }
+          Add-Command 'cozystack-apps HelmRepository' { & $kubectl get helmrepository.source.toolkit.fluxcd.io -n cozy-public cozystack-apps -o jsonpath='{.metadata.name}{" ready="}{.status.conditions[?(@.type=="Ready")].status}{" artifact="}{.status.artifact.revision}{"\n"}' 2>$null }
 
-      - name: Inspect dashboard and Cozystack API health
+          Add-Command 'Plan-related CRDs' { & $kubectl get crd -o wide | Select-String -Pattern 'plan|backup' -CaseSensitive:$false }
+          Add-Command 'Plan API discovery' {
+            $resources = & $kubectl api-resources --verbs=list -o name 2>$null | Where-Object { $_ -match '(?i)plan' }
+            if (-not $resources) { 'NO_PLAN_RESOURCE_DISCOVERED'; return }
+            foreach ($resource in $resources) {
+              "--- $resource ---"
+              & $kubectl get $resource -A -o wide 2>&1
+            }
+          }
+          Add-Command 'Plan CRD served/storage/schema summary' {
+            $crds = & $kubectl get crd -o json 2>$null | ConvertFrom-Json
+            foreach ($crd in @($crds.items | Where-Object { $_.metadata.name -match '(?i)plan' })) {
+              "CRD=$($crd.metadata.name) group=$($crd.spec.group)"
+              foreach ($v in @($crd.spec.versions)) {
+                $schemaPresent = $null -ne $v.schema.openAPIV3Schema
+                "version=$($v.name) served=$($v.served) storage=$($v.storage) schemaPresent=$schemaPresent"
+              }
+            }
+          }
+          Add-Command 'OpenAPI v3 Cozystack/backup path summary' {
+            $discoveryRaw = & $kubectl get --raw '/openapi/v3' 2>$null
+            if (-not $discoveryRaw) { 'OPENAPI_V3_DISCOVERY_EMPTY'; return }
+            $discovery = $discoveryRaw | ConvertFrom-Json
+            $paths = @($discovery.paths.PSObject.Properties.Name | Where-Object { $_ -match '(?i)cozystack|backup' })
+            foreach ($p in $paths) {
+              $schemaRaw = & $kubectl get --raw "/openapi/v3/$p" 2>$null
+              $containsPlan = [bool]([string]$schemaRaw -match '(?i)plan')
+              "$p bytes=$(([string]$schemaRaw).Length) containsPlan=$containsPlan"
+            }
+          }
+          Add-Command 'apps.cozystack.io discovery' { & $kubectl get --raw '/apis/apps.cozystack.io/v1alpha1' 2>$null }
+          Add-Command 'backups.cozystack.io discovery' { & $kubectl get --raw '/apis/backups.cozystack.io/v1alpha1' 2>$null }
+
+          Add-Command 'Dashboard / Cozystack API pods' { & $kubectl get pods -A -o wide | Select-String -Pattern 'dashboard|cozystack-api' -CaseSensitive:$false }
+          Add-Command 'Dashboard / API services and endpoints' { & $kubectl get svc,endpoints -A -o wide | Select-String -Pattern 'dashboard|cozystack-api' -CaseSensitive:$false }
+          Add-Command 'Non-running/non-completed pods' {
+            $pods = & $kubectl get pods -A --no-headers 2>$null
+            $bad = @($pods | Where-Object { $_ -notmatch '\sRunning\s|\sCompleted\s' })
+            if ($bad.Count -eq 0) { 'NONE' } else { $bad }
+          }
+          Add-Command 'HelmReleases not Ready' {
+            $hrs = & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A --no-headers 2>$null
+            $bad = @($hrs | Where-Object { $_ -notmatch '\sTrue\s' })
+            if ($bad.Count -eq 0) { 'NONE' } else { $bad }
+          }
+          Add-Command 'Packages not Ready' {
+            $pkgs = & $kubectl get packages.cozystack.io -A --no-headers 2>$null
+            $bad = @($pkgs | Where-Object { $_ -notmatch '\sTrue\s' })
+            if ($bad.Count -eq 0) { 'NONE' } else { $bad }
+          }
+          Add-Command 'Classic LINSTOR storage classes' { & $kubectl get storageclass -o wide | Select-String -Pattern 'linstor|local|replicated' -CaseSensitive:$false }
+          Add-Command 'Classic LINSTOR nodes' { & $kubectl -n cozy-linstor exec deploy/linstor-controller -- linstor node list 2>$null }
+          Add-Command 'Classic LINSTOR storage pools' { & $kubectl -n cozy-linstor exec deploy/linstor-controller -- linstor storage-pool list 2>$null }
+          Add-Command 'Blockstor StoragePool safety boundary' {
+            $out = & $kubectl get storagepools.blockstor.linbit.com -A --no-headers 2>$null
+            if ($LASTEXITCODE -ne 0) { "QUERY_UNAVAILABLE exit=$LASTEXITCODE" }
+            elseif (-not $out) { 'ZERO_BLOCKSTOR_STORAGEPOOLS' }
+            else { $out }
+          }
+
+          $lines | Set-Content -Path $report -Encoding utf8
+          Write-Host "Evidence written to $report"
+
+      - name: Publish sanitized evidence to layersentry-platform
         run: |
-          $ErrorActionPreference = 'Continue'
-          $kubectl = 'C:\hci-tools\kubectl.exe'
+          $ErrorActionPreference = 'Stop'
+          $report = Join-Path $env:RUNNER_TEMP 'layersentry-dashboard-tenant-latest.md'
+          if (-not (Test-Path $report)) { throw "report missing: $report" }
 
-          Write-Host '===== DASHBOARD / COZYSTACK API PODS ====='
-          & $kubectl get pods -A -o wide | Select-String -Pattern 'dashboard|cozystack-api' -CaseSensitive:$false
+          git config user.name 'layersentry-ci'
+          git config user.email 'layersentry-ci@users.noreply.github.com'
+          git fetch origin layersentry-platform
+          git checkout -B layersentry-platform origin/layersentry-platform
 
-          Write-Host '===== DASHBOARD / API SERVICES AND ENDPOINTS ====='
-          & $kubectl get svc,endpoints -A -o wide | Select-String -Pattern 'dashboard|cozystack-api' -CaseSensitive:$false
-
-          Write-Host '===== COZYSTACK API LOG TAILS ====='
-          $apiPods = & $kubectl get pods -A -o json 2>$null | ConvertFrom-Json
-          if ($apiPods) {
-            foreach ($pod in @($apiPods.items | Where-Object { $_.metadata.name -match 'cozystack-api' })) {
-              Write-Host "--- $($pod.metadata.namespace)/$($pod.metadata.name) ---"
-              & $kubectl logs -n $pod.metadata.namespace $pod.metadata.name --all-containers=true --tail=150 2>$null
-            }
+          $destDir = Join-Path $env:GITHUB_WORKSPACE 'docs\layersentry\evidence'
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+          $dest = Join-Path $destDir 'dashboard-tenant-latest.md'
+          Copy-Item $report $dest -Force
+          git add -- 'docs/layersentry/evidence/dashboard-tenant-latest.md'
+          if (-not (git diff --cached --quiet)) {
+            git commit -m 'test(layersentry): record live dashboard tenant schema evidence'
+            git push origin HEAD:layersentry-platform
+          } else {
+            Write-Host 'Evidence content unchanged; no commit required.'
           }
-
-          Write-Host '===== DASHBOARD LOG TAILS ====='
-          if ($apiPods) {
-            foreach ($pod in @($apiPods.items | Where-Object { $_.metadata.name -match 'dashboard' })) {
-              Write-Host "--- $($pod.metadata.namespace)/$($pod.metadata.name) ---"
-              & $kubectl logs -n $pod.metadata.namespace $pod.metadata.name --all-containers=true --tail=100 2>$null
-            }
-          }
-
-      - name: Platform non-destructive sanity snapshot
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $kubectl = 'C:\hci-tools\kubectl.exe'
-
-          Write-Host '===== NOT READY / FAILED PODS ====='
-          $pods = & $kubectl get pods -A --no-headers 2>$null
-          $pods | Where-Object { $_ -notmatch '\sRunning\s|\sCompleted\s' }
-
-          Write-Host '===== HELMRELEASES NOT READY ====='
-          & $kubectl get helmreleases.helm.toolkit.fluxcd.io -A 2>$null | Select-String -Pattern 'False|Unknown' -CaseSensitive:$false
-
-          Write-Host '===== PACKAGES NOT READY ====='
-          & $kubectl get packages.cozystack.io -A 2>$null | Select-String -Pattern 'False|Unknown' -CaseSensitive:$false
-
-          Write-Host '===== BLOCKSTOR STORAGEPOOLS SAFETY CHECK ====='
-          & $kubectl get storagepools.blockstor.linbit.com -A 2>$null
-          Write-Host "blockstor_pool_query_exit=$LASTEXITCODE"
-
-          Write-Host 'SAFETY: diagnostic only; no create/apply/patch/delete and no storage-device mutation is performed.'
-
-# Retrigger marker: live dashboard tenant/schema diagnosis requested 2026-08-29
