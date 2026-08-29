@@ -31,6 +31,13 @@ spec:
             - server
             - --addr={{ .Values.gateway.listenAddress }}
             - --config=/etc/linstor-gateway/linstor-gateway.toml
+          env:
+            - name: LS_ROOT_CA_FILE
+              value: /etc/linstor/client/ca.crt
+            - name: LS_USER_CERTIFICATE_FILE
+              value: /etc/linstor/client/tls.crt
+            - name: LS_USER_KEY_FILE
+              value: /etc/linstor/client/tls.key
           ports:
             - name: http
               containerPort: 8337
@@ -60,6 +67,9 @@ spec:
               mountPath: /etc/linstor-gateway/linstor-gateway.toml
               subPath: linstor-gateway.toml
               readOnly: true
+            - name: linstor-client-tls
+              mountPath: /etc/linstor/client
+              readOnly: true
             - name: tmp
               mountPath: /tmp
             {{- if .Values.gateway.tokenSecret.name }}
@@ -71,6 +81,10 @@ spec:
         - name: config
           configMap:
             name: linstor-gateway-config
+        - name: linstor-client-tls
+          secret:
+            secretName: {{ .Values.linstor.clientSecret }}
+            defaultMode: 0444
         - name: tmp
           emptyDir: {}
         {{- if .Values.gateway.tokenSecret.name }}

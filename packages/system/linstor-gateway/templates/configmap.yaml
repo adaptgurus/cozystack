@@ -8,7 +8,7 @@ metadata:
 data:
   linstor-gateway.toml: |
     [linstor]
-    controllers = {{ toJson .Values.gateway.controllers }}
+    controllers = {{ toJson .Values.linstor.controllers }}
     {{- if .Values.gateway.tokenSecret.name }}
     token_file = "/etc/linstor-gateway/token/{{ .Values.gateway.tokenSecret.key }}"
     {{- end }}
