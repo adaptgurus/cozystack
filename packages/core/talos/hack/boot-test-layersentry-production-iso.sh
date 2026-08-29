@@ -17,10 +17,9 @@ command -v qemu-img >/dev/null
 test -x "$TALOSCTL"
 
 wait_insecure() {
-  port=$1
-  out=$2
+  out=$1
   for _ in $(seq 1 180); do
-    if "$TALOSCTL" --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure --talosconfig /dev/null version >"$out" 2>&1; then
+    if "$TALOSCTL" --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure version >"$out" 2>&1; then
       return 0
     fi
     sleep 2
@@ -29,9 +28,8 @@ wait_insecure() {
 }
 
 wait_secure() {
-  port=$1
-  config=$2
-  out=$3
+  config=$1
+  out=$2
   for _ in $(seq 1 240); do
     if "$TALOSCTL" --talosconfig "$config" --nodes 127.0.0.1 --endpoints 127.0.0.1 version >"$out" 2>&1; then
       return 0
@@ -50,8 +48,6 @@ kill_vm() {
   fi
 }
 
-# QEMU user networking always exposes the guest Talos API on host port 50000.
-# Run one legacy/BIOS maintenance boot first so both firmware paths are covered.
 BIOS_SERIAL="$EVIDENCE/bios-serial.log"
 qemu-system-x86_64 \
   -machine q35,accel=tcg -cpu max -m 3072 -smp 2 \
@@ -61,15 +57,13 @@ qemu-system-x86_64 \
   >"$EVIDENCE/bios-qemu.out" 2>"$EVIDENCE/bios-qemu.err" &
 BIOS_PID=$!
 trap 'kill_vm "${BIOS_PID:-}"; kill_vm "${UEFI_PID:-}"' EXIT
-if ! wait_insecure 50000 "$EVIDENCE/bios-talos-version.txt"; then
+if ! wait_insecure "$EVIDENCE/bios-talos-version.txt"; then
   tail -200 "$BIOS_SERIAL" || true
   exit 1
 fi
 kill_vm "$BIOS_PID"
 BIOS_PID=
 
-# Convert the exact imager-produced installer tar into a registry object that
-# the disposable Talos VM can pull through the QEMU host gateway.
 LOAD_OUT="$EVIDENCE/docker-load-installer.txt"
 docker load -i "$INSTALLER_TAR" | tee "$LOAD_OUT"
 LOADED=$(sed -n 's/^Loaded image: //p' "$LOAD_OUT" | tail -1)
@@ -114,10 +108,9 @@ start_uefi() {
   UEFI_PID=$!
 }
 
-# UEFI ISO boot -> install using custom installer.
 UEFI_SERIAL="$EVIDENCE/uefi-install-serial.log"
 start_uefi yes "$UEFI_SERIAL"
-if ! wait_insecure 50000 "$EVIDENCE/uefi-maintenance-version.txt"; then
+if ! wait_insecure "$EVIDENCE/uefi-maintenance-version.txt"; then
   tail -200 "$UEFI_SERIAL" || true
   exit 1
 fi
@@ -128,23 +121,18 @@ mkdir -p "$CFG"
   --output-dir "$CFG" --install-disk /dev/vda \
   --install-image "registry.layersentry.invalid/layersentry/installer:${BUILD_TAG}"
 
-# Insert runtime module policy into the generated control-plane config so the
-# disk-installed node proves custom DRBD/ZFS/NFSD/iSER modules actually load.
 python3 - "$CFG/controlplane.yaml" <<'PY'
 import sys
 p=sys.argv[1]
 s=open(p).read()
 needle='machine:\n'
-insert='machine:\n  kernel:\n    modules:\n      - name: dm_multipath\n      - name: dm_round-robin\n      - name: drbd\n      - name: zfs\n      - name: nfsd\n      - name: ib_iser\n'
+insert='machine:\n  kernel:\n    modules:\n      - name: dm_multipath\n      - name: dm-round-robin\n      - name: drbd\n      - name: zfs\n      - name: nfsd\n      - name: ib_iser\n'
 if needle not in s:
     raise SystemExit('machine root not found in generated config')
 s=s.replace(needle, insert, 1)
 open(p,'w').write(s)
 PY
 
-# Persist multipath policy from the production image and mirror the synthetic
-# registry name to the QEMU host registry; HTTP is confined to this disposable
-# CI network and is not a production registry recommendation.
 awk 'f{print} /^---$/{f=1; print}' "$ROOT/packages/core/talos/layersentry-hci-machine-config.yaml" >> "$CFG/controlplane.yaml"
 cat >> "$CFG/controlplane.yaml" <<'EOF'
 ---
@@ -155,10 +143,10 @@ endpoints:
   - url: http://10.0.2.2:5005
 EOF
 
-"$TALOSCTL" --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure --talosconfig /dev/null \
+"$TALOSCTL" --nodes 127.0.0.1 --endpoints 127.0.0.1 --insecure \
   apply-config --file "$CFG/controlplane.yaml"
 
-if ! wait_secure 50000 "$CFG/talosconfig" "$EVIDENCE/post-install-version.txt"; then
+if ! wait_secure "$CFG/talosconfig" "$EVIDENCE/post-install-version.txt"; then
   tail -250 "$UEFI_SERIAL" || true
   exit 1
 fi
@@ -166,11 +154,9 @@ kill_vm "$UEFI_PID"
 UEFI_PID=
 sleep 2
 
-# Critical persistence gate: start the installed disk under UEFI with the ISO
-# completely detached. Passing from here proves install/upgrade payload parity.
 DISK_SERIAL="$EVIDENCE/uefi-disk-only-serial.log"
 start_uefi no "$DISK_SERIAL"
-if ! wait_secure 50000 "$CFG/talosconfig" "$EVIDENCE/disk-only-version.txt"; then
+if ! wait_secure "$CFG/talosconfig" "$EVIDENCE/disk-only-version.txt"; then
   tail -250 "$DISK_SERIAL" || true
   exit 1
 fi
@@ -209,8 +195,6 @@ for extension in $EXPECTED_EXTENSIONS; do
   }
 done
 
-# ZFS auto-import must not have returned, while LayerSentry target/server service
-# containers may be healthy but must remain dormant with no storage listeners.
 ! grep -Fq 'ext-zfs-service' "$EVIDENCE/services.txt"
 cat "$EVIDENCE/tcp.txt" "$EVIDENCE/tcp6.txt" | awk '
   $4=="0A" && $2 ~ /:(006F|0801|0CBC|4E50)$/ {print; bad=1}
