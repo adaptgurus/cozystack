@@ -1,0 +1,168 @@
+name: LayerSentry LINSTOR GUI OAuth Persist
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-linstor-gui-oauth-persist.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  persist:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Persist corrected scope through HelmRelease post-renderer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          $args = @($dep.spec.template.spec.containers[0].args)
+          $scope = @($args | Where-Object { $_ -like '--scope=*' })
+          if ($scope.Count -ne 1 -or $scope[0] -ne '--scope=openid email profile groups') {
+            throw "live gatekeeper is not in corrected state before persistence: $($scope -join ',')"
+          }
+
+          $renderedPatch = [ordered]@{
+            apiVersion = 'apps/v1'
+            kind = 'Deployment'
+            metadata = [ordered]@{ name = 'linstor-gui-gatekeeper' }
+            spec = [ordered]@{
+              template = [ordered]@{
+                spec = [ordered]@{
+                  containers = @(
+                    [ordered]@{ name = 'auth-proxy'; args = $args }
+                  )
+                }
+              }
+            }
+          } | ConvertTo-Json -Depth 20
+
+          $hr = (& $env:KUBECTL get helmrelease linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+          $existing = @()
+          if ($null -ne $hr.spec.postRenderers) { $existing = @($hr.spec.postRenderers) }
+
+          $filtered = New-Object System.Collections.ArrayList
+          foreach ($pr in $existing) {
+            $isOurPatch = $false
+            if ($pr.kustomize -and $pr.kustomize.patches) {
+              foreach ($p in @($pr.kustomize.patches)) {
+                if ($p.target -and $p.target.kind -eq 'Deployment' -and $p.target.name -eq 'linstor-gui-gatekeeper' -and [string]$p.patch -match 'scope=openid email profile groups') {
+                  $isOurPatch = $true
+                }
+              }
+            }
+            if (-not $isOurPatch) { [void]$filtered.Add($pr) }
+          }
+
+          $ourRenderer = [ordered]@{
+            kustomize = [ordered]@{
+              patches = @(
+                [ordered]@{
+                  target = [ordered]@{ group='apps'; version='v1'; kind='Deployment'; name='linstor-gui-gatekeeper' }
+                  patch = $renderedPatch
+                }
+              )
+            }
+          }
+          [void]$filtered.Add($ourRenderer)
+
+          $hrPatch = [ordered]@{ spec = [ordered]@{ postRenderers = @($filtered) } }
+          $patchFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-helmrelease-oauth-persist.json'
+          $hrPatch | ConvertTo-Json -Depth 40 | Set-Content -Path $patchFile -Encoding UTF8
+          & $env:KUBECTL patch helmrelease linstor-gui -n cozy-linstor --type=merge "--patch-file=$patchFile"
+          if ($LASTEXITCODE -ne 0) { throw 'failed to persist OAuth scope in HelmRelease postRenderer' }
+          Write-Host "HELMRELEASE_OAUTH_POSTRENDERER=PASS totalPostRenderers=$($filtered.Count)"
+
+      - name: Force Flux reconcile and prove corrected scope survives
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+          & $env:KUBECTL annotate helmrelease linstor-gui -n cozy-linstor "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite
+          if ($LASTEXITCODE -ne 0) { throw 'failed to request HelmRelease reconcile' }
+
+          $deadline = (Get-Date).AddMinutes(5)
+          do {
+            $hr = (& $env:KUBECTL get helmrelease linstor-gui -n cozy-linstor -o json | ConvertFrom-Json)
+            $handled = [string]$hr.status.lastHandledReconcileAt
+            $ready = @($hr.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -First 1)
+            if ($handled -eq $stamp -and $ready.status -eq 'True') { break }
+            Start-Sleep -Seconds 5
+          } while ((Get-Date) -lt $deadline)
+          if ($handled -ne $stamp) { throw "Flux did not handle requested reconcile; handled=$handled requested=$stamp" }
+          if ($ready.status -ne 'True') { throw "linstor-gui HelmRelease not Ready after reconcile: $($ready.message)" }
+
+          & $env:KUBECTL rollout status deployment/linstor-gui-gatekeeper -n cozy-linstor --timeout=180s
+          if ($LASTEXITCODE -ne 0) { throw 'gatekeeper rollout not Ready after Flux reconcile' }
+          $dep = (& $env:KUBECTL get deployment linstor-gui-gatekeeper -n cozy-linstor -o json | ConvertFrom-Json)
+          $scope = @($dep.spec.template.spec.containers[0].args | Where-Object { $_ -like '--scope=*' })
+          if ($scope.Count -ne 1 -or $scope[0] -ne '--scope=openid email profile groups') {
+            throw "Flux reconcile reverted the OAuth fix: $($scope -join ',')"
+          }
+          Write-Host 'LINSTOR_GUI_OAUTH_PERSISTENCE=PASS fluxReconcile=true offlineAccess=false'
+
+      - name: Re-certify browser login after Flux reconcile
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pwdB64 = (& $env:KUBECTL get secret layersentry-gui-admin-password -n cozy-system -o jsonpath='{.data.password}' | Out-String).Trim()
+          $password = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pwdB64))
+          Write-Output "::add-mask::$pwdB64"
+          Write-Output "::add-mask::$password"
+          $guiHostName = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o jsonpath='{.spec.rules[0].host}' | Out-String).Trim()
+          $guiUrl = "https://$guiHostName/"
+          $jar = Join-Path $env:RUNNER_TEMP 'persist-browser.cookies'
+
+          $h1f = Join-Path $env:RUNNER_TEMP 'persist-root.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h1f -o NUL --max-time 30 $guiUrl
+          if ($LASTEXITCODE -ne 0) { throw 'initial GUI request failed' }
+          $h1 = Get-Content $h1f -Raw
+          $loc1 = ([regex]::Match($h1,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ((Get-Content $jar -Raw) -notmatch 'kc-access_csrf') { throw 'CSRF cookie not created after Flux reconcile' }
+
+          $h2f = Join-Path $env:RUNNER_TEMP 'persist-login.headers'
+          $b2f = Join-Path $env:RUNNER_TEMP 'persist-login.html'
+          & curl.exe -k -sS -c $jar -b $jar -D $h2f -o $b2f --max-time 30 $loc1
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak login page failed' }
+          $html = Get-Content $b2f -Raw
+          $m = [regex]::Match($html,'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if (-not $m.Success) { $m = [regex]::Match($html,'<form[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase) }
+          if (-not $m.Success) { throw 'login form not found' }
+          $action = [Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+
+          $h3f = Join-Path $env:RUNNER_TEMP 'persist-submit.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h3f -o NUL --max-time 30 -X POST $action --data-urlencode 'username=layersentry-admin' --data-urlencode "password=$password" --data-urlencode 'credentialId='
+          if ($LASTEXITCODE -ne 0) { throw 'Keycloak credential submit failed' }
+          $h3 = Get-Content $h3f -Raw
+          $s3 = [regex]::Match($h3,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc3 = ([regex]::Match($h3,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s3 -notin @('302','303') -or $loc3 -notlike "https://$guiHostName/oauth2/callback*") { throw "credentials did not reach OAuth callback: http=$s3 location=$loc3" }
+
+          $h4f = Join-Path $env:RUNNER_TEMP 'persist-callback.headers'
+          & curl.exe -k -sS -c $jar -b $jar -D $h4f -o NUL --max-time 30 $loc3
+          if ($LASTEXITCODE -ne 0) { throw 'OAuth callback failed' }
+          $h4 = Get-Content $h4f -Raw
+          $s4 = [regex]::Match($h4,'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          $loc4 = ([regex]::Match($h4,'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if ($s4 -eq '500' -or $s4 -notin @('302','303')) { throw "callback failed after Flux reconcile: HTTP $s4" }
+          if ((Get-Content $jar -Raw) -notmatch "`tkc-access`t") { throw 'authenticated session cookie missing after Flux reconcile' }
+
+          if (-not $loc4) { $loc4='/' }
+          if ($loc4.StartsWith('/')) { $finalUrl="https://$guiHostName$loc4" } else { $finalUrl=$loc4 }
+          $h5f = Join-Path $env:RUNNER_TEMP 'persist-final.headers'
+          $b5f = Join-Path $env:RUNNER_TEMP 'persist-final.body'
+          & curl.exe -k -sS -c $jar -b $jar -D $h5f -o $b5f --max-time 30 $finalUrl
+          if ($LASTEXITCODE -ne 0) { throw 'authenticated final request failed' }
+          $s5 = [regex]::Match((Get-Content $h5f -Raw),'HTTP/\S+\s+(\d{3})').Groups[1].Value
+          if ($s5 -ne '200') { throw "authenticated final GUI returned $s5" }
+          if ((Get-Content $b5f -Raw) -match '(?i)Internal Server Error|Oops! Something went wrong') { throw 'final GUI still contains server-error page' }
+          Write-Host "LINSTOR_GUI_PERSISTED_BROWSER_LOGIN=PASS callbackHttp=$s4 authenticatedHttp=200 url=$guiUrl"
