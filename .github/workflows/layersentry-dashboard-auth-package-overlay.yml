@@ -1,0 +1,125 @@
+name: LayerSentry Dashboard Auth Package Overlay
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-auth-package-overlay.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-auth-package-overlay
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/cozystack
+  BASE_DIGEST: sha256:737cbd0236fc6ace523a43c6eea1418a53ae4449ebe6c41a24e32c35ac1c8473
+  IMAGE_TAG: layersentry-dashboard-auth-${{ github.sha }}
+
+jobs:
+  overlay:
+    name: Publish dashboard-only package overlay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact layersentry-platform revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "adaptgurus/cozystack"
+          test "${GITHUB_REF_NAME}" = "layersentry-platform"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          grep -F -- '--scope=openid email profile' packages/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- '--scope=openid email profile offline_access' packages/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- 'optionalClientScopes: ["offline_access"]' packages/system/dashboard/templates/keycloakclient.yaml >/dev/null
+
+      - name: Install pinned Flux CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLUX_VERSION=v2.6.4
+          FLUX_ARCHIVE="flux_${FLUX_VERSION#v}_linux_amd64.tar.gz"
+          curl -fsSLo "/tmp/${FLUX_ARCHIVE}" "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/${FLUX_ARCHIVE}"
+          curl -fsSLo /tmp/flux-checksums.txt "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION#v}_checksums.txt"
+          grep " ${FLUX_ARCHIVE}$" /tmp/flux-checksums.txt | sed "s#  ${FLUX_ARCHIVE}#  /tmp/${FLUX_ARCHIVE}#" > /tmp/flux.expected
+          sha256sum -c /tmp/flux.expected
+          tar -xzf "/tmp/${FLUX_ARCHIVE}" -C /tmp flux
+          sudo install -m 0755 /tmp/flux /usr/local/bin/flux
+          flux version --client
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull live base and overlay only dashboard package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/overlay /tmp/base-nodash /tmp/overlay-nodash
+          mkdir -p /tmp/base
+          flux pull artifact "oci://${REGISTRY}/cozystack-packages@${BASE_DIGEST}" --output /tmp/base
+          cp -a /tmp/base /tmp/overlay
+          test -d /tmp/overlay/system/dashboard
+          rm -rf /tmp/overlay/system/dashboard
+          mkdir -p /tmp/overlay/system/dashboard
+          cp -a packages/system/dashboard/. /tmp/overlay/system/dashboard/
+
+          cp -a /tmp/base /tmp/base-nodash
+          cp -a /tmp/overlay /tmp/overlay-nodash
+          rm -rf /tmp/base-nodash/system/dashboard /tmp/overlay-nodash/system/dashboard
+          diff -qr /tmp/base-nodash /tmp/overlay-nodash
+
+          grep -F -- '--scope=openid email profile' /tmp/overlay/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          if grep -F -- '--scope=openid email profile offline_access' /tmp/overlay/system/dashboard/templates/gatekeeper.yaml >/dev/null; then
+            echo '::error::Dashboard overlay still requests offline_access'
+            exit 1
+          fi
+          if grep -F -- 'optionalClientScopes: ["offline_access"]' /tmp/overlay/system/dashboard/templates/keycloakclient.yaml >/dev/null; then
+            echo '::error::Dashboard overlay Keycloak client still enables offline_access'
+            exit 1
+          fi
+          echo 'DASHBOARD_ONLY_OVERLAY_DIFF_GATE=PASS'
+
+      - name: Publish immutable dashboard-only overlay
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=/tmp/overlay-push.log
+          flux push artifact "oci://${REGISTRY}/cozystack-packages:${IMAGE_TAG}" \
+            --path=/tmp/overlay \
+            --source="https://github.com/${GITHUB_REPOSITORY}" \
+            --revision="dashboard-auth:${GITHUB_SHA}" 2>&1 | tee "$out"
+          digest="$(awk -F @ '/artifact successfully pushed/ {print $2}' "$out" | tail -1)"
+          test -n "$digest"
+          case "$digest" in sha256:*) ;; *) echo "::error::Unexpected overlay digest: $digest"; exit 1;; esac
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "DASHBOARD_AUTH_OVERLAY_BASE=${BASE_DIGEST}"
+          echo "DASHBOARD_AUTH_OVERLAY_DIGEST=${digest}"
+          echo "DASHBOARD_AUTH_OVERLAY_COMMIT=${GITHUB_SHA}"
+
+      - name: Pull published overlay and certify scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/cert
+          mkdir -p /tmp/cert
+          flux pull artifact "oci://${REGISTRY}/cozystack-packages@${{ steps.publish.outputs.digest }}" --output /tmp/cert
+          grep -F -- '--scope=openid email profile' /tmp/cert/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- '--scope=openid email profile offline_access' /tmp/cert/system/dashboard/templates/gatekeeper.yaml >/dev/null
+          ! grep -F -- 'optionalClientScopes: ["offline_access"]' /tmp/cert/system/dashboard/templates/keycloakclient.yaml >/dev/null
+          echo 'DASHBOARD_AUTH_OVERLAY_CERTIFY=PASS'
+          echo 'NON_DASHBOARD_CONTENT_PRESERVED=PASS'
