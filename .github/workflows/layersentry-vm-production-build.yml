@@ -1,5 +1,5 @@
 name: LayerSentry VM Production Build
-# Final immutable candidate builder. Repository writes are performed by the connected GitHub integration after verification.
+# Final immutable candidate builder. Enforces status-safe source-watcher recovery before publication.
 
 on:
   workflow_dispatch:
@@ -94,8 +94,11 @@ jobs:
           set -euo pipefail
           grep -F 'reasonRecoveredLostReady = "RecoveredLostReady"' internal/operator/packagesource_ready_repair.go >/dev/null
           grep -F 'proveArtifactGeneratorCurrentSuccess' internal/operator/packagesource_ready_repair_test.go >/dev/null
+          grep -F 'requestArtifactGeneratorRecovery(ctx, ag, now, nextAttempt)' internal/operator/packagesource_reconciler.go >/dev/null
+          ! grep -F 'forceArtifactGeneratorDrift(ctx, ag, now, nextAttempt)' internal/operator/packagesource_reconciler.go >/dev/null
+          grep -F 'len(ag.Spec.Sources) == 0' internal/operator/packagesource_recovery_request.go >/dev/null
           go test ./internal/operator -count=1
-          echo "OPERATOR_REPAIR_TEST_GATE=PASS sha=${GITHUB_SHA}"
+          echo "OPERATOR_STATUS_SAFE_RECOVERY_TEST_GATE=PASS sha=${GITHUB_SHA}"
 
       - name: Build immutable dashboard and repaired operator, then package together
         id: build
