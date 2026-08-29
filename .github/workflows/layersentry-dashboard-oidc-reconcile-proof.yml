@@ -1,0 +1,68 @@
+name: LayerSentry Dashboard OIDC Reconcile Proof
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-oidc-reconcile-proof.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  prove:
+    name: Force dashboard reconcile and verify OIDC scope on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Inspect dashboard Helm ownership and current scope
+        run: |
+          $ErrorActionPreference='Stop'
+          $hrs=& $env:KUBECTL get helmreleases.helm.toolkit.fluxcd.io -A -o json | ConvertFrom-Json
+          $matches=@($hrs.items) | Where-Object { $_.metadata.namespace -eq 'cozy-dashboard' -or $_.metadata.name -match 'dashboard' }
+          if($matches.Count -eq 0){throw 'dashboard HelmRelease not found'}
+          foreach($hr in $matches){
+            Write-Host "HELMRELEASE namespace=$($hr.metadata.namespace) name=$($hr.metadata.name) chart=$($hr.spec.chart.spec.chart) version=$($hr.spec.chart.spec.version) sourceKind=$($hr.spec.chart.spec.sourceRef.kind) sourceName=$($hr.spec.chart.spec.sourceRef.name)"
+          }
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($d.spec.template.spec.containers) | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1
+          $scope=@($proxy.args) | Where-Object {$_ -like '--scope=*'}
+          Write-Host "PRE_RECONCILE_SCOPE=$scope"
+          if($scope -ne '--scope=openid email profile'){throw "live scope not corrected before reconcile: $scope"}
+
+      - name: Force all dashboard namespace Helm releases to reconcile
+        run: |
+          $ErrorActionPreference='Stop'
+          $stamp=[DateTime]::UtcNow.ToString('o')
+          $names=@(& $env:KUBECTL -n cozy-dashboard get helmreleases.helm.toolkit.fluxcd.io -o jsonpath='{range .items[*]}{.metadata.name}{"`n"}{end}') | Where-Object {$_ -and $_.Trim()}
+          if($names.Count -eq 0){throw 'no HelmRelease in cozy-dashboard namespace'}
+          foreach($name in $names){
+            Write-Host "Requesting reconcile for cozy-dashboard/$name"
+            & $env:KUBECTL -n cozy-dashboard annotate helmrelease $name "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+            if($LASTEXITCODE -ne 0){throw "failed to request reconcile for $name"}
+          }
+          Start-Sleep -Seconds 45
+          foreach($name in $names){
+            & $env:KUBECTL -n cozy-dashboard get helmrelease $name -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{" "}{.status.conditions[?(@.type=="Ready")].reason}{" "}{.status.conditions[?(@.type=="Ready")].message}{"`n"}'
+          }
+
+      - name: Verify scope and tenant API after forced reconcile
+        run: |
+          $ErrorActionPreference='Stop'
+          $d=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($d.spec.template.spec.containers) | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1
+          $scope=@($proxy.args) | Where-Object {$_ -like '--scope=*'}
+          Write-Host "POST_RECONCILE_SCOPE=$scope"
+          if($scope -ne '--scope=openid email profile'){throw "DURABILITY_FAIL Helm reconciliation restored old scope: $scope"}
+          $tenant=& $env:KUBECTL get tenant layersentry -n tenant-root -o name
+          $ns=& $env:KUBECTL get ns tenant-layersentry -o jsonpath='{.status.phase}'
+          if($tenant -notmatch 'layersentry' -or $ns -ne 'Active'){throw 'tenant backend changed unexpectedly'}
+          Write-Host 'DASHBOARD_OIDC_RECONCILE_PROOF=PASS'
