@@ -27,8 +27,13 @@ jobs:
           grep -q 'kind: Deployment' /tmp/gateway.yaml
           grep -q 'kind: Service' /tmp/gateway.yaml
           grep -q 'https://linstor-controller.cozy-linstor.svc:3371' /tmp/gateway.yaml
-          grep -q 'secretName: linstor-client-tls' /tmp/gateway.yaml
-          grep -q 'LS_ROOT_CA_FILE' /tmp/gateway.yaml
+          grep -q 'name: LS_ROOT_CA' /tmp/gateway.yaml
+          grep -q 'name: LS_USER_CERTIFICATE' /tmp/gateway.yaml
+          grep -q 'name: LS_USER_KEY' /tmp/gateway.yaml
+          grep -q 'name: linstor-client-tls' /tmp/gateway.yaml
+          grep -q 'key: ca.crt' /tmp/gateway.yaml
+          grep -q 'key: tls.crt' /tmp/gateway.yaml
+          grep -q 'key: tls.key' /tmp/gateway.yaml
           grep -q 'containerPort: 8337' /tmp/gateway.yaml
           grep -q 'path: /api/v2/status' /tmp/gateway.yaml
       - name: Build checksum-pinned Gateway image
@@ -183,12 +188,21 @@ jobs:
                       - --addr=:8337
                       - --config=/etc/linstor-gateway/linstor-gateway.toml
                     env:
-                      - name: LS_ROOT_CA_FILE
-                        value: /etc/linstor/client/ca.crt
-                      - name: LS_USER_CERTIFICATE_FILE
-                        value: /etc/linstor/client/tls.crt
-                      - name: LS_USER_KEY_FILE
-                        value: /etc/linstor/client/tls.key
+                      - name: LS_ROOT_CA
+                        valueFrom:
+                          secretKeyRef:
+                            name: linstor-client-tls
+                            key: ca.crt
+                      - name: LS_USER_CERTIFICATE
+                        valueFrom:
+                          secretKeyRef:
+                            name: linstor-client-tls
+                            key: tls.crt
+                      - name: LS_USER_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: linstor-client-tls
+                            key: tls.key
                     ports:
                       - name: http
                         containerPort: 8337
@@ -229,9 +243,6 @@ jobs:
                         mountPath: /etc/linstor-gateway/linstor-gateway.toml
                         subPath: linstor-gateway.toml
                         readOnly: true
-                      - name: linstor-client-tls
-                        mountPath: /etc/linstor/client
-                        readOnly: true
                       - name: tmp
                         mountPath: /tmp
                 volumes:
@@ -240,10 +251,6 @@ jobs:
                   - name: config
                     configMap:
                       name: linstor-gateway-phase1
-                  - name: linstor-client-tls
-                    secret:
-                      secretName: linstor-client-tls
-                      defaultMode: 0444
                   - name: tmp
                     emptyDir: {}
           '@

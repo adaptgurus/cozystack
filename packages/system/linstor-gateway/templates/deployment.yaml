@@ -31,13 +31,26 @@ spec:
             - server
             - --addr={{ .Values.gateway.listenAddress }}
             - --config=/etc/linstor-gateway/linstor-gateway.toml
+          # golinstor v0.59.0 expects PEM content in these variables, not paths.
+          # Kubernetes resolves each value directly from the existing LINSTOR
+          # mTLS Secret, so certificate/key material is never stored in values,
+          # ConfigMaps, Git, or workflow logs.
           env:
-            - name: LS_ROOT_CA_FILE
-              value: /etc/linstor/client/ca.crt
-            - name: LS_USER_CERTIFICATE_FILE
-              value: /etc/linstor/client/tls.crt
-            - name: LS_USER_KEY_FILE
-              value: /etc/linstor/client/tls.key
+            - name: LS_ROOT_CA
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.linstor.clientSecret }}
+                  key: ca.crt
+            - name: LS_USER_CERTIFICATE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.linstor.clientSecret }}
+                  key: tls.crt
+            - name: LS_USER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.linstor.clientSecret }}
+                  key: tls.key
           ports:
             - name: http
               containerPort: 8337
@@ -67,9 +80,6 @@ spec:
               mountPath: /etc/linstor-gateway/linstor-gateway.toml
               subPath: linstor-gateway.toml
               readOnly: true
-            - name: linstor-client-tls
-              mountPath: /etc/linstor/client
-              readOnly: true
             - name: tmp
               mountPath: /tmp
             {{- if .Values.gateway.tokenSecret.name }}
@@ -81,10 +91,6 @@ spec:
         - name: config
           configMap:
             name: linstor-gateway-config
-        - name: linstor-client-tls
-          secret:
-            secretName: {{ .Values.linstor.clientSecret }}
-            defaultMode: 0444
         - name: tmp
           emptyDir: {}
         {{- if .Values.gateway.tokenSecret.name }}
