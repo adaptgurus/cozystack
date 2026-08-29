@@ -47,6 +47,7 @@ export function ApplicationOrderPage({
   const [mode, setMode] = useState<Mode>("form")
   const [yamlText, setYamlText] = useState("")
   const [yamlError, setYamlError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   // Snapshot of the persisted spec captured the first time we see an
   // editMode prop. ApplicationEditRoute reconstructs `editMode` on every
   // React-Query refetch, so reading `editMode.initialSpec` at save time
@@ -84,10 +85,21 @@ export function ApplicationOrderPage({
     return composeResource(ad, tenantNamespace, name || "<name>", spec)
   }, [ad, tenantNamespace, name, spec])
 
+  const updateName = (nextName: string) => {
+    setSubmitError(null)
+    setName(nextName)
+  }
+
+  const updateSpec = (nextSpec: unknown) => {
+    setSubmitError(null)
+    setSpec(nextSpec)
+  }
+
   /** Switch into YAML mode: serialize current state. */
   const enterYaml = () => {
     if (resource) setYamlText(yaml.dump(resource))
     setYamlError(null)
+    setSubmitError(null)
     setMode("yaml")
   }
 
@@ -101,6 +113,7 @@ export function ApplicationOrderPage({
       if (parsed?.metadata?.name) setName(parsed.metadata.name)
       if (parsed?.spec !== undefined) setSpec(parsed.spec)
       setYamlError(null)
+      setSubmitError(null)
       setMode("form")
     } catch (err) {
       setYamlError((err as Error).message)
@@ -124,9 +137,10 @@ export function ApplicationOrderPage({
 
   const submit = async (skipFormValidation = false) => {
     if (!ad || !tenantNamespace) return
+    setSubmitError(null)
     const snap = snapshot()
     if (!snap.name) {
-      alert("Please set a resource name.")
+      setSubmitError("Set a resource name before continuing.")
       return
     }
     // The generic Deploy button lives outside RJSF and bypasses its submit, so
@@ -159,10 +173,12 @@ export function ApplicationOrderPage({
       }
       navigate(`/console/${plural}/${snap.name}`)
     } catch (err) {
+      const action = editMode ? "save the changes" : "deploy the resource"
       if (err instanceof K8sApiError) {
-        alert(`Failed: ${err.message}`)
+        setSubmitError(`Unable to ${action}: ${err.message}`)
       } else {
-        alert(`Failed: ${(err as Error).message}`)
+        const message = err instanceof Error ? err.message : "Unknown error"
+        setSubmitError(`Unable to ${action}: ${message}`)
       }
     }
   }
@@ -273,17 +289,28 @@ export function ApplicationOrderPage({
         </div>
       </div>
 
+      {submitError && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="border-b border-red-200 bg-red-50 px-6 py-3 text-sm text-red-800"
+        >
+          <p className="font-semibold">The request could not be completed.</p>
+          <p className="mt-0.5 text-xs leading-5 text-red-700">{submitError}</p>
+        </div>
+      )}
+
       {mode === "form" ? (
         <div className="flex-1 overflow-auto bg-slate-50">
           {isVmInstance && ad.spec?.application.openAPISchema ? (
             <VMInstanceExperience
               name={name}
-              onNameChange={setName}
+              onNameChange={updateName}
               tenantNamespace={tenantNamespace}
               openAPISchema={ad.spec.application.openAPISchema}
               keysOrder={ad.spec?.dashboard?.keysOrder}
               spec={spec}
-              onSpecChange={setSpec}
+              onSpecChange={updateSpec}
               initialSpec={initialSpecRef.current}
               isEdit={!!editMode}
               busy={busy}
@@ -299,7 +326,7 @@ export function ApplicationOrderPage({
                   <input
                     type="text"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => updateName(e.target.value)}
                     disabled={!!editMode}
                     placeholder={ad.spec?.application.singular ?? "name"}
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition-shadow focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:bg-slate-50 disabled:text-slate-400"
@@ -317,7 +344,7 @@ export function ApplicationOrderPage({
                       openAPISchema={ad.spec.application.openAPISchema}
                       keysOrder={ad.spec?.dashboard?.keysOrder}
                       formData={spec}
-                      onChange={setSpec}
+                      onChange={updateSpec}
                       immutableMode={editMode ? "enforce" : "off"}
                     />
                   </div>
@@ -341,7 +368,13 @@ export function ApplicationOrderPage({
                 </div>
               }
             >
-              <YamlEditor value={yamlText} onChange={setYamlText} />
+              <YamlEditor
+                value={yamlText}
+                onChange={(value) => {
+                  setSubmitError(null)
+                  setYamlText(value)
+                }}
+              />
             </Suspense>
           </div>
         </div>
