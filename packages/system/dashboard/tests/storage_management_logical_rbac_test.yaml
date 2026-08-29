@@ -1,0 +1,84 @@
+suite: dashboard logical storage management RBAC
+templates:
+  - templates/clusterrole-storage-management.yaml
+  - templates/clusterrolebinding-storage-management.yaml
+
+release:
+  name: dashboard
+  namespace: cozy-dashboard
+
+tests:
+  - it: logical storage role grants PVC lifecycle without PV mutation
+    template: templates/clusterrole-storage-management.yaml
+    asserts:
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: metadata.name
+          value: cozystack-dashboard-storage-management
+      - contains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["persistentvolumeclaims"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: logical storage role grants StorageClass lifecycle
+    template: templates/clusterrole-storage-management.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: CSI discovery stays read only
+    template: templates/clusterrole-storage-management.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["storage.k8s.io"]
+            resources: ["csidrivers", "csinodes"]
+            verbs: ["get", "list", "watch"]
+
+  - it: VolumeSnapshot lifecycle is permission scoped
+    template: templates/clusterrole-storage-management.yaml
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshots"]
+            verbs: ["get", "list", "watch", "create", "delete"]
+      - contains:
+          path: rules
+          content:
+            apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotclasses", "volumesnapshotcontents"]
+            verbs: ["get", "list", "watch"]
+
+  - it: logical storage role binds only to cluster admins
+    template: templates/clusterrolebinding-storage-management.yaml
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: roleRef.name
+          value: cozystack-dashboard-storage-management
+      - equal:
+          path: subjects[0].kind
+          value: Group
+      - equal:
+          path: subjects[0].name
+          value: cozystack-cluster-admin
+
+  - it: each logical storage RBAC template renders exactly one document
+    asserts:
+      - template: templates/clusterrole-storage-management.yaml
+        hasDocuments:
+          count: 1
+      - template: templates/clusterrolebinding-storage-management.yaml
+        hasDocuments:
+          count: 1
