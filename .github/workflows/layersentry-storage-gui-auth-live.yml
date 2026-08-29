@@ -92,12 +92,12 @@ jobs:
             $obj = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
             $failureCount = 0
             if ($null -ne $obj.status.failureCount) { $failureCount = [int]$obj.status.failureCount }
-            Write-Host "KeycloakClient reconcile status: value=$($obj.status.value) clientId=$($obj.status.clientId) failureCount=$failureCount"
-            if (($obj.status.clientId -eq 'linstor-gui') -and ($failureCount -eq 0)) { break }
+            Write-Host "KeycloakClient reconcile status: value=$($obj.status.value) internalClientId=$($obj.status.clientId) failureCount=$failureCount"
+            if (($obj.status.value -eq 'OK') -and ($failureCount -eq 0)) { break }
             if ($failureCount -gt 0) { throw "Keycloak operator reports failureCount=$failureCount for linstor-gui-client" }
             Start-Sleep -Seconds 5
           } while ((Get-Date) -lt $deadline)
-          if ($obj.status.clientId -ne 'linstor-gui') { throw 'Keycloak operator did not confirm linstor-gui client registration' }
+          if (($obj.status.value -ne 'OK') -or ($failureCount -ne 0)) { throw "Keycloak operator did not confirm linstor-gui registration: value=$($obj.status.value) failureCount=$failureCount" }
 
           if ($obj.spec.clientId -ne 'linstor-gui') { throw "unexpected Keycloak clientId $($obj.spec.clientId)" }
           if ($obj.spec.realmRef.name -ne 'keycloakrealm-cozy') { throw "unexpected realmRef $($obj.spec.realmRef.name)" }
