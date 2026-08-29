@@ -112,10 +112,54 @@ const INVENTORY: NetworkInventory = {
   ],
 }
 
+function cloneInventory(): NetworkInventory {
+  return JSON.parse(JSON.stringify(INVENTORY)) as NetworkInventory
+}
+
 describe("network inventory", () => {
+  it("accepts a structurally consistent live inventory", () => {
+    expect(parseNetworkInventory(JSON.stringify(INVENTORY))).toEqual(INVENTORY)
+  })
+
   it("rejects malformed and wrong-schema inventory", () => {
     expect(parseNetworkInventory("not-json")).toBeNull()
     expect(parseNetworkInventory(JSON.stringify({ ...INVENTORY, schemaVersion: "wrong" }))).toBeNull()
+    expect(parseNetworkInventory(JSON.stringify({ ...INVENTORY, generatedAt: "not-a-timestamp" }))).toBeNull()
+  })
+
+  it("fails closed when inventory counts or node identities are inconsistent", () => {
+    expect(parseNetworkInventory(JSON.stringify({ ...INVENTORY, nodeCount: 3 }))).toBeNull()
+    expect(parseNetworkInventory(JSON.stringify({ ...INVENTORY, readyNodeCount: 1 }))).toBeNull()
+    expect(parseNetworkInventory(JSON.stringify({ ...INVENTORY, partial: true }))).toBeNull()
+
+    const duplicateNode = cloneInventory()
+    duplicateNode.nodes[1].name = "sen1"
+    expect(parseNetworkInventory(JSON.stringify(duplicateNode))).toBeNull()
+  })
+
+  it("fails closed on contradictory capability evidence", () => {
+    const invalidSriov = cloneInventory()
+    invalidSriov.nodes[0].links[0].sriov = {
+      supported: true,
+      totalVfs: 0,
+      configuredVfs: 0,
+      source: "sysfs:sriov_totalvfs",
+    }
+    expect(parseNetworkInventory(JSON.stringify(invalidSriov))).toBeNull()
+
+    const invalidRdma = cloneInventory()
+    invalidRdma.nodes[0].links[0].rdma = {
+      supported: true,
+      devices: [],
+      source: "sysfs:infiniband",
+    }
+    expect(parseNetworkInventory(JSON.stringify(invalidRdma))).toBeNull()
+  })
+
+  it("fails closed when a ready node claims an absent management underlay", () => {
+    const invalidManagement = cloneInventory()
+    invalidManagement.nodes[0].management.physicalInterfaces = ["eno1", "missing0"]
+    expect(parseNetworkInventory(JSON.stringify(invalidManagement))).toBeNull()
   })
 
   it("finds only physical NICs common to every selected node", () => {
