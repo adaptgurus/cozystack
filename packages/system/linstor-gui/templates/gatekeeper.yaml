@@ -89,7 +89,11 @@ spec:
             - --cookie-secure=true
             - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
             - --skip-provider-button
-            - --scope=openid email profile groups offline_access
+            # A browser GUI session does not require an offline token. Requesting
+            # offline_access makes Keycloak reject the authorization-code exchange
+            # when offline tokens are disabled for the realm/user/client, producing
+            # an oauth2-proxy callback HTTP 500 even after successful login.
+            - --scope=openid email profile groups
             - --allowed-group=cozystack-cluster-admin
             {{- if eq $oidcInsecureSkipVerify "true" }}
             - --ssl-insecure-skip-verify=true
