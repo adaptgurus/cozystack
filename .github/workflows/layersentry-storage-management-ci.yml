@@ -80,17 +80,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Install pinned pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          node-version: '22.14.0'
+          package_json_file: packages/system/dashboard/images/console/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
           cache: pnpm
           cache-dependency-path: packages/system/dashboard/images/console/pnpm-lock.yaml
 
-      - name: Enable pinned pnpm
+      - name: Verify pinned pnpm
         run: |
-          corepack enable
-          corepack prepare pnpm@11.1.2 --activate
+          test "$(pnpm --version)" = "11.1.2"
           pnpm --version
 
       - name: Install console dependencies from lockfile
