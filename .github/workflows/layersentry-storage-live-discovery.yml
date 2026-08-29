@@ -1,0 +1,45 @@
+name: LayerSentry Storage Live Discovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-storage-live-discovery.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  discover:
+    name: Discover LINSTOR GUI and Keycloak live resources
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+    steps:
+      - name: Discover package, HelmRelease, workloads, routes and auth objects
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '===== LINSTOR GUI PACKAGE ====='
+          & $env:KUBECTL get package.cozystack.io cozystack.linstor-gui -o yaml
+          Write-Host '===== HELMRELEASES ====='
+          & $env:KUBECTL get hr -A -o wide | Select-String -Pattern 'linstor-gui|keycloak' -CaseSensitive:$false
+          Write-Host '===== NAMESPACES ====='
+          & $env:KUBECTL get ns | Select-String -Pattern 'linstor|keycloak' -CaseSensitive:$false
+          Write-Host '===== PODS ====='
+          & $env:KUBECTL get pods -A -o wide | Select-String -Pattern 'linstor-gui|keycloak|oauth2' -CaseSensitive:$false
+          Write-Host '===== SERVICES ====='
+          & $env:KUBECTL get svc -A -o wide | Select-String -Pattern 'linstor-gui|keycloak' -CaseSensitive:$false
+          Write-Host '===== INGRESS / HTTPROUTE ====='
+          & $env:KUBECTL get ingress -A -o wide | Select-String -Pattern 'linstor-gui|keycloak' -CaseSensitive:$false
+          & $env:KUBECTL get httproute -A -o wide 2>$null | Select-String -Pattern 'linstor-gui|keycloak' -CaseSensitive:$false
+          Write-Host '===== KEYCLOAK CLIENT ====='
+          & $env:KUBECTL get keycloakclients.v1.edp.epam.com -A -o wide 2>$null | Select-String -Pattern 'linstor-gui' -CaseSensitive:$false
+          Write-Host 'STORAGE_GUI_DISCOVERY=PASS'
