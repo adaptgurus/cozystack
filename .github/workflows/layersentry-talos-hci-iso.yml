@@ -83,23 +83,15 @@ jobs:
             fi
           done
 
-          # Local LayerSentry server extensions must be included in the exact
-          # profile consumed by Talos Imager.
           grep -Fq 'tarballPath: /extensions/layersentry-iscsi-target.tar' "$profile"
           grep -Fq 'tarballPath: /extensions/layersentry-nfs-server.tar' "$profile"
 
-          # Pipe-fed searches intentionally do not use grep -q. With pipefail,
-          # grep -q can exit after the first match and make tar fail on SIGPIPE,
-          # turning a successful verification into a false negative.
-          # Verify the custom iSCSI target extension contains both the daemon and
-          # administration tools plus the Talos extension-service definition.
           tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtd' >/dev/null
           tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtadm' >/dev/null
           tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-iscsi-target/usr/sbin/tgtimg' >/dev/null
           tar -tf "$iscsi_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-iscsi-target.yaml' >/dev/null
           tar -xOf "$iscsi_ext" manifest.yaml | grep -F 'name: layersentry-iscsi-target' >/dev/null
 
-          # Verify full NFS server/export userspace, not only the kernel module.
           tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/exportfs' >/dev/null
           tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.nfsd' >/dev/null
           tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/lib/containers/layersentry-nfs-server/usr/sbin/rpc.mountd' >/dev/null
@@ -108,29 +100,19 @@ jobs:
           tar -tf "$nfs_ext" | grep -Fx 'rootfs/usr/local/etc/containers/layersentry-nfs-server.yaml' >/dev/null
           tar -xOf "$nfs_ext" manifest.yaml | grep -F 'name: layersentry-nfs-server' >/dev/null
 
-          # lsscsi is deliberately supplied by Sidero trident-iscsi-tools.
           grep -Fq '/trident-iscsi-tools:' "$profile"
-
-          # Multipath is release-blocking only with runtime modules/service config.
           grep -Fq 'name: dm_multipath' "$runtime_config"
           grep -Fq 'name: dm_round-robin' "$runtime_config"
           grep -Fq 'name: multipathd' "$runtime_config"
           grep -Fq 'path_selector "round-robin 0"' "$runtime_config"
-
-          # NFSD must be explicitly loaded and Talos host ingress filtering must
-          # be open. Netfilter/iptables capability remains in Talos for Cilium.
           grep -Fq 'name: nfsd' "$runtime_config"
           grep -Fq 'kind: NetworkDefaultActionConfig' "$runtime_config"
           grep -Fq 'ingress: accept' "$runtime_config"
-
-          # Ensure the generated image really embeds the same machine policy.
           grep -Fq 'embeddedMachineConfiguration:' "$profile"
           grep -Fq 'name: dm_multipath' "$profile"
           grep -Fq 'name: nfsd' "$profile"
           grep -Fq 'kind: NetworkDefaultActionConfig' "$profile"
           grep -Fq 'ingress: accept' "$profile"
-
-          # Audit must carry the corrected exact Talos v1.13.6 NVMe/FC status.
           grep -Fq '| NVMe/FC host | PASS - HARDWARE CERTIFICATION REQUIRED |' packages/core/talos/LAYERSENTRY_HCI_IMAGE_AUDIT.md
 
       - name: Package release assets
@@ -153,7 +135,7 @@ jobs:
           iscsi_asset="_out/assets/${base}-iscsi-target-extension.tar"
           nfs_asset="_out/assets/${base}-nfs-server-extension.tar"
           custom_checksums="_out/assets/${base}-custom-extensions.sha256"
-          release_tag="layersentry-hci-talos-v${version}-r2"
+          release_tag="layersentry-hci-talos-v${version}-r3"
 
           mv _out/assets/metal-amd64.iso "$iso"
           cp "$profile" "$profile_asset"
@@ -238,13 +220,13 @@ jobs:
           set -euo pipefail
 
           cat > /tmp/layersentry-release-notes.md <<EOF
-          LayerSentry HCI Talos ${TALOS_VERSION} **r2** built from the \`layersentry-platform\` branch.
+          LayerSentry HCI Talos ${TALOS_VERSION} **r3** built from the \`layersentry-platform\` branch.
 
-          **Storage additions in r2**
-          - NVMe/FC host capability corrected and release-audited against the exact Talos v1.13.6 kernel configuration.
+          **Storage profile in r3**
+          - NVMe/FC host support release-audited against the exact Talos v1.13.6 kernel configuration.
           - LayerSentry userspace iSCSI target service (\`tgtd\`) baked into the ISO without requiring Linux LIO/targetcli.
           - Full NFS server/export userspace plus Talos \`nfsd\` module baked into the ISO. No export is created until LayerSentry supplies explicit export policy.
-          - Talos host ingress firewall action explicitly set to \`accept\`. Netfilter/nftables/iptables capability is retained for Kubernetes/Cilium compatibility.
+          - Talos host ingress firewall action explicitly set to \`accept\`. Netfilter/nftables/iptables capability is retained only for Kubernetes/Cilium datapath compatibility.
 
           **Build identity**
           - Commit: \`${GITHUB_SHA}\`
@@ -285,7 +267,7 @@ jobs:
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "LayerSentry HCI Talos ${TALOS_VERSION} r2" \
+              --title "LayerSentry HCI Talos ${TALOS_VERSION} r3" \
               --notes-file /tmp/layersentry-release-notes.md \
               --latest=false \
               "${assets[@]}"
