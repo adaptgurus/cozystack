@@ -42,8 +42,8 @@ jobs:
           if (-not $realm) { throw 'ClusterKeycloakRealm keycloakrealm-cozy is missing' }
 
           $ing = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o json | ConvertFrom-Json)
-          $host = $ing.spec.rules[0].host
-          if (-not $host) { throw 'linstor-gui Ingress host is empty' }
+          $guiHost = $ing.spec.rules[0].host
+          if (-not $guiHost) { throw 'linstor-gui Ingress host is empty' }
 
           $clientRaw = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor --ignore-not-found -o json | Out-String).Trim()
           if (-not $clientRaw) {
@@ -74,11 +74,11 @@ jobs:
                 clientId = 'linstor-gui'
                 directAccess = $true
                 public = $false
-                webUrl = "https://$host"
+                webUrl = "https://$guiHost"
                 defaultClientScopes = @('groups')
                 optionalClientScopes = @('offline_access')
                 attributes = [ordered]@{ 'post.logout.redirect.uris' = '+' }
-                redirectUris = @("https://$host/oauth2/callback/*")
+                redirectUris = @("https://$guiHost/oauth2/callback/*")
               }
             }
             $clientFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-keycloak-client.json'
@@ -113,16 +113,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'linstor-gui-gatekeeper deployment is not Ready' }
 
           $ing = (& $env:KUBECTL get ingress linstor-gui-ingress -n cozy-linstor -o json | ConvertFrom-Json)
-          $host = $ing.spec.rules[0].host
+          $guiHost = $ing.spec.rules[0].host
           $backend = $ing.spec.rules[0].http.paths[0].backend.service.name
           if ($backend -ne 'linstor-gui-gatekeeper') { throw "SECURITY FAILURE: ingress backend is $backend instead of linstor-gui-gatekeeper" }
 
           $client = (& $env:KUBECTL get keycloakclients.v1.edp.epam.com linstor-gui-client -n cozy-linstor -o json | ConvertFrom-Json)
-          $expectedCallback = "https://$host/oauth2/callback/*"
+          $expectedCallback = "https://$guiHost/oauth2/callback/*"
           if ($expectedCallback -notin @($client.spec.redirectUris)) { throw "Keycloak redirect URI does not include $expectedCallback" }
 
           $rootHeadersFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-root-headers.txt'
-          & curl.exe -k -sS -D $rootHeadersFile -o NUL --max-time 20 "https://$host/"
+          & curl.exe -k -sS -D $rootHeadersFile -o NUL --max-time 20 "https://$guiHost/"
           if ($LASTEXITCODE -ne 0) { throw 'LINSTOR GUI endpoint is unreachable' }
           $rootHeaders = Get-Content $rootHeadersFile -Raw
           Write-Host $rootHeaders
@@ -134,7 +134,7 @@ jobs:
 
           if ($location.StartsWith('/')) {
             $startHeadersFile = Join-Path $env:RUNNER_TEMP 'linstor-gui-start-headers.txt'
-            & curl.exe -k -sS -D $startHeadersFile -o NUL --max-time 20 "https://$host$location"
+            & curl.exe -k -sS -D $startHeadersFile -o NUL --max-time 20 "https://$guiHost$location"
             if ($LASTEXITCODE -ne 0) { throw 'oauth2 start endpoint is unreachable' }
             $startHeaders = Get-Content $startHeadersFile -Raw
             Write-Host $startHeaders
@@ -149,7 +149,7 @@ jobs:
           $loginBody = Get-Content $loginBodyFile -Raw
           if ($loginCode -ne '200') { throw "Keycloak authorization endpoint returned HTTP $loginCode" }
           if ($loginBody -match '(?i)(invalid[_ -]?client|client not found|unknown client)') { throw 'Keycloak rejected the linstor-gui client registration' }
-          Write-Host "LINSTOR_GUI_KEYCLOAK_LOGIN=PASS rootStatus=$rootStatus backend=$backend host=$host keycloakAuthHttp=$loginCode"
+          Write-Host "LINSTOR_GUI_KEYCLOAK_LOGIN=PASS rootStatus=$rootStatus backend=$backend host=$guiHost keycloakAuthHttp=$loginCode"
 
       - name: Validate admin group authorization configuration without exposing secrets
         run: |
