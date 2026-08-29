@@ -71,11 +71,21 @@ jobs:
               $child = $id -match ('^' + [regex]::Escape($DiskId) + 'p?[0-9]+$')
               if (-not ($whole -or $child)) { continue }
 
-              $discovered = Get-Scalar $doc 'discovered'
-              $filesystem = Get-Scalar $doc 'filesystem'
               if ($child) { $evidence.Add("child:$id") }
-              if ($discovered) { $evidence.Add("${id}:discovered=$discovered") }
-              if ($filesystem) { $evidence.Add("${id}:filesystem=$filesystem") }
+              foreach ($key in @(
+                'discovered',
+                'type',
+                'filesystem',
+                'partition_label',
+                'partition_uuid',
+                'mountpoint',
+                'read_only',
+                'encrypted',
+                'size'
+              )) {
+                $value = Get-Scalar $doc $key
+                if ($value) { $evidence.Add("${id}:${key}=$value") }
+              }
             }
             return @($evidence | Sort-Object -Unique)
           }
@@ -191,7 +201,7 @@ jobs:
           [IO.File]::WriteAllText($reportPath, $json, (New-Object Text.UTF8Encoding($false)))
 
           Write-Host '===== STORAGE IDENTITY CERTIFICATION ====='
-          $records | Format-Table Node,Device,Size,Identity,Status,Reason,ExistingDataEvidence -AutoSize
+          $records | Format-List Node,Device,Size,Model,Transport,Identity,ById,Status,Reason,ExistingDataEvidence
           Write-Host "STORAGE_IDENTITY_CERTIFICATION=$gate"
           Write-Host 'STORAGE_INITIALIZATION_ALLOWED=false'
 
