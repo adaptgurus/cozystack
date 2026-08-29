@@ -136,6 +136,7 @@ describe("StorageLogicalManagement", () => {
     expect(
       await screen.findByText("Create permission is not granted; this control is fail-closed."),
     ).toBeInTheDocument()
+    expect(screen.getByText("PVC create permission is not granted; provisioning is fail-closed.")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Create from observed class" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Create PVC" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Create VolumeSnapshot" })).toBeDisabled()
