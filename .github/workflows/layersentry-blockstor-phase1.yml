@@ -1,0 +1,246 @@
+name: LayerSentry Blockstor Phase 1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - layersentry-platform
+    paths:
+      - .github/workflows/layersentry-blockstor-phase1.yml
+
+concurrency:
+  group: layersentry-blockstor-phase1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  blockstor:
+    name: Install and verify Blockstor v0.1.17 side-by-side
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 35
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      TALOSCONFIG: C:\hci-state\cozystack-hci-lab\talosconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      TALOSCTL: C:\hci-tools\talosctl.exe
+      HCI_NODE_IPS: 10.10.10.11,10.10.10.12,10.10.10.13
+      BLOCKSTOR_VERSION: '0.1.17'
+      BLOCKSTOR_TAG: 'v0.1.17'
+
+    steps:
+      - name: Revalidate non-destructive storage prerequisites
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -ne 'layersentry-platform') { throw "refusing branch $env:GITHUB_REF_NAME" }
+          foreach ($path in @($env:KUBECTL, $env:TALOSCTL, $env:KUBECONFIG, $env:TALOSCONFIG)) {
+            if (-not (Test-Path $path)) { throw "missing TESTSER asset $path" }
+          }
+          & $env:KUBECTL wait --for=condition=Ready nodes --all --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw 'Kubernetes nodes are not all Ready' }
+
+          $linstor = (& $env:KUBECTL get package.cozystack.io cozystack.linstor -o json | ConvertFrom-Json)
+          $ready = @($linstor.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+          if (($ready.Count -eq 0) -or ($ready[0].status -ne 'True')) { throw 'classic LINSTOR Package is not Ready' }
+          foreach ($sc in @('local','replicated')) {
+            $provisioner = (& $env:KUBECTL get storageclass $sc -o jsonpath='{.provisioner}').Trim()
+            if ($provisioner -ne 'linstor.csi.linbit.com') { throw "StorageClass $sc provisioner is $provisioner" }
+          }
+          $snapshotDriver = (& $env:KUBECTL get volumesnapshotclass linstor-snapshots -o jsonpath='{.driver}').Trim()
+          if ($snapshotDriver -ne 'linstor.csi.linbit.com') { throw "snapshot driver is $snapshotDriver" }
+
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            $extensions = (& $env:TALOSCTL -n $node -e $node get extensions -o yaml 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "Talos extension discovery failed on $node" }
+            foreach ($required in @('drbd','zfs')) {
+              if ($extensions -notmatch [regex]::Escape($required)) { throw "$required missing on $node" }
+            }
+          }
+          Write-Host 'BLOCKSTOR_SAFETY_PREFLIGHT=PASS'
+
+      - name: Apply pinned Blockstor CRDs and controller
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = "https://raw.githubusercontent.com/cozystack/blockstor/$env:BLOCKSTOR_TAG"
+          $crdFiles = @(
+            'blockstor.cozystack.io_nodes.yaml',
+            'blockstor.cozystack.io_storagepools.yaml',
+            'blockstor.cozystack.io_resourcegroups.yaml',
+            'blockstor.cozystack.io_resourcedefinitions.yaml',
+            'blockstor.cozystack.io_resources.yaml',
+            'blockstor.cozystack.io_snapshots.yaml'
+          )
+          foreach ($file in $crdFiles) {
+            & $env:KUBECTL apply -f "$base/config/crd/bases/$file"
+            if ($LASTEXITCODE -ne 0) { throw "failed applying $file" }
+          }
+          foreach ($crd in @(
+            'nodes.blockstor.cozystack.io',
+            'storagepools.blockstor.cozystack.io',
+            'resourcegroups.blockstor.cozystack.io',
+            'resourcedefinitions.blockstor.cozystack.io',
+            'resources.blockstor.cozystack.io',
+            'snapshots.blockstor.cozystack.io'
+          )) {
+            & $env:KUBECTL wait --for=condition=Established "crd/$crd" --timeout=120s
+            if ($LASTEXITCODE -ne 0) { throw "CRD $crd not Established" }
+          }
+
+          $controllerFile = Join-Path $env:RUNNER_TEMP 'blockstor-controller.yaml'
+          $manifest = (Invoke-WebRequest -UseBasicParsing "$base/stand/blockstor-deploy.yaml").Content
+          $manifest = $manifest.Replace('__REGISTRY__/blockstor-controller:dev', "ghcr.io/cozystack/blockstor-controller:$env:BLOCKSTOR_VERSION")
+          Set-Content -Path $controllerFile -Value $manifest -Encoding UTF8
+          & $env:KUBECTL apply -f $controllerFile
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor controller manifest failed' }
+          Write-Host 'BLOCKSTOR_CRDS_CONTROLLER=PASS'
+
+      - name: Apply Blockstor mTLS API and HCI Node CRs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = "https://raw.githubusercontent.com/cozystack/blockstor/$env:BLOCKSTOR_TAG"
+          & $env:KUBECTL apply -f "$base/stand/blockstor-apiserver-tls.yaml"
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor PKI manifest failed' }
+          foreach ($cert in @('blockstor-api-ca','blockstor-apiserver-server','blockstor-apiserver-client')) {
+            & $env:KUBECTL wait --for=condition=Ready "certificate/$cert" -n blockstor-system --timeout=240s
+            if ($LASTEXITCODE -ne 0) {
+              & $env:KUBECTL get certificate $cert -n blockstor-system -o yaml
+              throw "certificate $cert not Ready"
+            }
+          }
+
+          $apiFile = Join-Path $env:RUNNER_TEMP 'blockstor-apiserver.yaml'
+          $apiManifest = (Invoke-WebRequest -UseBasicParsing "$base/stand/blockstor-apiserver-deploy.yaml").Content
+          $apiManifest = $apiManifest.Replace('__REGISTRY__/blockstor-apiserver:dev', "ghcr.io/cozystack/blockstor-apiserver:$env:BLOCKSTOR_VERSION")
+          Set-Content -Path $apiFile -Value $apiManifest -Encoding UTF8
+          & $env:KUBECTL apply -f $apiFile
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor apiserver manifest failed' }
+
+          $nodes = @((& $env:KUBECTL get nodes -o json | ConvertFrom-Json).items | ForEach-Object { $_.metadata.name })
+          if ($nodes.Count -ne 3) { throw "expected 3 HCI nodes, found $($nodes.Count)" }
+          foreach ($node in $nodes) {
+            $nodeObject = @{
+              apiVersion = 'blockstor.cozystack.io/v1alpha1'
+              kind = 'Node'
+              metadata = @{ name = $node }
+              spec = @{ type = 'SATELLITE' }
+            }
+            $nodeFile = Join-Path $env:RUNNER_TEMP ("blockstor-node-$node.json")
+            $nodeObject | ConvertTo-Json -Depth 10 | Set-Content -Path $nodeFile -Encoding UTF8
+            & $env:KUBECTL apply -f $nodeFile
+            if ($LASTEXITCODE -ne 0) { throw "Blockstor Node $node apply failed" }
+          }
+          Write-Host 'BLOCKSTOR_MTLS_NODES=PASS'
+
+      - name: Apply Blockstor satellites on all HCI nodes
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = "https://raw.githubusercontent.com/cozystack/blockstor/$env:BLOCKSTOR_TAG"
+          $satFile = Join-Path $env:RUNNER_TEMP 'blockstor-satellite.yaml'
+          $satManifest = (Invoke-WebRequest -UseBasicParsing "$base/stand/blockstor-satellite-daemonset.yaml").Content
+          $satManifest = $satManifest.Replace('__REGISTRY__/blockstor-satellite:dev', "ghcr.io/cozystack/blockstor-satellite:$env:BLOCKSTOR_VERSION")
+          Set-Content -Path $satFile -Value $satManifest -Encoding UTF8
+          & $env:KUBECTL apply -f $satFile
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor satellite manifest failed' }
+
+          # Upstream standalone development manifest excludes control-plane nodes because
+          # its dev control-plane has no DRBD. LayerSentry HCI is three control-plane
+          # nodes and the preflight above proves DRBD and ZFS on every node.
+          $affinityPatchFile = Join-Path $env:RUNNER_TEMP 'blockstor-satellite-affinity.json'
+          @{ spec = @{ template = @{ spec = @{ affinity = $null } } } } | ConvertTo-Json -Depth 10 | Set-Content -Path $affinityPatchFile -Encoding UTF8
+          & $env:KUBECTL patch daemonset blockstor-satellite -n blockstor-system --type merge --patch-file $affinityPatchFile
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor HCI satellite affinity patch failed' }
+
+          & $env:KUBECTL rollout status deployment/blockstor-controller -n blockstor-system --timeout=300s
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor controller rollout failed' }
+          & $env:KUBECTL rollout status deployment/blockstor-apiserver -n blockstor-system --timeout=300s
+          if ($LASTEXITCODE -ne 0) { throw 'Blockstor apiserver rollout failed' }
+          & $env:KUBECTL rollout status daemonset/blockstor-satellite -n blockstor-system --timeout=420s
+          if ($LASTEXITCODE -ne 0) {
+            & $env:KUBECTL get pods -n blockstor-system -o wide
+            & $env:KUBECTL describe daemonset blockstor-satellite -n blockstor-system
+            throw 'Blockstor satellite rollout failed'
+          }
+          Write-Host 'BLOCKSTOR_WORKLOADS=PASS'
+
+      - name: Require three Ready Blockstor Nodes and zero StoragePools
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $deadline = (Get-Date).AddMinutes(5)
+          do {
+            $items = @((& $env:KUBECTL get nodes.blockstor.cozystack.io -o json | ConvertFrom-Json).items)
+            $notReady = @()
+            foreach ($node in $items) {
+              $condition = @($node.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+              if (($condition.Count -eq 0) -or ($condition[0].status -ne 'True')) { $notReady += $node.metadata.name }
+            }
+            Write-Host "nodes=$($items.Count) not_ready=$($notReady.Count)"
+            if (($items.Count -eq 3) -and ($notReady.Count -eq 0)) { break }
+            Start-Sleep -Seconds 10
+          } while ((Get-Date) -lt $deadline)
+          if ($items.Count -ne 3) { throw "Blockstor node count $($items.Count), expected 3" }
+          if ($notReady.Count -gt 0) {
+            & $env:KUBECTL get nodes.blockstor.cozystack.io -o yaml
+            throw "Blockstor Nodes not Ready: $($notReady -join ',')"
+          }
+
+          $pools = @((& $env:KUBECTL get storagepools.blockstor.cozystack.io -o json | ConvertFrom-Json).items)
+          if ($pools.Count -ne 0) { throw 'SAFETY FAILURE: Blockstor StoragePool creation is forbidden in Phase 1' }
+          & $env:KUBECTL get pods,svc -n blockstor-system -o wide
+          & $env:KUBECTL get nodes.blockstor.cozystack.io -o wide
+          Write-Host 'BLOCKSTOR_ZERO_POOL_GATE=PASS'
+
+      - name: Validate Blockstor storage-provider API surface
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $crd = (& $env:KUBECTL get crd storagepools.blockstor.cozystack.io -o json | ConvertFrom-Json)
+          $actual = @($crd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.providerKind.enum | Sort-Object)
+          $expected = @('DISKLESS','FILE','FILE_THIN','LVM','LVM_THIN','ZFS','ZFS_THIN' | Sort-Object)
+          $missing = @($expected | Where-Object { $_ -notin $actual })
+          if ($missing.Count -gt 0) { throw "provider kinds missing: $($missing -join ',')" }
+          Write-Host ('BLOCKSTOR_PROVIDER_KINDS=' + ($actual -join ','))
+          Write-Host 'BLOCKSTOR_PROVIDER_SCHEMA=PASS'
+
+      - name: Prove classic LINSTOR was not displaced or degraded
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($sc in @('local','replicated')) {
+            $provisioner = (& $env:KUBECTL get storageclass $sc -o jsonpath='{.provisioner}').Trim()
+            if ($provisioner -ne 'linstor.csi.linbit.com') { throw "StorageClass $sc changed after Blockstor install" }
+          }
+          $linstor = (& $env:KUBECTL get package.cozystack.io cozystack.linstor -o json | ConvertFrom-Json)
+          $ready = @($linstor.status.conditions | Where-Object { $_.type -eq 'Ready' } | Select-Object -Last 1)
+          if (($ready.Count -eq 0) -or ($ready[0].status -ne 'True')) { throw 'classic LINSTOR degraded after Blockstor install' }
+          $pods = @((& $env:KUBECTL get pods -n cozy-linstor -o json | ConvertFrom-Json).items)
+          $bad = @($pods | Where-Object { $_.status.phase -notin @('Running','Succeeded') } | ForEach-Object { $_.metadata.name })
+          if ($bad.Count -gt 0) { throw "classic LINSTOR pods degraded: $($bad -join ',')" }
+          & $env:KUBECTL get storageclass -o wide
+          & $env:KUBECTL get csidriver -o wide
+          & $env:KUBECTL get volumesnapshotclass -o wide
+          Write-Host 'CLASSIC_LINSTOR_POSTCHECK=PASS'
+
+      - name: Report live protocol-extension certification separately
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $protocols = @('iscsi','multipath','nfs','nvme','trident-iscsi','util-linux')
+          $gaps = @()
+          foreach ($node in ($env:HCI_NODE_IPS -split ',')) {
+            $extensions = (& $env:TALOSCTL -n $node -e $node get extensions -o yaml 2>&1 | Out-String)
+            Write-Host "===== $node ====="
+            foreach ($protocol in $protocols) {
+              $present = $extensions -match [regex]::Escape($protocol)
+              Write-Host "$protocol=$present"
+              if (-not $present) { $gaps += "$node/$protocol" }
+            }
+          }
+          if ($gaps.Count -gt 0) {
+            Write-Host ('STORAGE_PROTOCOL_EXTENSION_GAPS=' + ($gaps -join ','))
+            Write-Host 'STORAGE_PROTOCOL_CERTIFICATION=PARTIAL'
+          } else {
+            Write-Host 'STORAGE_PROTOCOL_CERTIFICATION=PASS'
+          }
+          Write-Host 'BLOCKSTOR_PHASE1_GATE=PASS'
