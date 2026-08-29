@@ -32,26 +32,26 @@ jobs:
           & $k get applicationdefinitions.cozystack.io tenant -o name
           if ($LASTEXITCODE -ne 0) { throw 'Tenant ApplicationDefinition is unavailable' }
 
-          $api = & $k api-resources --api-group=apps.cozystack.io -o name
-          if ($LASTEXITCODE -ne 0 -or -not ($api -match '^tenants$|^tenants\.apps\.cozystack\.io$')) {
+          $api = @(& $k api-resources --api-group=apps.cozystack.io -o name)
+          if ($LASTEXITCODE -ne 0 -or -not ($api -match '^tenants(\.apps\.cozystack\.io)?$')) {
             throw 'Generated Tenant API is unavailable'
           }
 
-          $yaml=@'
-apiVersion: apps.cozystack.io/v1alpha1
-kind: Tenant
-metadata:
-  name: layersentry
-  namespace: tenant-root
-spec:
-  host: ""
-  etcd: false
-  monitoring: false
-  ingress: false
-  seaweedfs: false
-  schedulingClass: ""
-  resourceQuotas: {}
-'@
+          $yaml = @(
+            'apiVersion: apps.cozystack.io/v1alpha1',
+            'kind: Tenant',
+            'metadata:',
+            '  name: layersentry',
+            '  namespace: tenant-root',
+            'spec:',
+            '  host: ""',
+            '  etcd: false',
+            '  monitoring: false',
+            '  ingress: false',
+            '  seaweedfs: false',
+            '  schedulingClass: ""',
+            '  resourceQuotas: {}'
+          ) -join "`n"
           $yaml | & $k apply --dry-run=server -f - -o yaml
           if ($LASTEXITCODE -ne 0) { throw 'Tenant server-side dry-run failed' }
 
@@ -59,21 +59,21 @@ spec:
         run: |
           $ErrorActionPreference='Stop'
           $k='C:\hci-tools\kubectl.exe'
-          $yaml=@'
-apiVersion: apps.cozystack.io/v1alpha1
-kind: Tenant
-metadata:
-  name: layersentry
-  namespace: tenant-root
-spec:
-  host: ""
-  etcd: false
-  monitoring: false
-  ingress: false
-  seaweedfs: false
-  schedulingClass: ""
-  resourceQuotas: {}
-'@
+          $yaml = @(
+            'apiVersion: apps.cozystack.io/v1alpha1',
+            'kind: Tenant',
+            'metadata:',
+            '  name: layersentry',
+            '  namespace: tenant-root',
+            'spec:',
+            '  host: ""',
+            '  etcd: false',
+            '  monitoring: false',
+            '  ingress: false',
+            '  seaweedfs: false',
+            '  schedulingClass: ""',
+            '  resourceQuotas: {}'
+          ) -join "`n"
           $yaml | & $k apply -f -
           if ($LASTEXITCODE -ne 0) { throw 'Tenant apply failed' }
 
@@ -94,8 +94,13 @@ spec:
           Write-Host "generatedNamespace=$ns"
           if ($ns -ne 'tenant-layersentry') { throw "Unexpected generated namespace: $ns" }
 
-          & $k wait --for=jsonpath='{.status.phase}'=Active namespace/$ns --timeout=3m
-          if ($LASTEXITCODE -ne 0) { throw "$ns did not become Active" }
+          $active=$false
+          for ($i=0; $i -lt 36; $i++) {
+            $phase=& $k get namespace $ns -o jsonpath='{.status.phase}' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $phase -eq 'Active') { $active=$true; break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $active) { throw "$ns did not become Active" }
 
           Write-Host '===== Tenant object ====='
           & $k -n tenant-root get tenant.apps.cozystack.io/layersentry -o wide
@@ -104,6 +109,6 @@ spec:
           Write-Host '===== Tenant HelmRelease ====='
           & $k get helmreleases.helm.toolkit.fluxcd.io -A -o wide | Select-String -Pattern 'tenant.*layersentry|layersentry' -CaseSensitive:$false
           Write-Host '===== Cluster-admin group can list child tenants ====='
-          $can=& $k auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenantnamespaces.core.cozystack.io
+          $can=& $k auth can-i --as=layersentry-auth-check --as-group=cozystack-cluster-admin list tenantnamespaces.core.cozystack.io 2>$null
           Write-Host $can
           if ($can -ne 'yes') { throw 'cozystack-cluster-admin cannot list TenantNamespaces' }
