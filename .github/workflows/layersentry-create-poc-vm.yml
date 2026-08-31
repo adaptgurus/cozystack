@@ -1,0 +1,176 @@
+name: Create LayerSentry Hyper-V POC VM
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-create-poc-vm.yml
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  create-poc-vm:
+    name: Create and boot LayerSentry POC VM
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    env:
+      VM_NAME: layersentry-poc
+      ARTIFACT_ID: '9750483669'
+      ARTIFACT_SHA256: '364bfcb060d7c11084d92f7e519232f02162149dadc71b50b613ef8eb7a554e8'
+
+    steps:
+      - name: Validate Hyper-V runner and select storage
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME"
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Runner must be elevated administrator for Hyper-V.'
+          }
+          Get-Command Get-VM,New-VM,New-VHD,Add-VMDvdDrive,Set-VMFirmware,Start-VM | Format-Table Name,Source
+          Get-VMHost | Format-List ComputerName,LogicalProcessorCount
+
+          $drives = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Za-z]:\\$' } | Sort-Object Free -Descending)
+          $drives | ForEach-Object {
+            [pscustomobject]@{ Drive=$_.Name; Root=$_.Root; FreeGiB=[math]::Round($_.Free/1GB,2) }
+          } | Format-Table -AutoSize
+
+          $candidate = $drives | Where-Object { $_.Free -ge 25GB } | Select-Object -First 1
+          if (-not $candidate) { throw 'No local drive has at least 25 GiB free for the LayerSentry ISO POC.' }
+
+          $root = Join-Path $candidate.Root 'LayerSentryPOC'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          "POC_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "POC_ROOT=$root"
+
+      - name: Download corrected LayerSentry ISO artifact
+        env:
+          REPO_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = "https://api.github.com/repos/adaptgurus/harvester-installer/actions/artifacts/$env:ARTIFACT_ID/zip"
+          $zip = Join-Path $env:POC_ROOT 'layersentry-artifact.zip'
+          $extract = Join-Path $env:POC_ROOT 'artifact'
+          if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
+          if (Test-Path $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+
+          $headers = @('-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28')
+          $tokenToUse = $null
+          $status = & curl.exe -sS -o NUL -w '%{http_code}' @headers -H "Authorization: Bearer $env:REPO_TOKEN" $url
+          Write-Host "Workflow-token artifact probe HTTP=$status"
+          if ($status -eq '302') {
+            $tokenToUse = $env:REPO_TOKEN
+          } else {
+            $statusAnon = & curl.exe -sS -o NUL -w '%{http_code}' @headers $url
+            Write-Host "Anonymous artifact probe HTTP=$statusAnon"
+            if ($statusAnon -eq '302') {
+              $tokenToUse = ''
+            } else {
+              $gh = Get-Command gh -ErrorAction SilentlyContinue
+              if ($gh) {
+                $savedGh = $env:GH_TOKEN
+                $savedGithub = $env:GITHUB_TOKEN
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                try {
+                  $stored = (& gh auth token 2>$null | Select-Object -First 1).Trim()
+                  if ($stored) {
+                    $statusGh = & curl.exe -sS -o NUL -w '%{http_code}' @headers -H "Authorization: Bearer $stored" $url
+                    Write-Host "Existing gh credential artifact probe HTTP=$statusGh"
+                    if ($statusGh -eq '302') { $tokenToUse = $stored }
+                  }
+                } finally {
+                  if ($savedGh) { $env:GH_TOKEN = $savedGh }
+                  if ($savedGithub) { $env:GITHUB_TOKEN = $savedGithub }
+                }
+              }
+            }
+          }
+          if ($null -eq $tokenToUse) { throw 'No credential available to download corrected LayerSentry artifact.' }
+
+          $curlArgs = @('--fail','--location','--retry','5','--retry-delay','5','--retry-all-errors') + $headers
+          if ($tokenToUse) {
+            & curl.exe @curlArgs -H "Authorization: Bearer $tokenToUse" -o $zip $url
+          } else {
+            & curl.exe @curlArgs -o $zip $url
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Artifact download failed with curl exit code $LASTEXITCODE" }
+
+          $zipHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Artifact ZIP SHA256=$zipHash"
+          if ($zipHash -ne $env:ARTIFACT_SHA256) { throw 'Artifact ZIP SHA256 mismatch.' }
+
+          & tar.exe -xf $zip -C $extract
+          if ($LASTEXITCODE -ne 0) { throw "Artifact extraction failed with exit code $LASTEXITCODE" }
+          Remove-Item -LiteralPath $zip -Force
+
+      - name: Verify ISO checksum
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extract = Join-Path $env:POC_ROOT 'artifact'
+          $iso = Get-ChildItem $extract -Filter 'layersentry-v1.0-amd64.iso' -File -Recurse | Select-Object -First 1
+          $sum = Get-ChildItem $extract -Filter 'layersentry-v1.0-amd64.iso.sha512' -File -Recurse | Select-Object -First 1
+          if (-not $iso -or -not $sum) { throw 'Corrected LayerSentry ISO or SHA512 file not found.' }
+          $expected = ((Get-Content $sum.FullName -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -Path $iso.FullName -Algorithm SHA512).Hash.ToLowerInvariant()
+          Write-Host "ISO=$($iso.FullName)"
+          Write-Host "ISO size=$([math]::Round($iso.Length/1GB,3)) GiB"
+          Write-Host "SHA512 expected=$expected"
+          Write-Host "SHA512 actual  =$actual"
+          if ($actual -ne $expected) { throw 'LayerSentry ISO SHA512 mismatch.' }
+          Set-Content -Path (Join-Path $env:POC_ROOT 'iso-path.txt') -Value $iso.FullName
+
+      - name: Create fresh Generation 2 VM and boot ISO
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iso = (Get-Content (Join-Path $env:POC_ROOT 'iso-path.txt') -Raw).Trim()
+          $vmRoot = Join-Path $env:POC_ROOT 'vm'
+          New-Item -ItemType Directory -Force -Path $vmRoot | Out-Null
+          $vhd = Join-Path $vmRoot "$env:VM_NAME-os.vhdx"
+
+          $old = Get-VM -Name $env:VM_NAME -ErrorAction SilentlyContinue
+          if ($old) {
+            if ($old.State -ne 'Off') { Stop-VM -Name $env:VM_NAME -TurnOff -Force }
+            Remove-VM -Name $env:VM_NAME -Force
+          }
+          if (Test-Path $vhd) { Remove-Item -LiteralPath $vhd -Force }
+
+          New-VHD -Path $vhd -Dynamic -SizeBytes 150GB | Out-Null
+          New-VM -Name $env:VM_NAME -Generation 2 -MemoryStartupBytes 8GB -VHDPath $vhd -Path $vmRoot | Out-Null
+          Set-VMProcessor -VMName $env:VM_NAME -Count 4
+          Set-VMMemory -VMName $env:VM_NAME -DynamicMemoryEnabled $false
+          Set-VMFirmware -VMName $env:VM_NAME -EnableSecureBoot Off
+
+          $switch = Get-VMSwitch | Where-Object SwitchType -eq 'External' | Select-Object -First 1
+          if (-not $switch) { $switch = Get-VMSwitch | Select-Object -First 1 }
+          if ($switch) {
+            Add-VMNetworkAdapter -VMName $env:VM_NAME -SwitchName $switch.Name
+            Write-Host "Connected VM to vSwitch: $($switch.Name)"
+          } else {
+            Write-Warning 'No Hyper-V virtual switch found; VM created without network connectivity.'
+          }
+
+          $dvd = Add-VMDvdDrive -VMName $env:VM_NAME -Path $iso -Passthru
+          Set-VMFirmware -VMName $env:VM_NAME -FirstBootDevice $dvd
+
+          Start-VM -Name $env:VM_NAME
+          Start-Sleep -Seconds 15
+          $vm = Get-VM -Name $env:VM_NAME
+          if ($vm.State -ne 'Running') { throw "VM failed to stay running. State=$($vm.State) Status=$($vm.Status)" }
+
+          Write-Host '==== LayerSentry POC VM ===='
+          $vm | Select-Object Name,State,Status,Generation,ProcessorCount,MemoryStartup,Uptime | Format-List
+          Get-VMFirmware -VMName $env:VM_NAME | Format-List SecureBoot,BootOrder
+          Get-VMDvdDrive -VMName $env:VM_NAME | Format-List VMName,Path,ControllerType,ControllerNumber,ControllerLocation
+          Get-VMHardDiskDrive -VMName $env:VM_NAME | Format-List VMName,Path,ControllerType,ControllerNumber,ControllerLocation
+          Write-Host "VM '$env:VM_NAME' is intentionally left RUNNING for VMConnect inspection."
