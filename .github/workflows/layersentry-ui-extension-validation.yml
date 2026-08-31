@@ -1,0 +1,139 @@
+name: LayerSentry UI Extension Validation
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-ui-extension-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-ui:
+    name: Validate LayerSentry UI on HCI runner
+    runs-on: [self-hosted, Windows, X64, hci-runner]
+    timeout-minutes: 90
+    steps:
+      - name: Clean validation workspace
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          Write-Host "Validation root prepared."
+
+      - name: Checkout pinned LayerSentry UI revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: adaptgurus/harvester-ui-extension
+          ref: e254438888f921761e3fe248154eb372803976cb
+          path: layersentry-ui
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: yarn
+          cache-dependency-path: layersentry-ui/yarn.lock
+
+      - name: Ensure Yarn Classic and runner prerequisites
+        shell: pwsh
+        run: |
+          if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
+            npm install --global yarn@1.22.22
+          }
+          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
+            throw 'Git Bash/bash is required for Rancher extension build-pkg.'
+          }
+          Write-Host "Node: $(node --version)"
+          Write-Host "Yarn: $(yarn --version)"
+          Write-Host "Git: $(git --version)"
+          Write-Host "Bash: $((Get-Command bash).Source)"
+
+      - name: Verify pinned source revision
+        shell: pwsh
+        working-directory: layersentry-ui
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne 'e254438888f921761e3fe248154eb372803976cb') {
+            throw "Unexpected UI revision: $head"
+          }
+          Write-Host "Validated source revision: $head"
+
+      - name: Frozen dependency install
+        shell: pwsh
+        working-directory: layersentry-ui
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        shell: pwsh
+        working-directory: layersentry-ui
+        run: yarn lint
+
+      - name: Build Harvester extension package
+        shell: pwsh
+        run: |
+          bash -lc "cd layersentry-ui && yarn build-pkg harvester"
+
+      - name: Validate LayerSentry build outputs and private-label assets
+        shell: pwsh
+        working-directory: layersentry-ui
+        run: |
+          $required = @(
+            'pkg/harvester/assets/layersentry/layer-sentry-icon.svg',
+            'pkg/harvester/assets/layersentry/layer-sentry-logo.svg',
+            'pkg/harvester/config/layersentry-cluster.js',
+            'pkg/harvester/l10n/layersentry-en-us.yaml',
+            'pkg/harvester/styles/layersentry/index.scss'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Missing LayerSentry asset/config: $path" }
+          }
+
+          $distCandidates = @('dist','dist-pkg','pkg/harvester/dist') | Where-Object { Test-Path $_ }
+          if (-not $distCandidates) {
+            Write-Host 'Build completed; listing generated top-level output candidates:'
+            Get-ChildItem -Directory | Select-Object -ExpandProperty Name
+          } else {
+            Write-Host "Generated build outputs: $($distCandidates -join ', ')"
+          }
+
+          $changed = git diff --name-only origin/main...HEAD
+          $forbiddenBackend = $changed | Where-Object {
+            $_ -match '(^|/)(api|apis|crd|crds|controller|controllers|store|stores|model|models|validator|validators|rbac)(/|$)'
+          }
+          if ($forbiddenBackend) {
+            throw "Presentation-only contract violated by changed backend paths: $($forbiddenBackend -join ', ')"
+          }
+          Write-Host 'Presentation-only path guard passed.'
+
+      - name: Brand-leak evidence scan
+        shell: pwsh
+        working-directory: layersentry-ui
+        run: |
+          Write-Host 'Changed presentation files containing upstream brand terms (review evidence; technical identifiers may be expected):'
+          $matches = git grep -n -i -E 'Harvester|SUSE|Rancher' -- 'pkg/harvester/*.vue' 'pkg/harvester/**/*.vue' 'pkg/harvester/l10n/*.yaml' 'pkg/harvester/package.json' 2>$null
+          if ($LASTEXITCODE -gt 1) { throw 'Brand scan command failed.' }
+          if ($matches) { $matches | Select-Object -First 300 } else { Write-Host 'No upstream-brand matches in scanned presentation surfaces.' }
+
+      - name: Cluster and browser capability probe
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          if (Get-Command kubectl -ErrorAction SilentlyContinue) {
+            Write-Host 'kubectl available:'
+            kubectl config current-context
+            kubectl get nodes -o wide
+          } else {
+            Write-Host 'kubectl is not installed/configured on this runner.'
+          }
+          $browsers = @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe",
+            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+          if ($browsers) { Write-Host "Browser available: $($browsers[0])" } else { Write-Host 'No Chrome/Edge executable detected.' }
