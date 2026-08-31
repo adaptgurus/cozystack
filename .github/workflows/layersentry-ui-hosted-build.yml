@@ -1,0 +1,87 @@
+name: LayerSentry UI Hosted Build Validation
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-ui-hosted-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Frozen install lint and package build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout pinned LayerSentry UI revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: adaptgurus/harvester-ui-extension
+          ref: e254438888f921761e3fe248154eb372803976cb
+          path: layersentry-ui
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: yarn
+          cache-dependency-path: layersentry-ui/yarn.lock
+
+      - name: Ensure Yarn Classic
+        run: |
+          npm install --global yarn@1.22.22
+          node --version
+          yarn --version
+
+      - name: Verify pinned source revision
+        working-directory: layersentry-ui
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "e254438888f921761e3fe248154eb372803976cb"
+
+      - name: Frozen dependency install
+        working-directory: layersentry-ui
+        run: yarn install --frozen-lockfile
+
+      - name: Lint
+        working-directory: layersentry-ui
+        run: yarn lint
+
+      - name: Build Harvester extension package
+        working-directory: layersentry-ui
+        run: yarn build-pkg harvester
+
+      - name: Validate LayerSentry assets and presentation-only change scope
+        working-directory: layersentry-ui
+        run: |
+          set -euo pipefail
+          for f in \
+            pkg/harvester/assets/layersentry/layer-sentry-icon.svg \
+            pkg/harvester/assets/layersentry/layer-sentry-logo.svg \
+            pkg/harvester/config/layersentry-cluster.js \
+            pkg/harvester/l10n/layersentry-en-us.yaml \
+            pkg/harvester/styles/layersentry/index.scss; do
+            test -s "$f" || { echo "Missing required file: $f"; exit 1; }
+          done
+          changed="$(git diff --name-only origin/main...HEAD)"
+          echo "$changed"
+          if printf '%s\n' "$changed" | grep -E '(^|/)(api|apis|crd|crds|controller|controllers|store|stores|model|models|validator|validators|rbac)(/|$)'; then
+            echo 'Presentation-only contract violated by backend-path changes.'
+            exit 1
+          fi
+          echo 'Presentation-only path guard passed.'
+
+      - name: Verify generated package is non-empty
+        working-directory: layersentry-ui
+        run: |
+          set -euo pipefail
+          echo 'Generated package/build directories:'
+          find . -maxdepth 4 -type d \( -name dist -o -name 'dist-pkg' -o -name assets \) -print | head -100
+          generated=$(find . -type f -newer package.json | wc -l)
+          echo "Files newer than package.json after build: $generated"
+          test "$generated" -gt 0
