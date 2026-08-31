@@ -20,15 +20,14 @@ jobs:
   layersentry-boot:
     name: LayerSentry ISO boot smoke
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
-      LAB_ROOT: C:\LayerSentrySmoke
       ARTIFACT_ID: '9744630608'
       ARTIFACT_SHA256: '6fb59af73c155a15e2a926b17dfe46bf5923157a055e19b5c453f6c1d41cb720'
       GEN2_VM: layersentry-smoke-gen2
       GEN1_VM: layersentry-smoke-gen1
     steps:
-      - name: Validate runner and Hyper-V
+      - name: Validate runner, Hyper-V, and select storage drive
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME"
@@ -37,23 +36,68 @@ jobs:
           $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
           Write-Host "Elevated administrator=$isAdmin"
           if (-not $isAdmin) { throw 'Runner is not elevated for Hyper-V.' }
-          Get-Command curl.exe,Get-VM,New-VM,Start-VM,Add-VMDvdDrive,Set-VMFirmware,Set-VMBios | Format-Table Name,Source
+          Get-Command curl.exe,tar.exe,Get-VM,New-VM,Start-VM,Add-VMDvdDrive,Set-VMFirmware,Set-VMBios | Format-Table Name,Source
           Get-VMHost | Format-List ComputerName,LogicalProcessorCount
-          $free = (Get-PSDrive C).Free
-          Write-Host "C: free=$([math]::Round($free/1GB,2)) GiB"
-          if ($free -lt 25GB) { throw 'At least 25 GiB free is required for the artifact ZIP plus extracted ISO.' }
-          New-Item -ItemType Directory -Force -Path $env:LAB_ROOT | Out-Null
 
-      - name: Download LayerSentry artifact with curl
+          Write-Host '==== Local filesystem drive capacity before cleanup ===='
+          $before = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Za-z]:\\$' })
+          $before | ForEach-Object {
+            [pscustomobject]@{
+              Drive = $_.Name
+              Root = $_.Root
+              FreeGiB = [math]::Round($_.Free / 1GB, 2)
+              UsedGiB = [math]::Round($_.Used / 1GB, 2)
+            }
+          } | Sort-Object FreeGiB -Descending | Format-Table -AutoSize
+
+          # Remove only stale download/extraction files created by the previous failed LayerSentry smoke run.
+          foreach ($drive in $before) {
+            $staleRoot = Join-Path $drive.Root 'LayerSentrySmoke'
+            foreach ($relative in @('layersentry-artifact.zip','artifact')) {
+              $stale = Join-Path $staleRoot $relative
+              if (Test-Path $stale) {
+                Write-Host "Removing stale smoke-test data: $stale"
+                Remove-Item -LiteralPath $stale -Recurse -Force
+              }
+            }
+          }
+
+          # Refresh drive statistics after reclaiming the failed partial artifact.
+          $drives = @(Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root -match '^[A-Za-z]:\\$' } | Sort-Object Free -Descending)
+          Write-Host '==== Local filesystem drive capacity after cleanup ===='
+          $drives | ForEach-Object {
+            [pscustomobject]@{
+              Drive = $_.Name
+              Root = $_.Root
+              FreeGiB = [math]::Round($_.Free / 1GB, 2)
+              UsedGiB = [math]::Round($_.Used / 1GB, 2)
+            }
+          } | Format-Table -AutoSize
+
+          $candidate = $drives | Where-Object { $_.Free -ge 35GB } | Select-Object -First 1
+          if (-not $candidate) {
+            $best = $drives | Select-Object -First 1
+            $bestFree = if ($best) { [math]::Round($best.Free / 1GB, 2) } else { 0 }
+            throw "No local filesystem drive has the required 35 GiB free. Best available drive has $bestFree GiB. Refusing another partial 8.57-GB download."
+          }
+
+          $labRoot = Join-Path $candidate.Root 'LayerSentrySmoke'
+          New-Item -ItemType Directory -Force -Path $labRoot | Out-Null
+          Write-Host "Selected smoke-test drive $($candidate.Name): with $([math]::Round($candidate.Free/1GB,2)) GiB free"
+          Write-Host "LAB_ROOT=$labRoot"
+          "LAB_ROOT=$labRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAB_DRIVE=$($candidate.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download LayerSentry artifact with resumable curl
         env:
           REPO_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:LAB_ROOT) { throw 'LAB_ROOT was not selected.' }
           $url = "https://api.github.com/repos/adaptgurus/harvester-installer/actions/artifacts/$env:ARTIFACT_ID/zip"
           $zip = Join-Path $env:LAB_ROOT 'layersentry-artifact.zip'
           $extract = Join-Path $env:LAB_ROOT 'artifact'
-          if (Test-Path $zip) { Remove-Item -Force $zip }
-          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          if (Test-Path $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $extract | Out-Null
 
           $headers = @('-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28')
@@ -94,13 +138,16 @@ jobs:
             throw 'GitHub blocked cross-repository artifact download and no existing gh CLI credential on the runner can read harvester-installer actions artifacts.'
           }
 
+          $curlArgs = @('--fail','--location','--retry','5','--retry-delay','5','--retry-all-errors','--continue-at','-') + $headers
           if ($tokenToUse) {
-            & curl.exe --fail --location --retry 5 --retry-delay 5 @headers -H "Authorization: Bearer $tokenToUse" -o $zip $url
+            & curl.exe @curlArgs -H "Authorization: Bearer $tokenToUse" -o $zip $url
           } else {
-            & curl.exe --fail --location --retry 5 --retry-delay 5 @headers -o $zip $url
+            & curl.exe @curlArgs -o $zip $url
           }
           if ($LASTEXITCODE -ne 0) { throw "curl download failed with exit code $LASTEXITCODE" }
 
+          $zipInfo = Get-Item $zip
+          Write-Host "Downloaded artifact ZIP size=$([math]::Round($zipInfo.Length/1GB,3)) GiB path=$zip"
           $zipHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Host "Artifact ZIP SHA256=$zipHash"
           if ($zipHash -ne $env:ARTIFACT_SHA256) { throw 'Downloaded GitHub artifact ZIP digest mismatch.' }
@@ -108,6 +155,11 @@ jobs:
           & tar.exe -xf $zip -C $extract
           if ($LASTEXITCODE -ne 0) { throw "Artifact extraction failed with exit code $LASTEXITCODE" }
           Get-ChildItem -Recurse $extract | Select-Object FullName,Length | Format-Table -AutoSize
+
+          # ZIP is no longer needed after the GitHub artifact digest has been verified and extracted.
+          Remove-Item -LiteralPath $zip -Force
+          $selected = Get-PSDrive -Name $env:LAB_DRIVE
+          Write-Host "Selected drive free after extraction=$([math]::Round($selected.Free/1GB,2)) GiB"
 
       - name: Verify ISO checksum and boot payload
         run: |
@@ -197,8 +249,8 @@ jobs:
             } catch { Write-Warning "Framebuffer capture failed for $VMName : $($_.Exception.Message)" }
           }
 
-          $evidence = Join-Path $env:LAB_ROOT 'evidence'
-          if (Test-Path $evidence) { Remove-Item -Recurse -Force $evidence }
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'layersentry-hyperv-evidence'
+          if (Test-Path $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $evidence | Out-Null
           Start-VM -Name $env:GEN2_VM
           Start-VM -Name $env:GEN1_VM
@@ -226,6 +278,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: layersentry-v1.0-hyperv-boot-evidence
-          path: C:\LayerSentrySmoke\evidence
+          path: layersentry-hyperv-evidence
           if-no-files-found: warn
           retention-days: 7
