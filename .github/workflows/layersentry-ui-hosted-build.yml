@@ -74,12 +74,18 @@ jobs:
           done
           echo 'Required LayerSentry assets/configuration are present.'
 
-      - name: Verify generated package is non-empty
+      - name: Verify generated package artifacts
         working-directory: layersentry-ui
         run: |
           set -euo pipefail
-          echo 'Generated package/build directories:'
-          find . -maxdepth 5 -type d \( -name dist -o -name 'dist-pkg' -o -name assets \) -print | head -100
-          generated=$(find . -type f -newer package.json | wc -l)
-          echo "Files newer than package.json after build: $generated"
-          test "$generated" -gt 0
+          out='dist-pkg/harvester-1.10.0-dev'
+          entry="$out/harvester-1.10.0-dev.umd.min.js"
+          test -d "$out" || { echo "Missing build output directory: $out"; exit 1; }
+          test -s "$entry" || { echo "Missing/non-empty UMD entrypoint: $entry"; exit 1; }
+          count=$(find "$out" -type f | wc -l)
+          bytes=$(stat -c '%s' "$entry")
+          echo "Generated package directory: $out"
+          echo "Generated file count: $count"
+          echo "UMD entrypoint bytes: $bytes"
+          test "$count" -gt 1
+          test "$bytes" -gt 1000000
