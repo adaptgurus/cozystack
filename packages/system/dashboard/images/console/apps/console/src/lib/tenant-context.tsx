@@ -12,10 +12,10 @@ import { SELECTED_TENANT_KEY, TENANT_NAMESPACE_PREFIX } from "./constants.ts"
 
 interface TenantContextValue {
   /**
-   * Flat list of every TenantNamespace in the cluster, ordered by display
-   * name (the namespace prefix stripped). Callers typically only need
-   * `selectedTenant` / `tenantNamespace`, but the full list is exposed for
-   * pickers and breadcrumbs.
+   * Flat list of every TenantNamespace the current user can access, ordered by
+   * display name (the namespace prefix stripped). Tenant selection must not
+   * change this list: selectedTenant only chooses the namespace targeted by
+   * application operations.
    */
   tenants: TenantNamespace[]
   /** Display name (namespace minus the `tenant-` prefix). */
@@ -44,18 +44,15 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
   const ns = selectedTenant ? `${TENANT_NAMESPACE_PREFIX}${selectedTenant}` : null
 
-  // TenantNamespace is cluster-scoped, filter by parent tenant label
-  // to show only child tenants of the selected tenant
-  const labelSelector = ns ? `tenant.cozystack.io/${ns}` : undefined
-
-  const list = useK8sList<TenantNamespace>(
-    {
-      apiGroup: "core.cozystack.io",
-      apiVersion: "v1alpha1",
-      plural: "tenantnamespaces",
-    },
-    { labelSelector }
-  )
+  // TenantNamespace is cluster-scoped. Always list the full set visible to the
+  // current user. Filtering this request by selectedTenant makes a leaf tenant
+  // disappear immediately after it is selected (for example root -> layersentry
+  // -> no children), which incorrectly drives the UI into "No tenants found".
+  const list = useK8sList<TenantNamespace>({
+    apiGroup: "core.cozystack.io",
+    apiVersion: "v1alpha1",
+    plural: "tenantnamespaces",
+  })
 
   const tenants = useMemo<TenantNamespace[]>(() => {
     return (list.data?.items ?? [])
@@ -68,7 +65,13 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     if (selectedTenant && tenants.some((t) => displayName(t) === selectedTenant)) return
     const fallback =
       tenants.find((t) => displayName(t) === "root") ?? tenants[0]
-    setSelectedTenant(displayName(fallback))
+    const fallbackName = displayName(fallback)
+    setSelectedTenant(fallbackName)
+    try {
+      window.localStorage.setItem(SELECTED_TENANT_KEY, fallbackName)
+    } catch {
+      // ignore storage quota / private-mode failures
+    }
   }, [tenants, selectedTenant])
 
   const selectTenant = (name: string) => {
