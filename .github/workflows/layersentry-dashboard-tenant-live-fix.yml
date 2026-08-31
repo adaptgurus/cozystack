@@ -82,6 +82,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          docker buildx create --name layersentry-tenant-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
           image="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
           meta="${RUNNER_TEMP}/build-meta.json"
           docker buildx build \
@@ -99,6 +101,7 @@ jobs:
           ref="${IMAGE_REPOSITORY}@${digest}"
           echo "image_ref=$ref" >> "$GITHUB_OUTPUT"
           echo "CONSOLE_IMAGE_PUBLISHED=PASS ref=$ref"
+          docker buildx rm layersentry-tenant-builder >/dev/null 2>&1 || true
 
   deploy-and-certify:
     name: Deploy and certify tenant UI on TESTSER
