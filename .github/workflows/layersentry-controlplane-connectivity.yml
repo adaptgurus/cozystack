@@ -18,30 +18,39 @@ jobs:
   diagnose:
     name: Diagnose Kubernetes API endpoints from TESTSER
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 10
+    timeout-minutes: 5
     env:
       KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
       KUBECTL: C:\hci-tools\kubectl.exe
     steps:
-      - name: Test API VIP and control-plane nodes
+      - name: Test API VIP and control-plane nodes with bounded probes
         run: |
           $ErrorActionPreference='Continue'
+          function Test-TcpFast([string]$hostName,[int]$port,[int]$timeoutMs=3000){
+            $client=New-Object System.Net.Sockets.TcpClient
+            try{
+              $ar=$client.BeginConnect($hostName,$port,$null,$null)
+              if(-not $ar.AsyncWaitHandle.WaitOne($timeoutMs,$false)){return $false}
+              $client.EndConnect($ar)
+              return $client.Connected
+            }catch{return $false}finally{$client.Close()}
+          }
           $ips=@('10.10.10.10','10.10.10.11','10.10.10.12','10.10.10.13')
           foreach($ip in $ips){
-            $tcp=Test-NetConnection -ComputerName $ip -Port 6443 -WarningAction SilentlyContinue
-            Write-Host "TCP endpoint=$ip`:6443 reachable=$($tcp.TcpTestSucceeded) source=$($tcp.SourceAddress)"
-            $code=(& curl.exe -k -sS --connect-timeout 5 --max-time 8 -o NUL -w '%{http_code}' "https://$ip`:6443/readyz" 2>$null | Out-String).Trim()
-            if(-not $code){$code='transport-failed'}
-            Write-Host "READYZ endpoint=$ip`:6443 http=$code"
-            $nodes=@(& $env:KUBECTL --server="https://$ip`:6443" --insecure-skip-tls-verify=true --request-timeout=8s get nodes -o name 2>&1)
-            $ok=$LASTEXITCODE -eq 0
-            if($ok){
-              Write-Host "KUBECTL endpoint=$ip`:6443 authenticated=true nodes=$([string]::Join(',', $nodes))"
-            } else {
-              $safe=($nodes -join ' | ') -replace 'Bearer\s+[A-Za-z0-9._-]+','Bearer ***'
-              Write-Host "KUBECTL endpoint=$ip`:6443 authenticated=false error=$safe"
+            $tcp=Test-TcpFast $ip 6443 3000
+            Write-Host "TCP endpoint=$ip`:6443 reachable=$tcp"
+            if($tcp){
+              $code=(& curl.exe -k -sS --connect-timeout 3 --max-time 5 -o NUL -w '%{http_code}' "https://$ip`:6443/readyz" 2>$null | Out-String).Trim()
+              if(-not $code){$code='transport-failed'}
+              Write-Host "READYZ endpoint=$ip`:6443 http=$code"
+              $nodes=@(& $env:KUBECTL --server="https://$ip`:6443" --insecure-skip-tls-verify=true --request-timeout=5s get nodes -o name 2>&1)
+              $ok=$LASTEXITCODE -eq 0
+              if($ok){
+                Write-Host "KUBECTL endpoint=$ip`:6443 authenticated=true nodes=$([string]::Join(',', $nodes))"
+              } else {
+                $safe=($nodes -join ' | ') -replace 'Bearer\s+[A-Za-z0-9._-]+','Bearer ***'
+                Write-Host "KUBECTL endpoint=$ip`:6443 authenticated=false error=$safe"
+              }
             }
           }
-          Write-Host '--- ROUTE SUMMARY ---'
-          route print 10.10.10.0
           Write-Host 'CONTROLPLANE_CONNECTIVITY_DIAG=COMPLETE'
