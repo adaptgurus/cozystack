@@ -8,6 +8,10 @@ on:
       - .github/workflows/layersentry-ui-hosted-build.yml
   workflow_dispatch:
 
+concurrency:
+  group: layersentry-ui-hosted-build
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
