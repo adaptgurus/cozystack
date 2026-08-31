@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: adaptgurus/harvester-ui-extension
-          ref: e254438888f921761e3fe248154eb372803976cb
+          ref: 89a51e9bd92428181da3ed57b94906b02e49fb0e
           path: layersentry-ui
           fetch-depth: 1
 
@@ -73,7 +73,7 @@ jobs:
         working-directory: layersentry-ui
         run: |
           $head = (git rev-parse HEAD).Trim()
-          if ($head -ne 'e254438888f921761e3fe248154eb372803976cb') {
+          if ($head -ne '89a51e9bd92428181da3ed57b94906b02e49fb0e') {
             throw "Unexpected UI revision: $head"
           }
           Write-Host "Validated source revision: $head"
@@ -126,16 +126,19 @@ jobs:
           $mustContain = @(
             @{ File='pkg/harvester/config/harvester.ts'; Pattern='layer-sentry-icon.svg' },
             @{ File='pkg/harvester/package.json'; Pattern='LayerSentry' },
+            @{ File='pkg/harvester/package.json'; Pattern='feat/layersentry-ui-rebrand/pkg/harvester/icon.svg' },
             @{ File='pkg/harvester/config/layersentry-cluster.js'; Pattern='LayerSentry' },
-            @{ File='pkg/harvester/l10n/layersentry-en-us.yaml'; Pattern='LayerSentry' }
+            @{ File='pkg/harvester/l10n/layersentry-en-us.yaml'; Pattern='LayerSentry' },
+            @{ File='pkg/harvester/l10n/layersentry-en-us.yaml'; Pattern='LayerSentry Monitoring' },
+            @{ File='pkg/harvester/l10n/layersentry-en-us.yaml'; Pattern='LayerSentry Support' }
           )
           foreach ($check in $mustContain) {
-            if (-not (Select-String -Path $check.File -Pattern $check.Pattern -Quiet)) {
+            if (-not (Select-String -Path $check.File -Pattern $check.Pattern -SimpleMatch -Quiet)) {
               throw "Expected LayerSentry marker '$($check.Pattern)' missing from $($check.File)"
             }
           }
 
-          $productName = Select-String -Path 'pkg/harvester/config/harvester.ts' -Pattern "PRODUCT_NAME = 'harvester'" -Quiet
+          $productName = Select-String -Path 'pkg/harvester/config/harvester.ts' -Pattern "PRODUCT_NAME = 'harvester'" -SimpleMatch -Quiet
           if (-not $productName) { throw 'Internal Harvester product identifier changed; presentation-only contract violated.' }
 
           $bundle = 'dist-pkg/harvester-1.10.0-dev/harvester-1.10.0-dev.umd.min.js'
@@ -202,8 +205,6 @@ jobs:
             $repoBash = "/$($Matches[1].ToLower())/$($Matches[2])"
           }
 
-          # The dev shell can render and exercise the LayerSentry frontend even if the POC API is not yet reachable.
-          # Use sen1 as the default API target because it is the first HCI POC node; backend reachability is reported separately above.
           $log = Join-Path $evidence 'dev-server.log'
           $err = Join-Path $evidence 'dev-server-error.log'
           $cmd = "cd '$repoBash' && export RANCHER_ENV=harvester && export API=https://10.10.10.11 && export VUE_APP_SERVER_VERSION=v1.9.0 && yarn dev"
@@ -258,6 +259,16 @@ jobs:
           Write-Host "DOM bytes=$((Get-Item $dom).Length)"
           Write-Host '==== DOM branding evidence ===='
           Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 100 | ForEach-Object { $_.Line }
+
+          $brandVisible = (Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry' -Quiet)
+          if (-not $brandVisible) {
+            Write-Host '==== dev server stdout ===='
+            if (Test-Path $log) { Get-Content $log -Tail 100 }
+            Write-Host '==== dev server stderr ===='
+            if (Test-Path $err) { Get-Content $err -Tail 100 }
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+            throw 'Rendered browser DOM did not expose a LayerSentry brand marker.'
+          }
 
           if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
 
