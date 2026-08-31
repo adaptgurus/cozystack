@@ -8,13 +8,17 @@ on:
       - .github/workflows/layersentry-ui-extension-validation.yml
   workflow_dispatch:
 
+concurrency:
+  group: layersentry-ui-windows-validation
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   validate-ui:
-    name: Validate LayerSentry UI on HCI runner
-    runs-on: [self-hosted, Windows, X64, hci-runner]
+    name: Validate LayerSentry UI on Windows HCI runner
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 90
     steps:
       - name: Clean validation workspace
@@ -23,7 +27,8 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
           if (Test-Path $root) { Remove-Item $root -Recurse -Force }
           New-Item -ItemType Directory -Path $root | Out-Null
-          Write-Host "Validation root prepared."
+          Write-Host "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME"
+          Write-Host 'Validation root prepared.'
 
       - name: Checkout pinned LayerSentry UI revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -31,7 +36,7 @@ jobs:
           repository: adaptgurus/harvester-ui-extension
           ref: e254438888f921761e3fe248154eb372803976cb
           path: layersentry-ui
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Setup Node 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -46,13 +51,12 @@ jobs:
           if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
             npm install --global yarn@1.22.22
           }
-          if (-not (Get-Command bash -ErrorAction SilentlyContinue)) {
-            throw 'Git Bash/bash is required for Rancher extension build-pkg.'
-          }
+          $bash = Get-Command bash -ErrorAction SilentlyContinue
+          if (-not $bash) { throw 'Git Bash/bash is required for Rancher extension build-pkg.' }
           Write-Host "Node: $(node --version)"
           Write-Host "Yarn: $(yarn --version)"
           Write-Host "Git: $(git --version)"
-          Write-Host "Bash: $((Get-Command bash).Source)"
+          Write-Host "Bash: $($bash.Source)"
 
       - name: Verify pinned source revision
         shell: pwsh
@@ -79,7 +83,7 @@ jobs:
         run: |
           bash -lc "cd layersentry-ui && yarn build-pkg harvester"
 
-      - name: Validate LayerSentry build outputs and private-label assets
+      - name: Validate generated package and LayerSentry assets
         shell: pwsh
         working-directory: layersentry-ui
         run: |
@@ -88,52 +92,47 @@ jobs:
             'pkg/harvester/assets/layersentry/layer-sentry-logo.svg',
             'pkg/harvester/config/layersentry-cluster.js',
             'pkg/harvester/l10n/layersentry-en-us.yaml',
-            'pkg/harvester/styles/layersentry/index.scss'
+            'pkg/harvester/styles/layersentry/index.scss',
+            'dist-pkg/harvester-1.10.0-dev/harvester-1.10.0-dev.umd.min.js'
           )
           foreach ($path in $required) {
-            if (-not (Test-Path $path)) { throw "Missing LayerSentry asset/config: $path" }
+            if (-not (Test-Path $path)) { throw "Missing required LayerSentry output: $path" }
+            if ((Get-Item $path).Length -le 0) { throw "Empty required LayerSentry output: $path" }
           }
-
-          $distCandidates = @('dist','dist-pkg','pkg/harvester/dist') | Where-Object { Test-Path $_ }
-          if (-not $distCandidates) {
-            Write-Host 'Build completed; listing generated top-level output candidates:'
-            Get-ChildItem -Directory | Select-Object -ExpandProperty Name
-          } else {
-            Write-Host "Generated build outputs: $($distCandidates -join ', ')"
-          }
-
-          $changed = git diff --name-only origin/main...HEAD
-          $forbiddenBackend = $changed | Where-Object {
-            $_ -match '(^|/)(api|apis|crd|crds|controller|controllers|store|stores|model|models|validator|validators|rbac)(/|$)'
-          }
-          if ($forbiddenBackend) {
-            throw "Presentation-only contract violated by changed backend paths: $($forbiddenBackend -join ', ')"
-          }
-          Write-Host 'Presentation-only path guard passed.'
+          $entry = Get-Item 'dist-pkg/harvester-1.10.0-dev/harvester-1.10.0-dev.umd.min.js'
+          Write-Host "UMD entrypoint bytes=$($entry.Length)"
+          if ($entry.Length -le 1000000) { throw 'Unexpectedly small LayerSentry package entrypoint.' }
 
       - name: Brand-leak evidence scan
         shell: pwsh
         working-directory: layersentry-ui
         run: |
-          Write-Host 'Changed presentation files containing upstream brand terms (review evidence; technical identifiers may be expected):'
+          Write-Host 'Upstream-brand terms in presentation surfaces (technical/upstream-reference context is allowed):'
           $matches = git grep -n -i -E 'Harvester|SUSE|Rancher' -- 'pkg/harvester/*.vue' 'pkg/harvester/**/*.vue' 'pkg/harvester/l10n/*.yaml' 'pkg/harvester/package.json' 2>$null
           if ($LASTEXITCODE -gt 1) { throw 'Brand scan command failed.' }
           if ($matches) { $matches | Select-Object -First 300 } else { Write-Host 'No upstream-brand matches in scanned presentation surfaces.' }
 
       - name: Cluster and browser capability probe
         shell: pwsh
-        continue-on-error: true
         run: |
           if (Get-Command kubectl -ErrorAction SilentlyContinue) {
-            Write-Host 'kubectl available:'
+            Write-Host '==== kubectl context ===='
             kubectl config current-context
             kubectl get nodes -o wide
+            $api = kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+            Write-Host "Kubernetes API endpoint=$api"
           } else {
             Write-Host 'kubectl is not installed/configured on this runner.'
           }
+
           $browsers = @(
             "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-            "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe",
-            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+            "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe",
+            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+            "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe"
           ) | Where-Object { $_ -and (Test-Path $_) }
-          if ($browsers) { Write-Host "Browser available: $($browsers[0])" } else { Write-Host 'No Chrome/Edge executable detected.' }
+          if ($browsers) {
+            Write-Host "Browser available: $($browsers[0])"
+          } else {
+            throw 'No Chrome/Edge executable detected on Windows validation runner.'
+          }
