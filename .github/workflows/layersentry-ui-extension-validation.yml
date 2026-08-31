@@ -43,18 +43,30 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Ensure Yarn Classic and runner prerequisites
+      - name: Bootstrap Yarn and Git Bash
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
             npm install --global yarn@1.22.22
           }
-          $bash = Get-Command bash -ErrorAction SilentlyContinue
-          if (-not $bash) { throw 'Git Bash/bash is required for Rancher extension build-pkg.' }
+
+          $bashCandidates = @(
+            (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+            (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+          )
+          if (${env:ProgramFiles(x86)}) {
+            $bashCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+            $bashCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\usr\bin\bash.exe')
+          }
+          $bashPath = $bashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $bashPath) { throw "Git Bash not found. Checked: $($bashCandidates -join ', ')" }
+
+          "GIT_BASH=$bashPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Node: $(node --version)"
           Write-Host "Yarn: $(yarn --version)"
           Write-Host "Git: $(git --version)"
-          Write-Host "Bash: $($bash.Source)"
+          Write-Host "Git Bash: $bashPath"
 
       - name: Verify pinned source revision
         shell: powershell
@@ -76,10 +88,15 @@ jobs:
         working-directory: layersentry-ui
         run: yarn lint
 
-      - name: Build Harvester extension package
+      - name: Build Harvester extension package on Windows
         shell: powershell
         run: |
-          bash -lc "cd layersentry-ui && yarn build-pkg harvester"
+          $repo = (Resolve-Path 'layersentry-ui').Path -replace '\\','/'
+          if ($repo -match '^([A-Za-z]):/(.*)$') {
+            $repo = "/$($Matches[1].ToLower())/$($Matches[2])"
+          }
+          & $env:GIT_BASH -lc "cd '$repo' && yarn build-pkg harvester"
+          if ($LASTEXITCODE -ne 0) { throw "Windows build-pkg failed with exit code $LASTEXITCODE" }
 
       - name: Validate generated package and LayerSentry assets
         shell: powershell
@@ -101,36 +118,154 @@ jobs:
           Write-Host "UMD entrypoint bytes=$($entry.Length)"
           if ($entry.Length -le 1000000) { throw 'Unexpectedly small LayerSentry package entrypoint.' }
 
-      - name: Brand-leak evidence scan
+      - name: Validate presentation-only LayerSentry branding
         shell: powershell
         working-directory: layersentry-ui
         run: |
-          Write-Host 'Upstream-brand terms in presentation surfaces (technical/upstream-reference context is allowed):'
-          $matches = git grep -n -i -E 'Harvester|SUSE|Rancher' -- 'pkg/harvester/*.vue' 'pkg/harvester/**/*.vue' 'pkg/harvester/l10n/*.yaml' 'pkg/harvester/package.json' 2>$null
-          if ($LASTEXITCODE -gt 1) { throw 'Brand scan command failed.' }
-          if ($matches) { $matches | Select-Object -First 300 } else { Write-Host 'No upstream-brand matches in scanned presentation surfaces.' }
+          $ErrorActionPreference = 'Stop'
+          $mustContain = @(
+            @{ File='pkg/harvester/config/harvester.ts'; Pattern='layer-sentry-icon.svg' },
+            @{ File='pkg/harvester/package.json'; Pattern='LayerSentry' },
+            @{ File='pkg/harvester/config/layersentry-cluster.js'; Pattern='LayerSentry' },
+            @{ File='pkg/harvester/l10n/layersentry-en-us.yaml'; Pattern='LayerSentry' }
+          )
+          foreach ($check in $mustContain) {
+            if (-not (Select-String -Path $check.File -Pattern $check.Pattern -Quiet)) {
+              throw "Expected LayerSentry marker '$($check.Pattern)' missing from $($check.File)"
+            }
+          }
 
-      - name: Cluster and browser capability probe
+          $productName = Select-String -Path 'pkg/harvester/config/harvester.ts' -Pattern "PRODUCT_NAME = 'harvester'" -Quiet
+          if (-not $productName) { throw 'Internal Harvester product identifier changed; presentation-only contract violated.' }
+
+          $bundle = 'dist-pkg/harvester-1.10.0-dev/harvester-1.10.0-dev.umd.min.js'
+          if (-not (Select-String -Path $bundle -Pattern 'LayerSentry' -SimpleMatch -Quiet)) {
+            throw 'Compiled package does not contain LayerSentry branding.'
+          }
+          Write-Host 'LayerSentry compiled-brand and internal-identifier checks passed.'
+
+      - name: Probe Hyper-V guests, cluster tooling, and browser
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+
+          Write-Host '==== Hyper-V inventory ===='
+          if (Get-Command Get-VM -ErrorAction SilentlyContinue) {
+            Get-VM | Select-Object Name,State,Status,Generation | Format-Table -AutoSize
+            Get-VM | Get-VMNetworkAdapter | Select-Object VMName,SwitchName,Status,IPAddresses | Format-List
+          } else {
+            Write-Host 'Hyper-V cmdlets are not available in this runner session.'
+          }
+
+          Write-Host '==== kubectl context ===='
           if (Get-Command kubectl -ErrorAction SilentlyContinue) {
-            Write-Host '==== kubectl context ===='
             kubectl config current-context
             kubectl get nodes -o wide
-            $api = kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
-            Write-Host "Kubernetes API endpoint=$api"
+            kubectl get svc -A -o wide
+            kubectl get ingress -A
           } else {
             Write-Host 'kubectl is not installed/configured on this runner.'
           }
 
-          $browsers = @(
-            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-            "$env:ProgramFiles(x86)\Google\Chrome\Application\chrome.exe",
-            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
-            "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe"
-          ) | Where-Object { $_ -and (Test-Path $_) }
-          if ($browsers) {
-            Write-Host "Browser available: $($browsers[0])"
-          } else {
-            throw 'No Chrome/Edge executable detected on Windows validation runner.'
+          $browserCandidates = @(
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+          )
+          if (${env:ProgramFiles(x86)}) {
+            $browserCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+            $browserCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
           }
+          $browser = $browserCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $browser) { throw "No Chrome/Edge executable detected. Checked: $($browserCandidates -join ', ')" }
+          "LAYERSENTRY_BROWSER=$browser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Browser available: $browser"
+
+          Write-Host '==== Candidate HCI endpoint probes ===='
+          $candidateHosts = @('10.10.10.11','10.10.10.12','10.10.10.13')
+          foreach ($hostIp in $candidateHosts) {
+            foreach ($port in @(443,80,6443)) {
+              $ok = Test-NetConnection -ComputerName $hostIp -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+              Write-Host "$hostIp`:$port reachable=$ok"
+            }
+          }
+
+      - name: Start standalone LayerSentry UI and capture browser evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
+          $repoWin = (Resolve-Path 'layersentry-ui').Path
+          $repoBash = $repoWin -replace '\\','/'
+          if ($repoBash -match '^([A-Za-z]):/(.*)$') {
+            $repoBash = "/$($Matches[1].ToLower())/$($Matches[2])"
+          }
+
+          # The dev shell can render and exercise the LayerSentry frontend even if the POC API is not yet reachable.
+          # Use sen1 as the default API target because it is the first HCI POC node; backend reachability is reported separately above.
+          $log = Join-Path $evidence 'dev-server.log'
+          $err = Join-Path $evidence 'dev-server-error.log'
+          $cmd = "cd '$repoBash' && export RANCHER_ENV=harvester && export API=https://10.10.10.11 && export VUE_APP_SERVER_VERSION=v1.9.0 && yarn dev"
+          $process = Start-Process -FilePath $env:GIT_BASH -ArgumentList @('-lc', $cmd) -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          Write-Host "Started LayerSentry dev server PID=$($process.Id)"
+
+          $ready = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+              $tcp = New-Object System.Net.Sockets.TcpClient
+              $iar = $tcp.BeginConnect('127.0.0.1',8005,$null,$null)
+              if ($iar.AsyncWaitHandle.WaitOne(500) -and $tcp.Connected) {
+                $tcp.Close()
+                $ready = $true
+                break
+              }
+              $tcp.Close()
+            } catch {}
+            if ($process.HasExited) { break }
+          }
+
+          if (-not $ready) {
+            Write-Host '==== dev server stdout ===='
+            if (Test-Path $log) { Get-Content $log -Tail 200 }
+            Write-Host '==== dev server stderr ===='
+            if (Test-Path $err) { Get-Content $err -Tail 200 }
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+            throw 'LayerSentry standalone UI did not become reachable on localhost:8005.'
+          }
+
+          $shot = Join-Path $evidence 'layersentry-ui.png'
+          $dom = Join-Path $evidence 'layersentry-ui-dom.html'
+          $args = @(
+            '--headless=new',
+            '--disable-gpu',
+            '--ignore-certificate-errors',
+            '--allow-insecure-localhost',
+            '--window-size=1600,1000',
+            "--screenshot=$shot",
+            'https://localhost:8005'
+          )
+          & $env:LAYERSENTRY_BROWSER @args
+          if ($LASTEXITCODE -ne 0) { throw "Headless browser screenshot failed with exit code $LASTEXITCODE" }
+
+          $domText = & $env:LAYERSENTRY_BROWSER '--headless=new' '--disable-gpu' '--ignore-certificate-errors' '--allow-insecure-localhost' '--dump-dom' 'https://localhost:8005'
+          $domText | Out-File -FilePath $dom -Encoding utf8
+          if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) { throw 'Browser screenshot was not generated.' }
+          if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) { throw 'Browser DOM evidence was not generated.' }
+
+          Write-Host "Screenshot bytes=$((Get-Item $shot).Length)"
+          Write-Host "DOM bytes=$((Get-Item $dom).Length)"
+          Write-Host '==== DOM branding evidence ===='
+          Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 100 | ForEach-Object { $_.Line }
+
+          if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+
+      - name: Upload LayerSentry UI validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-ui-windows-evidence
+          path: ${{ runner.temp }}\layersentry-ui-validation
+          if-no-files-found: warn
+          retention-days: 7
