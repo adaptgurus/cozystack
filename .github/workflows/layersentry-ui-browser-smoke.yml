@@ -74,15 +74,36 @@ jobs:
 
           $log = Join-Path $evidence 'dev-server.log'
           $err = Join-Path $evidence 'dev-server-error.log'
-          $cmd = "cd '$repoBash' && export RANCHER_ENV=harvester && export API=https://10.10.10.11 && export VUE_APP_SERVER_VERSION=v1.9.0 && yarn dev"
-          $proc = Start-Process -FilePath $env:GIT_BASH -ArgumentList @('-lc', $cmd) -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          $launchWin = Join-Path $evidence 'launch-ui.sh'
+          $launchBash = $launchWin -replace '\\','/'
+          if ($launchBash -match '^([A-Za-z]):/(.*)$') { $launchBash = "/$($Matches[1].ToLower())/$($Matches[2])" }
+
+          $script = @"
+          set -euxo pipefail
+          cd '$repoBash'
+          export RANCHER_ENV=harvester
+          export API=https://10.10.10.11
+          export VUE_APP_SERVER_VERSION=v1.9.0
+          export HOST=127.0.0.1
+          export PORT=8005
+          exec yarn dev -- --host 127.0.0.1 --port 8005
+          "@
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($launchWin, ($script -replace "`r`n", "`n"), $utf8NoBom)
+
+          Write-Host "Launch script=$launchBash"
+          Get-Content $launchWin
+          $proc = Start-Process -FilePath $env:GIT_BASH -ArgumentList $launchBash -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
           Write-Host "Dev server PID=$($proc.Id)"
 
           try {
             $ready = $false
             for ($i = 0; $i -lt 120; $i++) {
               Start-Sleep -Seconds 2
-              if ($proc.HasExited) { break }
+              if ($proc.HasExited) {
+                Write-Host "Dev process exited early with code=$($proc.ExitCode)"
+                break
+              }
               try {
                 $client = New-Object System.Net.Sockets.TcpClient
                 $async = $client.BeginConnect('127.0.0.1', 8005, $null, $null)
@@ -97,15 +118,15 @@ jobs:
 
             if (-not $ready) {
               Write-Host '==== stdout ===='
-              if (Test-Path $log) { Get-Content $log -Tail 250 }
+              if (Test-Path $log) { Get-Content $log -Tail 300 }
               Write-Host '==== stderr ===='
-              if (Test-Path $err) { Get-Content $err -Tail 250 }
+              if (Test-Path $err) { Get-Content $err -Tail 300 }
               throw 'LayerSentry dev UI did not listen on localhost:8005.'
             }
 
             $shot = Join-Path $evidence 'layersentry-final-ui.png'
             $dom = Join-Path $evidence 'layersentry-final-ui.html'
-            $common = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--ignore-certificate-errors','--allow-insecure-localhost','--window-size=1600,1000')
+            $common = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--ignore-certificate-errors','--allow-insecure-localhost','--window-size=1600,1000','--virtual-time-budget=10000')
             & $env:LAYERSENTRY_BROWSER @common "--screenshot=$shot" 'https://localhost:8005'
             if ($LASTEXITCODE -ne 0) { throw "Screenshot browser exit code=$LASTEXITCODE" }
 
@@ -122,11 +143,11 @@ jobs:
             Write-Host '==== visible brand-related DOM lines ===='
             Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 120 | ForEach-Object { $_.Line }
 
+            Write-Host '==== dev server tail ===='
+            if (Test-Path $log) { Get-Content $log -Tail 100 }
+            if (Test-Path $err) { Get-Content $err -Tail 100 }
+
             if (-not $brand) {
-              Write-Host '==== stdout ===='
-              if (Test-Path $log) { Get-Content $log -Tail 200 }
-              Write-Host '==== stderr ===='
-              if (Test-Path $err) { Get-Content $err -Tail 200 }
               throw 'Rendered DOM does not expose the LayerSentry brand.'
             }
           }
