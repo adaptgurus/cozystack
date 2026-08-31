@@ -36,11 +36,9 @@ jobs:
           if ($head -ne '89a51e9bd92428181da3ed57b94906b02e49fb0e') { throw "Unexpected UI SHA: $head" }
           if (-not (Test-Path (Join-Path $repo 'node_modules'))) { throw 'node_modules missing from preserved UI workspace.' }
 
-          if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
-            npm install --global yarn@1.22.22
-          }
-          $yarn = (Get-Command yarn.cmd -ErrorAction SilentlyContinue)
-          if (-not $yarn) { $yarn = (Get-Command yarn -ErrorAction Stop) }
+          $node = (Get-Command node.exe -ErrorAction Stop)
+          $vueCli = Join-Path $repo 'node_modules\@vue\cli-service\bin\vue-cli-service.js'
+          if (-not (Test-Path $vueCli)) { throw "Vue CLI service not found: $vueCli" }
 
           $browserCandidates = @(
             (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
@@ -53,11 +51,12 @@ jobs:
           $browser = $browserCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $browser) { throw "No Chrome/Edge found. Checked: $($browserCandidates -join ', ')" }
 
-          "LAYERSENTRY_YARN=$($yarn.Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAYERSENTRY_NODE=$($node.Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAYERSENTRY_VUE_CLI=$vueCli" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "LAYERSENTRY_BROWSER=$browser" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Final UI SHA=$head"
-          Write-Host "Node=$(node --version)"
-          Write-Host "Yarn=$(yarn --version) path=$($yarn.Source)"
+          Write-Host "Node=$(node --version) path=$($node.Source)"
+          Write-Host "Vue CLI=$vueCli"
           Write-Host "Browser=$browser"
           & $browser --version
 
@@ -73,15 +72,16 @@ jobs:
           $log = Join-Path $evidence 'dev-server.log'
           $err = Join-Path $evidence 'dev-server-error.log'
 
+          $env:NODE_ENV = 'dev'
           $env:RANCHER_ENV = 'harvester'
           $env:API = 'https://10.10.10.11'
           $env:VUE_APP_SERVER_VERSION = 'v1.9.0'
           $env:HOST = '127.0.0.1'
           $env:PORT = '8005'
 
-          Write-Host "Launching native Windows Yarn from $env:LAYERSENTRY_YARN"
+          Write-Host "Launching Vue CLI directly with $env:LAYERSENTRY_NODE"
           Write-Host "Working directory=$repoWin"
-          $proc = Start-Process -FilePath $env:LAYERSENTRY_YARN -WorkingDirectory $repoWin -ArgumentList @('dev','--','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          $proc = Start-Process -FilePath $env:LAYERSENTRY_NODE -WorkingDirectory $repoWin -ArgumentList @($env:LAYERSENTRY_VUE_CLI,'serve','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
           Write-Host "Dev server PID=$($proc.Id)"
 
           try {
