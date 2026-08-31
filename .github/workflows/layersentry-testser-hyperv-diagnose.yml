@@ -1,0 +1,47 @@
+name: LayerSentry TESTSER Hyper-V Diagnose
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-testser-hyperv-diagnose.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  diagnose:
+    name: Inspect Hyper-V Talos VM and network state
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - name: Inspect host, VMs, switches and adapters
+        run: |
+          $ErrorActionPreference='Continue'
+          Write-Host '=== HOST IPV4 ==='
+          Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*'} | Sort-Object InterfaceAlias | Format-Table InterfaceAlias,IPAddress,PrefixLength,AddressState -AutoSize
+          Write-Host '=== HYPER-V VMS ==='
+          $vms=@(Get-VM -ErrorAction SilentlyContinue | Sort-Object Name)
+          if(-not $vms.Count){Write-Host 'NO_HYPERV_VMS_FOUND'; exit 0}
+          $vms | Select-Object Name,State,Status,Uptime,AutomaticStartAction,Generation | Format-Table -AutoSize
+          Write-Host '=== VSWITCHES ==='
+          Get-VMSwitch | Select-Object Name,SwitchType,NetAdapterInterfaceDescription,AllowManagementOS | Format-Table -AutoSize
+          Write-Host '=== VM NETWORK ADAPTERS ==='
+          foreach($vm in $vms){
+            $adapters=@(Get-VMNetworkAdapter -VMName $vm.Name -ErrorAction SilentlyContinue)
+            foreach($a in $adapters){
+              $ips=(@($a.IPAddresses) -join ',')
+              Write-Host "VMNIC vm=$($vm.Name) state=$($vm.State) switch=$($a.SwitchName) status=$($a.Status) connected=$($a.Connected) mac=$($a.MacAddress) ips=$ips"
+            }
+          }
+          Write-Host '=== EXPECTED CONTROL PLANE REACHABILITY ==='
+          foreach($ip in @('10.10.10.10','10.10.10.11','10.10.10.12','10.10.10.13','10.10.10.200')){
+            $ping=Test-Connection -ComputerName $ip -Count 1 -Quiet -ErrorAction SilentlyContinue
+            Write-Host "PING endpoint=$ip reachable=$ping"
+          }
+          Write-Host 'HYPERV_DIAG=COMPLETE'
