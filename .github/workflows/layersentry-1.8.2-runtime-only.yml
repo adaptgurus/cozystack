@@ -1,0 +1,134 @@
+name: LayerSentry 1.8.2 Runtime Only
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-1.8.2-runtime-only.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-1.8.2-runtime-only
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: Validate compiled stable UI in Edge
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    steps:
+      - name: Setup Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+
+      - name: Validate preserved production workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui-production'
+          if (-not (Test-Path $repo)) { throw "Stable UI workspace missing: $repo" }
+          $head = (git -C $repo rev-parse HEAD).Trim()
+          if ($head -ne 'c22ca7d979675290977c6b1381ab368d72ceeb66') { throw "Unexpected stable UI SHA: $head" }
+          if (-not (Test-Path (Join-Path $repo 'node_modules'))) { throw 'Stable node_modules missing.' }
+          $node = (Get-Command node.exe -ErrorAction Stop).Source
+          $vueCli = Join-Path $repo 'node_modules\@vue\cli-service\bin\vue-cli-service.js'
+          if (-not (Test-Path $vueCli)) { throw "Vue CLI missing: $vueCli" }
+          $browser = @(
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),
+            $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe' }),
+            $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe' })
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if (-not $browser) { throw 'No supported browser found.' }
+          "LS_REPO=$repo" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "LS_NODE=$node" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "LS_VUE_CLI=$vueCli" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "LS_BROWSER=$browser" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Stable UI SHA=$head"
+          Write-Host "Browser=$browser"
+
+      - name: Start UI and wait for HTTP readiness
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-1.8.2-runtime-only'
+          if (Test-Path $evidence) { Remove-Item $evidence -Recurse -Force }
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $log = Join-Path $evidence 'dev-server.log'
+          $err = Join-Path $evidence 'dev-server-error.log'
+          $profile = Join-Path $evidence 'edge-profile'
+          New-Item -ItemType Directory -Path $profile | Out-Null
+
+          $env:NODE_ENV = 'dev'
+          $env:RANCHER_ENV = 'harvester'
+          $env:API = 'https://10.10.10.11'
+          $env:VUE_APP_SERVER_VERSION = 'v1.8.2'
+          $env:HOST = '127.0.0.1'
+          $env:PORT = '8005'
+
+          $proc = Start-Process -FilePath $env:LS_NODE -WorkingDirectory $env:LS_REPO -ArgumentList @($env:LS_VUE_CLI,'serve','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          Write-Host "Dev server PID=$($proc.Id)"
+          try {
+            $url = 'http://127.0.0.1:8005/'
+            $ready = $false
+            for ($i = 0; $i -lt 180; $i++) {
+              Start-Sleep -Seconds 2
+              if ($proc.HasExited) { break }
+              try {
+                $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
+                if ($r.StatusCode -eq 200 -and $r.Content.Length -gt 500) {
+                  $ready = $true
+                  Write-Host "HTTP ready status=$($r.StatusCode) bytes=$($r.Content.Length)"
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ready) {
+              Write-Host '==== dev stdout ===='
+              if (Test-Path $log) { Get-Content $log -Tail 350 }
+              Write-Host '==== dev stderr ===='
+              if (Test-Path $err) { Get-Content $err -Tail 200 }
+              throw 'Stable UI never reached HTTP-ready state.'
+            }
+
+            $shot = Join-Path $evidence 'layersentry-1.8.2-ready.png'
+            $dom = Join-Path $evidence 'layersentry-1.8.2-ready.html'
+            $browserErr = Join-Path $evidence 'browser-stderr.log'
+            $argsBase = @('--headless=new','--disable-gpu','--no-sandbox','--no-first-run','--no-default-browser-check',"--user-data-dir=$profile",'--window-size=1600,1000','--virtual-time-budget=15000')
+            $shotProc = Start-Process -FilePath $env:LS_BROWSER -ArgumentList @($argsBase + @("--screenshot=$shot",$url)) -Wait -PassThru -RedirectStandardError $browserErr
+            Write-Host "Screenshot browser exit=$($shotProc.ExitCode)"
+            if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) {
+              if (Test-Path $browserErr) { Get-Content $browserErr -Tail 200 }
+              throw 'Screenshot missing after HTTP-ready state.'
+            }
+
+            Remove-Item $profile -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $profile -Force | Out-Null
+            $domProc = Start-Process -FilePath $env:LS_BROWSER -ArgumentList @($argsBase + @('--dump-dom',$url)) -Wait -PassThru -RedirectStandardOutput $dom -RedirectStandardError $browserErr
+            Write-Host "DOM browser exit=$($domProc.ExitCode)"
+            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) { throw 'DOM capture missing.' }
+
+            $brand = Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry' -Quiet
+            Write-Host "Screenshot bytes=$((Get-Item $shot).Length)"
+            Write-Host "DOM bytes=$((Get-Item $dom).Length)"
+            Write-Host "LayerSentry visible=$brand"
+            Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 100 | ForEach-Object { $_.Line }
+            if (-not $brand) { throw 'Rendered DOM does not expose LayerSentry branding.' }
+          }
+          finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-1.8.2-runtime-ready-evidence
+          path: ${{ runner.temp }}\layersentry-1.8.2-runtime-only
+          if-no-files-found: warn
+          retention-days: 14
