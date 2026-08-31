@@ -1,0 +1,213 @@
+name: LayerSentry Dashboard Tenant Live Fix
+
+on:
+  push:
+    branches: [layersentry-platform]
+    paths:
+      - .github/workflows/layersentry-dashboard-tenant-live-fix.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-dashboard-tenant-live-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/cozystack/cozystack-ui
+  IMAGE_TAG: layersentry-tenant-fix-${{ github.sha }}
+
+jobs:
+  build:
+    name: Build immutable dashboard console
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+    steps:
+      - name: Checkout exact branch revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Prove tenant-provider invariant in source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "layersentry-platform"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          f=packages/system/dashboard/images/console/apps/console/src/lib/tenant-context.tsx
+          test -s "$f"
+          grep -F 'plural: "tenantnamespaces"' "$f" >/dev/null
+          if grep -E 'labelSelector.*tenant|tenant\.cozystack\.io.*labelSelector|cozystack\.io/tenant.*labelSelector' "$f" >/dev/null; then
+            echo '::error::TenantNamespace list is still coupled to selected tenant'
+            exit 1
+          fi
+          echo 'TENANT_PROVIDER_INVARIANT=PASS list=all-accessible selection=target-only'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          package_json_file: packages/system/dashboard/images/console/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: packages/system/dashboard/images/console/pnpm-lock.yaml
+
+      - name: Run console regression gate
+        working-directory: packages/system/dashboard/images/console
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm --filter @cozystack/console build
+          echo 'CONSOLE_REGRESSION_GATE=PASS'
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish exact console image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          meta="${RUNNER_TEMP}/build-meta.json"
+          docker buildx build \
+            --platform linux/amd64 \
+            --file packages/system/dashboard/images/console/Containerfile \
+            --build-arg "APP_VERSION=layersentry-${GITHUB_SHA}" \
+            --tag "$image" \
+            --metadata-file "$meta" \
+            --provenance=true \
+            --sbom=true \
+            --push \
+            packages/system/dashboard/images/console
+          digest="$(jq -r '."containerimage.digest" // empty' "$meta")"
+          case "$digest" in sha256:*) ;; *) echo '::error::No immutable image digest'; exit 1 ;; esac
+          ref="${IMAGE_REPOSITORY}@${digest}"
+          echo "image_ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "CONSOLE_IMAGE_PUBLISHED=PASS ref=$ref"
+
+  deploy-and-certify:
+    name: Deploy and certify tenant UI on TESTSER
+    needs: build
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: powershell
+    env:
+      KUBECONFIG: C:\hci-state\cozystack-hci-lab\kubeconfig
+      KUBECTL: C:\hci-tools\kubectl.exe
+      IMAGE_REF: ${{ needs.build.outputs.image_ref }}
+      GUI_USERNAME: layersentry-admin
+    steps:
+      - name: Preflight tenant and current OIDC state
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not(Test-Path $env:KUBECONFIG)){throw 'TESTSER kubeconfig missing'}
+          if(-not(Test-Path $env:KUBECTL)){throw 'kubectl missing'}
+          $nodes=@((& $env:KUBECTL get nodes -o json | ConvertFrom-Json).items)
+          $bad=@($nodes | Where-Object {(@($_.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1).status) -ne 'True'})
+          if($nodes.Count -lt 3 -or $bad.Count){throw 'cluster nodes are not healthy'}
+          $tenant=& $env:KUBECTL -n tenant-root get tenant.apps.cozystack.io layersentry -o json | ConvertFrom-Json
+          $ready=@($tenant.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)
+          if($ready.status -ne 'True'){throw 'layersentry tenant is not Ready'}
+          $phase=(& $env:KUBECTL get ns tenant-layersentry -o jsonpath='{.status.phase}' | Out-String).Trim()
+          if($phase -ne 'Active'){throw "tenant-layersentry namespace phase=$phase"}
+          $dep=& $env:KUBECTL -n cozy-dashboard get deploy incloud-web-gatekeeper -o json | ConvertFrom-Json
+          $proxy=@($dep.spec.template.spec.containers | Where-Object {$_.name -eq 'auth-proxy'} | Select-Object -First 1)
+          $scope=@($proxy.args | Where-Object {$_ -like '--scope=*'})
+          Write-Host "PREFLIGHT=PASS nodes=$($nodes.Count) tenant=Ready namespace=Active liveScope=$($scope -join ',')"
+
+      - name: Persist immutable console image in dashboard HelmRelease
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:IMAGE_REF -notmatch '^ghcr\.io/adaptgurus/cozystack/cozystack-ui@sha256:[0-9a-f]{64}$'){throw "invalid image ref $env:IMAGE_REF"}
+          $patch=[ordered]@{spec=[ordered]@{values=[ordered]@{console=[ordered]@{image=$env:IMAGE_REF}}}}
+          $file=Join-Path $env:RUNNER_TEMP 'dashboard-console-image.json'
+          $patch | ConvertTo-Json -Depth 20 | Set-Content $file -Encoding UTF8
+          & $env:KUBECTL -n cozy-dashboard patch helmrelease dashboard --type=merge "--patch-file=$file" | Out-Host
+          if($LASTEXITCODE){throw 'failed to persist console image in HelmRelease'}
+          Write-Host "HELM_IMAGE_OVERRIDE=PASS image=$env:IMAGE_REF"
+
+      - name: Reconcile dashboard and verify exact live image
+        run: |
+          $ErrorActionPreference='Stop'
+          $stamp=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString()
+          & $env:KUBECTL -n cozy-dashboard annotate helmrelease dashboard "reconcile.fluxcd.io/requestedAt=$stamp" --overwrite | Out-Null
+          if($LASTEXITCODE){throw 'failed to request dashboard reconcile'}
+          $deadline=(Get-Date).AddMinutes(7)
+          do{
+            Start-Sleep 5
+            $hr=& $env:KUBECTL -n cozy-dashboard get helmrelease dashboard -o json | ConvertFrom-Json
+            $ready=@($hr.status.conditions | Where-Object {$_.type -eq 'Ready'} | Select-Object -First 1)
+            if([string]$hr.status.lastHandledReconcileAt -eq $stamp -and $ready.status -eq 'True'){break}
+          }while((Get-Date)-lt $deadline)
+          if([string]$hr.status.lastHandledReconcileAt -ne $stamp -or $ready.status -ne 'True'){throw "dashboard reconcile failed: $($ready.message)"}
+          & $env:KUBECTL -n cozy-dashboard rollout status deployment/cozy-dashboard-console --timeout=240s | Out-Host
+          if($LASTEXITCODE){throw 'console rollout failed'}
+          $dep=& $env:KUBECTL -n cozy-dashboard get deployment cozy-dashboard-console -o json | ConvertFrom-Json
+          $live=[string](@($dep.spec.template.spec.containers | Where-Object {$_.name -eq 'console'} | Select-Object -First 1).image)
+          if($live -ne $env:IMAGE_REF){throw "live console image mismatch expected=$env:IMAGE_REF actual=$live"}
+          Write-Host "LIVE_CONSOLE_IMAGE=PASS image=$live"
+
+      - name: Prove authenticated browser OAuth APIs return 200
+        run: |
+          $ErrorActionPreference='Stop'
+          $pwdB64=(& $env:KUBECTL -n cozy-system get secret layersentry-gui-admin-password -o jsonpath='{.data.password}' | Out-String).Trim()
+          if(-not $pwdB64){throw 'GUI password secret missing'}
+          Write-Output "::add-mask::$pwdB64"
+          $password=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pwdB64))
+          Write-Output "::add-mask::$password"
+          $dashboardHost=(& $env:KUBECTL -n cozy-dashboard get ingress -o json | ConvertFrom-Json).items | ForEach-Object {$_.spec.rules[0].host} | Where-Object {$_ -like 'dashboard.*'} | Select-Object -First 1
+          if(-not $dashboardHost){throw 'dashboard ingress host not found'}
+          $jar=Join-Path $env:RUNNER_TEMP 'tenant-fix.cookies'
+          $h1=Join-Path $env:RUNNER_TEMP 'start.h'; $u1="https://$dashboardHost/marketplace/tenant"
+          & curl.exe -k -sS -c $jar -b $jar -D $h1 -o NUL --max-time 30 $u1
+          $loc1=([regex]::Match((Get-Content $h1 -Raw),'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if($loc1 -notmatch '/realms/cozy/protocol/openid-connect/auth'){throw 'dashboard did not start OIDC login'}
+          $login=Join-Path $env:RUNNER_TEMP 'login.html'
+          & curl.exe -k -sS -c $jar -b $jar -o $login --max-time 30 $loc1
+          $html=Get-Content $login -Raw
+          $m=[regex]::Match($html,'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if(-not $m.Success){$m=[regex]::Match($html,'<form[^>]*action="([^"]+)"',[Text.RegularExpressions.RegexOptions]::IgnoreCase)}
+          if(-not $m.Success){throw 'Keycloak login form not found'}
+          $action=[Net.WebUtility]::HtmlDecode($m.Groups[1].Value)
+          $h3=Join-Path $env:RUNNER_TEMP 'submit.h'
+          & curl.exe -k -sS -c $jar -b $jar -D $h3 -o NUL --max-time 30 -X POST $action --data-urlencode "username=$env:GUI_USERNAME" --data-urlencode "password=$password" --data-urlencode 'credentialId='
+          $loc3=([regex]::Match((Get-Content $h3 -Raw),'(?im)^location:\s*(.+)$')).Groups[1].Value.Trim()
+          if($loc3 -notlike "https://$dashboardHost/oauth2/callback*"){throw 'Keycloak login did not return dashboard callback'}
+          $h4=Join-Path $env:RUNNER_TEMP 'callback.h'
+          & curl.exe -k -sS -c $jar -b $jar -D $h4 -o NUL --max-time 30 $loc3
+          if((Get-Content $jar -Raw) -notmatch "`tkc-access`t"){throw 'authenticated dashboard cookie missing'}
+
+          function Get-Api([string]$path,[string]$label){
+            $body=Join-Path $env:RUNNER_TEMP ($label + '.json')
+            $code=(& curl.exe -k -sS -c $jar -b $jar -o $body -w '%{http_code}' --max-time 30 "https://$dashboardHost$path" | Out-String).Trim()
+            if($code -ne '200'){throw "$label expected HTTP 200, got $code"}
+            return (Get-Content $body -Raw)
+          }
+          $tn=(Get-Api '/apis/core.cozystack.io/v1alpha1/tenantnamespaces' 'tenantnamespaces') | ConvertFrom-Json
+          $names=@($tn.items | ForEach-Object {$_.metadata.name})
+          if('tenant-layersentry' -notin $names){throw "tenant-layersentry absent from browser response: $($names -join ',')"}
+          $plan=(Get-Api '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/plans.backups.cozystack.io' 'plan-crd') | ConvertFrom-Json
+          $storage=@($plan.spec.versions | Where-Object {$_.storage -eq $true} | Select-Object -First 1)
+          if(-not $storage.schema.openAPIV3Schema.properties.spec){throw 'Plan CRD spec schema missing'}
+          [void](Get-Api '/apis/cozystack.io/v1alpha1/applicationdefinitions' 'applicationdefinitions')
+          Write-Host "BROWSER_TENANTNAMESPACES=PASS http=200 tenants=$($names -join ',')"
+          Write-Host 'BROWSER_PLAN_CRD=PASS http=200 specSchema=true'
+          Write-Host 'BROWSER_APPLICATIONDEFINITIONS=PASS http=200'
+          Write-Host 'LAYERSENTRY_TENANT_UI_LIVE_FIX=PASS'
