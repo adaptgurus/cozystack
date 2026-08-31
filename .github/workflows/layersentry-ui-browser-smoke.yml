@@ -79,8 +79,6 @@ jobs:
           $env:HOST = '127.0.0.1'
           $env:PORT = '8005'
 
-          Write-Host "Launching Vue CLI directly with $env:LAYERSENTRY_NODE"
-          Write-Host "Working directory=$repoWin"
           $proc = Start-Process -FilePath $env:LAYERSENTRY_NODE -WorkingDirectory $repoWin -ArgumentList @($env:LAYERSENTRY_VUE_CLI,'serve','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
           Write-Host "Dev server PID=$($proc.Id)"
 
@@ -88,10 +86,7 @@ jobs:
             $ready = $false
             for ($i = 0; $i -lt 120; $i++) {
               Start-Sleep -Seconds 2
-              if ($proc.HasExited) {
-                Write-Host "Dev process exited early with code=$($proc.ExitCode)"
-                break
-              }
+              if ($proc.HasExited) { break }
               try {
                 $client = New-Object System.Net.Sockets.TcpClient
                 $async = $client.BeginConnect('127.0.0.1', 8005, $null, $null)
@@ -105,9 +100,7 @@ jobs:
             }
 
             if (-not $ready) {
-              Write-Host '==== stdout ===='
               if (Test-Path $log) { Get-Content $log -Tail 300 }
-              Write-Host '==== stderr ===='
               if (Test-Path $err) { Get-Content $err -Tail 300 }
               throw 'LayerSentry dev UI did not listen on localhost:8005.'
             }
@@ -115,15 +108,25 @@ jobs:
             Write-Host 'LayerSentry dev server is listening on localhost:8005.'
             $shot = Join-Path $evidence 'layersentry-final-ui.png'
             $dom = Join-Path $evidence 'layersentry-final-ui.html'
+            $browserLog = Join-Path $evidence 'browser-stderr.log'
             $common = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--ignore-certificate-errors','--allow-insecure-localhost','--window-size=1600,1000','--virtual-time-budget=10000')
-            & $env:LAYERSENTRY_BROWSER @common "--screenshot=$shot" 'https://localhost:8005'
-            if ($LASTEXITCODE -ne 0) { throw "Screenshot browser exit code=$LASTEXITCODE" }
 
-            $html = & $env:LAYERSENTRY_BROWSER @common '--dump-dom' 'https://localhost:8005'
-            $html | Out-File $dom -Encoding utf8
+            $shotArgs = @($common + @("--screenshot=$shot", 'https://localhost:8005'))
+            $shotProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList $shotArgs -Wait -PassThru -RedirectStandardError $browserLog
+            Write-Host "Screenshot Edge exit code=$($shotProc.ExitCode)"
+            Start-Sleep -Seconds 1
+            if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) {
+              if (Test-Path $browserLog) { Get-Content $browserLog -Tail 100 }
+              throw 'LayerSentry screenshot missing or empty.'
+            }
 
-            if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) { throw 'LayerSentry screenshot missing or empty.' }
-            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) { throw 'LayerSentry DOM dump missing or empty.' }
+            $domArgs = @($common + @('--dump-dom', 'https://localhost:8005'))
+            $domProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList $domArgs -Wait -PassThru -RedirectStandardOutput $dom -RedirectStandardError $browserLog
+            Write-Host "DOM Edge exit code=$($domProc.ExitCode)"
+            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) {
+              if (Test-Path $browserLog) { Get-Content $browserLog -Tail 100 }
+              throw 'LayerSentry DOM dump missing or empty.'
+            }
 
             $brand = Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry' -Quiet
             Write-Host "Screenshot bytes=$((Get-Item $shot).Length)"
@@ -136,9 +139,7 @@ jobs:
             if (Test-Path $log) { Get-Content $log -Tail 100 }
             if (Test-Path $err) { Get-Content $err -Tail 100 }
 
-            if (-not $brand) {
-              throw 'Rendered DOM does not expose the LayerSentry brand.'
-            }
+            if (-not $brand) { throw 'Rendered DOM does not expose the LayerSentry brand.' }
           }
           finally {
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
