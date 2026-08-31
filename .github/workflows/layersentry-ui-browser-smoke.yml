@@ -1,4 +1,4 @@
-name: LayerSentry UI Browser Smoke
+name: LayerSentry 1.8.2 Browser Smoke
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: layersentry-ui-browser-smoke
+  group: layersentry-1.8.2-browser-smoke
   cancel-in-progress: true
 
 permissions:
@@ -17,25 +17,38 @@ permissions:
 
 jobs:
   browser-smoke:
-    name: Render final LayerSentry UI on TESTSER
+    name: Render stable LayerSentry 1.8.2 on TESTSER
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - name: Checkout stable LayerSentry UI
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: adaptgurus/harvester-ui-extension
+          ref: release-layersentry-v1.8.2
+          path: layersentry-ui-production
+          fetch-depth: 1
+
       - name: Setup Node 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
 
-      - name: Validate final UI workspace and tools
+      - name: Install stable dependencies and validate tools
         shell: powershell
+        working-directory: layersentry-ui-production
         run: |
           $ErrorActionPreference = 'Stop'
-          $repo = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui'
-          if (-not (Test-Path $repo)) { throw "UI workspace missing: $repo" }
-          $head = (git -C $repo rev-parse HEAD).Trim()
-          if ($head -ne '89a51e9bd92428181da3ed57b94906b02e49fb0e') { throw "Unexpected UI SHA: $head" }
-          if (-not (Test-Path (Join-Path $repo 'node_modules'))) { throw 'node_modules missing from preserved UI workspace.' }
+          if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
+            npm install --global yarn@1.22.22
+          }
+          $root = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg = Get-Content pkg/harvester/package.json -Raw | ConvertFrom-Json
+          if ($root.version -ne '1.8.2' -or $pkg.version -ne '1.8.2') { throw 'Production version must be 1.8.2.' }
+          if ($pkg.rancher.annotations.'catalog.cattle.io/display-name' -ne 'LayerSentry') { throw 'LayerSentry catalog metadata missing.' }
+          yarn install --frozen-lockfile
 
+          $repo = (Get-Location).Path
           $node = (Get-Command node.exe -ErrorAction Stop)
           $vueCli = Join-Path $repo 'node_modules\@vue\cli-service\bin\vue-cli-service.js'
           if (-not (Test-Path $vueCli)) { throw "Vue CLI service not found: $vueCli" }
@@ -49,107 +62,92 @@ jobs:
             $browserCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
           }
           $browser = $browserCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $browser) { throw "No Chrome/Edge found. Checked: $($browserCandidates -join ', ')" }
+          if (-not $browser) { throw 'No Chrome/Edge browser found.' }
 
           "LAYERSENTRY_NODE=$($node.Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "LAYERSENTRY_VUE_CLI=$vueCli" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "LAYERSENTRY_BROWSER=$browser" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Final UI SHA=$head"
-          Write-Host "Node=$(node --version) path=$($node.Source)"
-          Write-Host "Vue CLI=$vueCli"
+          "LAYERSENTRY_REPO=$repo" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Node=$(node --version) Yarn=$(yarn --version)"
           Write-Host "Browser=$browser"
-          & $browser --version
 
-      - name: Render LayerSentry standalone UI
+      - name: Render stable LayerSentry UI
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-ui-browser-smoke'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-1.8.2-browser-smoke'
           if (Test-Path $evidence) { Remove-Item $evidence -Recurse -Force }
           New-Item -ItemType Directory -Path $evidence | Out-Null
-
-          $repoWin = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui'
+          $profile = Join-Path $evidence 'edge-profile'
+          New-Item -ItemType Directory -Path $profile | Out-Null
           $log = Join-Path $evidence 'dev-server.log'
           $err = Join-Path $evidence 'dev-server-error.log'
+          $browserErr = Join-Path $evidence 'browser-stderr.log'
 
           $env:NODE_ENV = 'dev'
           $env:RANCHER_ENV = 'harvester'
           $env:API = 'https://10.10.10.11'
-          $env:VUE_APP_SERVER_VERSION = 'v1.9.0'
+          $env:VUE_APP_SERVER_VERSION = 'v1.8.2'
           $env:HOST = '127.0.0.1'
           $env:PORT = '8005'
 
-          $proc = Start-Process -FilePath $env:LAYERSENTRY_NODE -WorkingDirectory $repoWin -ArgumentList @($env:LAYERSENTRY_VUE_CLI,'serve','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          $proc = Start-Process -FilePath $env:LAYERSENTRY_NODE -WorkingDirectory $env:LAYERSENTRY_REPO -ArgumentList @($env:LAYERSENTRY_VUE_CLI,'serve','--host','127.0.0.1','--port','8005') -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
           Write-Host "Dev server PID=$($proc.Id)"
 
           try {
             $ready = $false
-            for ($i = 0; $i -lt 120; $i++) {
+            for ($i = 0; $i -lt 150; $i++) {
               Start-Sleep -Seconds 2
               if ($proc.HasExited) { break }
               try {
                 $client = New-Object System.Net.Sockets.TcpClient
                 $async = $client.BeginConnect('127.0.0.1', 8005, $null, $null)
                 if ($async.AsyncWaitHandle.WaitOne(500) -and $client.Connected) {
-                  $client.Close()
-                  $ready = $true
-                  break
+                  $client.Close(); $ready = $true; break
                 }
                 $client.Close()
               } catch {}
             }
-
             if (-not $ready) {
               if (Test-Path $log) { Get-Content $log -Tail 300 }
               if (Test-Path $err) { Get-Content $err -Tail 300 }
-              throw 'LayerSentry dev UI did not listen on localhost:8005.'
+              throw 'Stable LayerSentry UI did not listen on localhost:8005.'
             }
 
-            Write-Host 'LayerSentry dev server is listening on localhost:8005.'
-            $shot = Join-Path $evidence 'layersentry-final-ui.png'
-            $dom = Join-Path $evidence 'layersentry-final-ui.html'
-            $browserLog = Join-Path $evidence 'browser-stderr.log'
-            $common = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--ignore-certificate-errors','--allow-insecure-localhost','--window-size=1600,1000','--virtual-time-budget=10000')
+            $url = 'http://127.0.0.1:8005'
+            $shot = Join-Path $evidence 'layersentry-1.8.2.png'
+            $dom = Join-Path $evidence 'layersentry-1.8.2.html'
+            $common = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--no-sandbox',"--user-data-dir=$profile",'--window-size=1600,1000','--virtual-time-budget=12000')
 
-            $shotArgs = @($common + @("--screenshot=$shot", 'https://localhost:8005'))
-            $shotProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList $shotArgs -Wait -PassThru -RedirectStandardError $browserLog
-            Write-Host "Screenshot Edge exit code=$($shotProc.ExitCode)"
-            Start-Sleep -Seconds 1
+            $shotProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList @($common + @("--screenshot=$shot", $url)) -Wait -PassThru -RedirectStandardError $browserErr
+            Write-Host "Screenshot browser exit=$($shotProc.ExitCode)"
             if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) {
-              if (Test-Path $browserLog) { Get-Content $browserLog -Tail 100 }
-              throw 'LayerSentry screenshot missing or empty.'
+              if (Test-Path $browserErr) { Get-Content $browserErr -Tail 100 }
+              throw 'Stable LayerSentry screenshot was not generated.'
             }
 
-            $domArgs = @($common + @('--dump-dom', 'https://localhost:8005'))
-            $domProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList $domArgs -Wait -PassThru -RedirectStandardOutput $dom -RedirectStandardError $browserLog
-            Write-Host "DOM Edge exit code=$($domProc.ExitCode)"
-            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) {
-              if (Test-Path $browserLog) { Get-Content $browserLog -Tail 100 }
-              throw 'LayerSentry DOM dump missing or empty.'
-            }
+            Remove-Item $profile -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $profile -Force | Out-Null
+            $domProc = Start-Process -FilePath $env:LAYERSENTRY_BROWSER -ArgumentList @($common + @('--dump-dom', $url)) -Wait -PassThru -RedirectStandardOutput $dom -RedirectStandardError $browserErr
+            Write-Host "DOM browser exit=$($domProc.ExitCode)"
+            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) { throw 'Stable LayerSentry DOM was not generated.' }
 
             $brand = Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry' -Quiet
             Write-Host "Screenshot bytes=$((Get-Item $shot).Length)"
             Write-Host "DOM bytes=$((Get-Item $dom).Length)"
-            Write-Host "LayerSentry marker visible=$brand"
-            Write-Host '==== visible brand-related DOM lines ===='
-            Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 120 | ForEach-Object { $_.Line }
-
-            Write-Host '==== dev server tail ===='
-            if (Test-Path $log) { Get-Content $log -Tail 100 }
-            if (Test-Path $err) { Get-Content $err -Tail 100 }
-
-            if (-not $brand) { throw 'Rendered DOM does not expose the LayerSentry brand.' }
+            Write-Host "LayerSentry visible=$brand"
+            Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 100 | ForEach-Object { $_.Line }
+            if (-not $brand) { throw 'Rendered stable UI does not expose the LayerSentry brand.' }
           }
           finally {
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Upload browser evidence
+      - name: Upload production browser evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: layersentry-final-ui-browser-evidence
-          path: ${{ runner.temp }}\layersentry-ui-browser-smoke
+          name: layersentry-1.8.2-browser-evidence
+          path: ${{ runner.temp }}\layersentry-1.8.2-browser-smoke
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 14
