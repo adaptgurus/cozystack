@@ -1,0 +1,231 @@
+name: LayerSentry ISO Hyper-V Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-iso-hyperv-smoke.yml
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  layersentry-boot:
+    name: LayerSentry ISO boot smoke
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    env:
+      LAB_ROOT: C:\LayerSentrySmoke
+      ARTIFACT_ID: '9744630608'
+      ARTIFACT_SHA256: '6fb59af73c155a15e2a926b17dfe46bf5923157a055e19b5c453f6c1d41cb720'
+      GEN2_VM: layersentry-smoke-gen2
+      GEN1_VM: layersentry-smoke-gen1
+    steps:
+      - name: Validate runner and Hyper-V
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME"
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+          $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "Elevated administrator=$isAdmin"
+          if (-not $isAdmin) { throw 'Runner is not elevated for Hyper-V.' }
+          Get-Command curl.exe,Get-VM,New-VM,Start-VM,Add-VMDvdDrive,Set-VMFirmware,Set-VMBios | Format-Table Name,Source
+          Get-VMHost | Format-List ComputerName,LogicalProcessorCount
+          $free = (Get-PSDrive C).Free
+          Write-Host "C: free=$([math]::Round($free/1GB,2)) GiB"
+          if ($free -lt 25GB) { throw 'At least 25 GiB free is required for the artifact ZIP plus extracted ISO.' }
+          New-Item -ItemType Directory -Force -Path $env:LAB_ROOT | Out-Null
+
+      - name: Download LayerSentry artifact with curl
+        env:
+          REPO_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = "https://api.github.com/repos/adaptgurus/harvester-installer/actions/artifacts/$env:ARTIFACT_ID/zip"
+          $zip = Join-Path $env:LAB_ROOT 'layersentry-artifact.zip'
+          $extract = Join-Path $env:LAB_ROOT 'artifact'
+          if (Test-Path $zip) { Remove-Item -Force $zip }
+          if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+
+          $headers = @('-H','Accept: application/vnd.github+json','-H','X-GitHub-Api-Version: 2022-11-28')
+          $statusAuth = & curl.exe -sS -o NUL -w '%{http_code}' @headers -H "Authorization: Bearer $env:REPO_TOKEN" $url
+          Write-Host "Cross-repo artifact probe with workflow token: HTTP $statusAuth"
+
+          $tokenToUse = $null
+          if ($statusAuth -eq '302') {
+            $tokenToUse = $env:REPO_TOKEN
+          } else {
+            $statusAnon = & curl.exe -sS -o NUL -w '%{http_code}' @headers $url
+            Write-Host "Anonymous artifact probe: HTTP $statusAnon"
+            if ($statusAnon -eq '302') {
+              $tokenToUse = ''
+            } else {
+              $gh = Get-Command gh -ErrorAction SilentlyContinue
+              if ($gh) {
+                $savedGhToken = $env:GH_TOKEN
+                $savedGithubToken = $env:GITHUB_TOKEN
+                Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+                Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+                try {
+                  $stored = (& gh auth token 2>$null | Select-Object -First 1).Trim()
+                  if ($stored) {
+                    $statusGh = & curl.exe -sS -o NUL -w '%{http_code}' @headers -H "Authorization: Bearer $stored" $url
+                    Write-Host "Existing gh authentication probe: HTTP $statusGh"
+                    if ($statusGh -eq '302') { $tokenToUse = $stored }
+                  }
+                } finally {
+                  if ($savedGhToken) { $env:GH_TOKEN = $savedGhToken }
+                  if ($savedGithubToken) { $env:GITHUB_TOKEN = $savedGithubToken }
+                }
+              }
+            }
+          }
+
+          if ($null -eq $tokenToUse) {
+            throw 'GitHub blocked cross-repository artifact download and no existing gh CLI credential on the runner can read harvester-installer actions artifacts.'
+          }
+
+          if ($tokenToUse) {
+            & curl.exe --fail --location --retry 5 --retry-delay 5 @headers -H "Authorization: Bearer $tokenToUse" -o $zip $url
+          } else {
+            & curl.exe --fail --location --retry 5 --retry-delay 5 @headers -o $zip $url
+          }
+          if ($LASTEXITCODE -ne 0) { throw "curl download failed with exit code $LASTEXITCODE" }
+
+          $zipHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Artifact ZIP SHA256=$zipHash"
+          if ($zipHash -ne $env:ARTIFACT_SHA256) { throw 'Downloaded GitHub artifact ZIP digest mismatch.' }
+
+          & tar.exe -xf $zip -C $extract
+          if ($LASTEXITCODE -ne 0) { throw "Artifact extraction failed with exit code $LASTEXITCODE" }
+          Get-ChildItem -Recurse $extract | Select-Object FullName,Length | Format-Table -AutoSize
+
+      - name: Verify ISO checksum and boot payload
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extract = Join-Path $env:LAB_ROOT 'artifact'
+          $iso = Get-ChildItem $extract -Filter 'layersentry-v1.0-amd64.iso' -File -Recurse | Select-Object -First 1
+          $sum = Get-ChildItem $extract -Filter 'layersentry-v1.0-amd64.iso.sha512' -File -Recurse | Select-Object -First 1
+          if (-not $iso -or -not $sum) { throw 'ISO or SHA-512 file missing from artifact.' }
+          $expected = ((Get-Content $sum.FullName -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $iso.FullName -Algorithm SHA512).Hash.ToLowerInvariant()
+          Write-Host "ISO=$($iso.FullName)"
+          Write-Host "ISO size=$([math]::Round($iso.Length/1GB,3)) GiB"
+          Write-Host "SHA512 expected=$expected"
+          Write-Host "SHA512 actual=$actual"
+          if ($expected -ne $actual) { throw 'ISO SHA-512 mismatch.' }
+
+          $disk = Mount-DiskImage -ImagePath $iso.FullName -PassThru
+          try {
+            $volume = $disk | Get-Volume | Where-Object DriveLetter | Select-Object -First 1
+            if (-not $volume) { throw 'Mounted ISO has no readable volume.' }
+            $root = "$($volume.DriveLetter):\"
+            foreach ($relative in @('EFI\BOOT\BOOTX64.EFI','boot\grub2\grub.cfg','rootfs.squashfs')) {
+              $p = Join-Path $root $relative
+              Write-Host "Checking $p"
+              if (-not (Test-Path $p)) { throw "Required ISO boot payload missing: $relative" }
+            }
+            Get-ChildItem $root | Select-Object Name,Length,Mode | Format-Table -AutoSize
+          } finally {
+            Dismount-DiskImage -ImagePath $iso.FullName -ErrorAction SilentlyContinue
+          }
+          Set-Content (Join-Path $env:LAB_ROOT 'iso-path.txt') $iso.FullName
+
+      - name: Create clean Gen2 and Gen1 diskless VMs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iso = (Get-Content (Join-Path $env:LAB_ROOT 'iso-path.txt') -Raw).Trim()
+          foreach ($name in @($env:GEN2_VM,$env:GEN1_VM)) {
+            $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+            if ($vm) {
+              if ($vm.State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
+              Remove-VM -Name $name -Force
+            }
+          }
+
+          New-VM -Name $env:GEN2_VM -Generation 2 -MemoryStartupBytes 8GB -NoVHD | Out-Null
+          Set-VMProcessor -VMName $env:GEN2_VM -Count 4
+          Set-VMMemory -VMName $env:GEN2_VM -DynamicMemoryEnabled $false
+          Set-VMFirmware -VMName $env:GEN2_VM -EnableSecureBoot Off
+          $dvd2 = Add-VMDvdDrive -VMName $env:GEN2_VM -Path $iso -Passthru
+          Set-VMFirmware -VMName $env:GEN2_VM -FirstBootDevice $dvd2
+
+          New-VM -Name $env:GEN1_VM -Generation 1 -MemoryStartupBytes 8GB -NoVHD | Out-Null
+          Set-VMProcessor -VMName $env:GEN1_VM -Count 4
+          Set-VMMemory -VMName $env:GEN1_VM -DynamicMemoryEnabled $false
+          Add-VMDvdDrive -VMName $env:GEN1_VM -ControllerNumber 1 -ControllerLocation 0 -Path $iso | Out-Null
+          Set-VMBios -VMName $env:GEN1_VM -StartupOrder CD,IDE,LegacyNetworkAdapter,Floppy
+
+          Get-VM -Name $env:GEN2_VM,$env:GEN1_VM | Format-Table Name,Generation,State,ProcessorCount,MemoryStartup -AutoSize
+          Get-VMFirmware -VMName $env:GEN2_VM | Format-List SecureBoot,BootOrder
+          Get-VMBios -VMName $env:GEN1_VM | Format-List StartupOrder
+          Get-VMDvdDrive -VMName $env:GEN2_VM,$env:GEN1_VM | Format-List VMName,Path,ControllerType,ControllerNumber,ControllerLocation
+
+      - name: Boot ISO and capture Hyper-V framebuffer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          function Save-VMScreenBMP {
+            param([string]$VMName,[string]$Path)
+            try {
+              $vmms = Get-WmiObject -Namespace root\virtualization\v2 -Class Msvm_VirtualSystemManagementService
+              $safe = $VMName.Replace("'","''")
+              $vmcs = Get-WmiObject -Namespace root\virtualization\v2 -Class Msvm_ComputerSystem -Filter "ElementName='$safe'"
+              $video = @($vmcs.GetRelated('Msvm_VideoHead')) | Select-Object -First 1
+              $w = [int]$video.CurrentHorizontalResolution
+              $h = [int]$video.CurrentVerticalResolution
+              if ($w -lt 64 -or $h -lt 64) { $w=1024; $h=768 }
+              $image = $vmms.GetVirtualSystemThumbnailImage($vmcs,$w,$h).ImageData
+              if (-not $image) { throw 'No framebuffer bytes returned.' }
+              $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w,$h,[System.Drawing.Imaging.PixelFormat]::Format16bppRgb565
+              $rect = New-Object System.Drawing.Rectangle 0,0,$w,$h
+              $data = $bmp.LockBits($rect,[System.Drawing.Imaging.ImageLockMode]::ReadWrite,[System.Drawing.Imaging.PixelFormat]::Format16bppRgb565)
+              try { [System.Runtime.InteropServices.Marshal]::Copy($image,0,$data.Scan0,[math]::Abs($data.Stride)*$data.Height) }
+              finally { $bmp.UnlockBits($data) }
+              $bmp.Save($Path,[System.Drawing.Imaging.ImageFormat]::Bmp)
+              $bmp.Dispose()
+              Write-Host "Saved $Path (${w}x${h})"
+            } catch { Write-Warning "Framebuffer capture failed for $VMName : $($_.Exception.Message)" }
+          }
+
+          $evidence = Join-Path $env:LAB_ROOT 'evidence'
+          if (Test-Path $evidence) { Remove-Item -Recurse -Force $evidence }
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          Start-VM -Name $env:GEN2_VM
+          Start-VM -Name $env:GEN1_VM
+          $elapsed = 0
+          foreach ($wait in 20,40,60) {
+            Start-Sleep -Seconds $wait
+            $elapsed += $wait
+            foreach ($name in @($env:GEN2_VM,$env:GEN1_VM)) {
+              $vm = Get-VM -Name $name
+              if ($vm.State -ne 'Running') { throw "$name is not running after $elapsed seconds: $($vm.State)" }
+              Save-VMScreenBMP -VMName $name -Path (Join-Path $evidence "$name-$elapsed-sec.bmp")
+            }
+          }
+
+          Get-VM -Name $env:GEN2_VM,$env:GEN1_VM |
+            Select-Object Name,State,Status,Generation,CPUUsage,MemoryAssigned,Uptime |
+            Format-Table -AutoSize | Out-String | Tee-Object -FilePath (Join-Path $evidence 'vm-state.txt')
+          Get-VMDvdDrive -VMName $env:GEN2_VM,$env:GEN1_VM |
+            Format-List VMName,Path,ControllerType,ControllerNumber,ControllerLocation |
+            Out-String | Add-Content (Join-Path $evidence 'vm-state.txt')
+          Write-Host 'VMs remain running for manual VMConnect inspection.'
+
+      - name: Upload boot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layersentry-v1.0-hyperv-boot-evidence
+          path: C:\LayerSentrySmoke\evidence
+          if-no-files-found: warn
+          retention-days: 7
