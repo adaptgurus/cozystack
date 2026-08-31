@@ -1,0 +1,229 @@
+name: LayerSentry UI Windows Runtime Probe
+
+on:
+  push:
+    branches:
+      - feat/hci-virtualization-v1.6.2-test
+    paths:
+      - .github/workflows/layersentry-ui-windows-runtime-probe.yml
+  workflow_dispatch:
+
+concurrency:
+  group: layersentry-ui-windows-runtime-probe
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-probe:
+    name: Reuse final UI workspace and capture runtime evidence
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Validate preserved final UI workspace
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui'
+          if (-not (Test-Path $repo)) { throw "Preserved UI workspace not found: $repo" }
+          $head = (git -C $repo rev-parse HEAD).Trim()
+          Write-Host "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME"
+          Write-Host "UI workspace=$repo"
+          Write-Host "UI HEAD=$head"
+          if ($head -ne '89a51e9bd92428181da3ed57b94906b02e49fb0e') {
+            throw "Unexpected preserved UI revision: $head"
+          }
+          if (-not (Test-Path (Join-Path $repo 'node_modules'))) {
+            throw 'Preserved node_modules is missing; full Windows validation must be rerun.'
+          }
+
+      - name: Discover and validate Windows package output
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui'
+          Write-Host '==== Top-level UI workspace directories ===='
+          Get-ChildItem -Path $repo -Directory | Select-Object Name,FullName | Format-Table -AutoSize
+
+          Write-Host '==== dist-pkg directories ===='
+          $distDirs = @(Get-ChildItem -Path $repo -Recurse -Directory -Filter 'dist-pkg' -ErrorAction SilentlyContinue)
+          if ($distDirs) { $distDirs | Select-Object FullName | Format-Table -AutoSize } else { Write-Host 'No dist-pkg directory found.' }
+
+          Write-Host '==== UMD bundle candidates ===='
+          $bundles = @(Get-ChildItem -Path $repo -Recurse -File -Filter '*.umd.min.js' -ErrorAction SilentlyContinue | Sort-Object Length -Descending)
+          $bundles | Select-Object -First 50 FullName,Length | Format-Table -AutoSize
+          if (-not $bundles) { throw 'No generated *.umd.min.js package bundle found in preserved Windows workspace.' }
+
+          $bundle = $bundles | Where-Object { $_.Name -eq 'harvester-1.10.0-dev.umd.min.js' } | Select-Object -First 1
+          if (-not $bundle) { $bundle = $bundles | Select-Object -First 1 }
+          Write-Host "Selected bundle=$($bundle.FullName)"
+          Write-Host "Selected bundle bytes=$($bundle.Length)"
+          if ($bundle.Length -le 1000000) { throw 'Selected bundle is unexpectedly small.' }
+          if (-not (Select-String -Path $bundle.FullName -Pattern 'LayerSentry' -SimpleMatch -Quiet)) {
+            throw 'Selected compiled bundle does not contain LayerSentry branding.'
+          }
+          "LAYERSENTRY_BUNDLE=$($bundle.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Discover Git Bash and browser
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bashCandidates = @(
+            (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+            (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+          )
+          if (${env:ProgramFiles(x86)}) {
+            $bashCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe')
+            $bashCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Git\usr\bin\bash.exe')
+          }
+          $bash = $bashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $bash) { throw 'Git Bash was not found.' }
+
+          $browserCandidates = @(
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+          )
+          if (${env:ProgramFiles(x86)}) {
+            $browserCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+            $browserCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
+          }
+          $browser = $browserCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $browser) { throw "No Chrome/Edge browser found. Checked: $($browserCandidates -join ', ')" }
+
+          "GIT_BASH=$bash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LAYERSENTRY_BROWSER=$browser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Git Bash=$bash"
+          Write-Host "Browser=$browser"
+          & $browser --version
+
+      - name: Capture Hyper-V and HCI endpoint evidence
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $out = Join-Path $evidence 'environment.txt'
+
+          "Runner=$env:RUNNER_NAME Computer=$env:COMPUTERNAME" | Out-File $out -Encoding utf8
+          "Bundle=$env:LAYERSENTRY_BUNDLE" | Out-File $out -Encoding utf8 -Append
+          "Browser=$env:LAYERSENTRY_BROWSER" | Out-File $out -Encoding utf8 -Append
+
+          if (Get-Command Get-VM -ErrorAction SilentlyContinue) {
+            '==== Hyper-V VMs ====' | Tee-Object -FilePath $out -Append
+            Get-VM | Select-Object Name,State,Status,Generation | Format-Table -AutoSize | Out-String | Tee-Object -FilePath $out -Append
+            '==== Hyper-V VM NICs ====' | Tee-Object -FilePath $out -Append
+            Get-VM | Get-VMNetworkAdapter | Select-Object VMName,SwitchName,Status,IPAddresses | Format-List | Out-String | Tee-Object -FilePath $out -Append
+          }
+
+          if (Get-Command kubectl -ErrorAction SilentlyContinue) {
+            '==== kubectl context ====' | Tee-Object -FilePath $out -Append
+            kubectl config current-context 2>&1 | Tee-Object -FilePath $out -Append
+            kubectl get nodes -o wide 2>&1 | Tee-Object -FilePath $out -Append
+            kubectl get svc -A -o wide 2>&1 | Tee-Object -FilePath $out -Append
+            kubectl get ingress -A 2>&1 | Tee-Object -FilePath $out -Append
+          } else {
+            'kubectl is not installed/configured on this runner.' | Tee-Object -FilePath $out -Append
+          }
+
+          '==== HCI endpoint probes ====' | Tee-Object -FilePath $out -Append
+          foreach ($hostIp in @('10.10.10.11','10.10.10.12','10.10.10.13')) {
+            foreach ($port in @(443,80,6443)) {
+              $ok = Test-NetConnection -ComputerName $hostIp -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue
+              "$hostIp`:$port reachable=$ok" | Tee-Object -FilePath $out -Append
+            }
+          }
+
+      - name: Start final LayerSentry UI and capture browser evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $repoWin = Join-Path $env:GITHUB_WORKSPACE 'layersentry-ui'
+          $repoBash = $repoWin -replace '\\','/'
+          if ($repoBash -match '^([A-Za-z]):/(.*)$') {
+            $repoBash = "/$($Matches[1].ToLower())/$($Matches[2])"
+          }
+
+          $log = Join-Path $evidence 'dev-server.log'
+          $err = Join-Path $evidence 'dev-server-error.log'
+          $cmd = "cd '$repoBash' && export RANCHER_ENV=harvester && export API=https://10.10.10.11 && export VUE_APP_SERVER_VERSION=v1.9.0 && yarn dev"
+          $process = Start-Process -FilePath $env:GIT_BASH -ArgumentList @('-lc', $cmd) -PassThru -RedirectStandardOutput $log -RedirectStandardError $err
+          Write-Host "Started LayerSentry dev server PID=$($process.Id)"
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 120; $i++) {
+              Start-Sleep -Seconds 2
+              try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $iar = $tcp.BeginConnect('127.0.0.1',8005,$null,$null)
+                if ($iar.AsyncWaitHandle.WaitOne(500) -and $tcp.Connected) {
+                  $tcp.Close()
+                  $ready = $true
+                  break
+                }
+                $tcp.Close()
+              } catch {}
+              if ($process.HasExited) { break }
+            }
+
+            if (-not $ready) {
+              Write-Host '==== dev server stdout ===='
+              if (Test-Path $log) { Get-Content $log -Tail 250 }
+              Write-Host '==== dev server stderr ===='
+              if (Test-Path $err) { Get-Content $err -Tail 250 }
+              throw 'LayerSentry standalone UI did not become reachable on localhost:8005.'
+            }
+
+            $shot = Join-Path $evidence 'layersentry-ui.png'
+            $dom = Join-Path $evidence 'layersentry-ui-dom.html'
+            $browserArgs = @(
+              '--headless=new',
+              '--disable-gpu',
+              '--no-first-run',
+              '--no-default-browser-check',
+              '--ignore-certificate-errors',
+              '--allow-insecure-localhost',
+              '--window-size=1600,1000',
+              "--screenshot=$shot",
+              'https://localhost:8005'
+            )
+            & $env:LAYERSENTRY_BROWSER @browserArgs
+            if ($LASTEXITCODE -ne 0) { throw "Headless browser screenshot failed with exit code $LASTEXITCODE" }
+
+            $domText = & $env:LAYERSENTRY_BROWSER '--headless=new' '--disable-gpu' '--no-first-run' '--ignore-certificate-errors' '--allow-insecure-localhost' '--dump-dom' 'https://localhost:8005'
+            $domText | Out-File -FilePath $dom -Encoding utf8
+
+            if (-not (Test-Path $shot) -or (Get-Item $shot).Length -le 1000) { throw 'Browser screenshot was not generated.' }
+            if (-not (Test-Path $dom) -or (Get-Item $dom).Length -le 100) { throw 'Browser DOM evidence was not generated.' }
+
+            Write-Host "Screenshot bytes=$((Get-Item $shot).Length)"
+            Write-Host "DOM bytes=$((Get-Item $dom).Length)"
+            Write-Host '==== DOM brand terms ===='
+            Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry|Harvester|Rancher|SUSE' | Select-Object -First 100 | ForEach-Object { $_.Line }
+
+            $brandVisible = Select-String -Path $dom -Pattern 'LayerSentry|Layer Sentry' -Quiet
+            if (-not $brandVisible) {
+              Write-Host '==== dev server stdout ===='
+              if (Test-Path $log) { Get-Content $log -Tail 150 }
+              Write-Host '==== dev server stderr ===='
+              if (Test-Path $err) { Get-Content $err -Tail 150 }
+              throw 'Rendered browser DOM did not expose a LayerSentry brand marker.'
+            }
+          }
+          finally {
+            if ($process -and -not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Upload LayerSentry runtime evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-ui-windows-runtime-evidence
+          path: ${{ runner.temp }}\layersentry-ui-validation
+          if-no-files-found: warn
+          retention-days: 7
