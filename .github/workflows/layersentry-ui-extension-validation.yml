@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Clean validation workspace
-        shell: pwsh
+        shell: powershell
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'layersentry-ui-validation'
           if (Test-Path $root) { Remove-Item $root -Recurse -Force }
@@ -46,7 +46,7 @@ jobs:
           cache-dependency-path: layersentry-ui/yarn.lock
 
       - name: Ensure Yarn Classic and runner prerequisites
-        shell: pwsh
+        shell: powershell
         run: |
           if (-not (Get-Command yarn -ErrorAction SilentlyContinue)) {
             npm install --global yarn@1.22.22
@@ -59,7 +59,7 @@ jobs:
           Write-Host "Bash: $($bash.Source)"
 
       - name: Verify pinned source revision
-        shell: pwsh
+        shell: powershell
         working-directory: layersentry-ui
         run: |
           $head = (git rev-parse HEAD).Trim()
@@ -69,22 +69,22 @@ jobs:
           Write-Host "Validated source revision: $head"
 
       - name: Frozen dependency install
-        shell: pwsh
+        shell: powershell
         working-directory: layersentry-ui
         run: yarn install --frozen-lockfile
 
       - name: Lint
-        shell: pwsh
+        shell: powershell
         working-directory: layersentry-ui
         run: yarn lint
 
       - name: Build Harvester extension package
-        shell: pwsh
+        shell: powershell
         run: |
           bash -lc "cd layersentry-ui && yarn build-pkg harvester"
 
       - name: Validate generated package and LayerSentry assets
-        shell: pwsh
+        shell: powershell
         working-directory: layersentry-ui
         run: |
           $required = @(
@@ -104,7 +104,7 @@ jobs:
           if ($entry.Length -le 1000000) { throw 'Unexpectedly small LayerSentry package entrypoint.' }
 
       - name: Brand-leak evidence scan
-        shell: pwsh
+        shell: powershell
         working-directory: layersentry-ui
         run: |
           Write-Host 'Upstream-brand terms in presentation surfaces (technical/upstream-reference context is allowed):'
@@ -113,7 +113,7 @@ jobs:
           if ($matches) { $matches | Select-Object -First 300 } else { Write-Host 'No upstream-brand matches in scanned presentation surfaces.' }
 
       - name: Cluster and browser capability probe
-        shell: pwsh
+        shell: powershell
         run: |
           if (Get-Command kubectl -ErrorAction SilentlyContinue) {
             Write-Host '==== kubectl context ===='
