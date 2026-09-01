@@ -82,6 +82,25 @@ function Get-Keyboard {
     return $keyboard
 }
 
+function Invoke-KeyboardMethod {
+    param(
+        [Parameter(Mandatory = $true)]$Keyboard,
+        [Parameter(Mandatory = $true)][string]$VMName,
+        [Parameter(Mandatory = $true)][ValidateSet('PressKey', 'ReleaseKey', 'TypeKey')][string]$Method,
+        [Parameter(Mandatory = $true)][uint32]$Code
+    )
+
+    $response = Invoke-CimMethod `
+        -InputObject $Keyboard `
+        -MethodName $Method `
+        -Arguments @{ keyCode = $Code } `
+        -ErrorAction Stop
+    $returnValue = [uint32]$response.ReturnValue
+    if ($returnValue -ne 0) {
+        throw "$Method($Code) failed for $VMName with return value $returnValue"
+    }
+}
+
 function Send-Key {
     param(
         [Parameter(Mandatory = $true)]$Keyboard,
@@ -92,19 +111,66 @@ function Send-Key {
     if ($allowedKeyCodes -notcontains [int]$Code) {
         throw "Virtual key code $Code is not permitted."
     }
-    $response = Invoke-CimMethod `
-        -InputObject $Keyboard `
-        -MethodName 'TypeKey' `
-        -Arguments @{ keyCode = $Code } `
-        -ErrorAction Stop
-    $returnValue = [uint32]$response.ReturnValue
-    if ($returnValue -ne 0) {
-        throw "TypeKey($Code) failed for $VMName with return value $returnValue"
-    }
+    Invoke-KeyboardMethod -Keyboard $Keyboard -VMName $VMName -Method TypeKey -Code $Code
     Start-Sleep -Milliseconds 300
 }
 
-function Send-Text {
+function Get-CharacterStroke {
+    param([Parameter(Mandatory = $true)][char]$Character)
+
+    if ([char]::IsLetter($Character)) {
+        $upper = [char]::ToUpperInvariant($Character)
+        return [pscustomobject]@{
+            Code = [uint32][int]$upper
+            Shift = [char]::IsUpper($Character)
+        }
+    }
+    if ([char]::IsDigit($Character)) {
+        return [pscustomobject]@{
+            Code = [uint32][int]$Character
+            Shift = $false
+        }
+    }
+
+    switch ([string]$Character) {
+        ' ' { return [pscustomobject]@{ Code = [uint32]32; Shift = $false } }
+        '!' { return [pscustomobject]@{ Code = [uint32]49; Shift = $true } }
+        '@' { return [pscustomobject]@{ Code = [uint32]50; Shift = $true } }
+        '#' { return [pscustomobject]@{ Code = [uint32]51; Shift = $true } }
+        '$' { return [pscustomobject]@{ Code = [uint32]52; Shift = $true } }
+        '%' { return [pscustomobject]@{ Code = [uint32]53; Shift = $true } }
+        '^' { return [pscustomobject]@{ Code = [uint32]54; Shift = $true } }
+        '&' { return [pscustomobject]@{ Code = [uint32]55; Shift = $true } }
+        '*' { return [pscustomobject]@{ Code = [uint32]56; Shift = $true } }
+        '(' { return [pscustomobject]@{ Code = [uint32]57; Shift = $true } }
+        ')' { return [pscustomobject]@{ Code = [uint32]48; Shift = $true } }
+        '-' { return [pscustomobject]@{ Code = [uint32]189; Shift = $false } }
+        '_' { return [pscustomobject]@{ Code = [uint32]189; Shift = $true } }
+        '=' { return [pscustomobject]@{ Code = [uint32]187; Shift = $false } }
+        '+' { return [pscustomobject]@{ Code = [uint32]187; Shift = $true } }
+        '[' { return [pscustomobject]@{ Code = [uint32]219; Shift = $false } }
+        ']' { return [pscustomobject]@{ Code = [uint32]221; Shift = $false } }
+        '{' { return [pscustomobject]@{ Code = [uint32]219; Shift = $true } }
+        '}' { return [pscustomobject]@{ Code = [uint32]221; Shift = $true } }
+        ';' { return [pscustomobject]@{ Code = [uint32]186; Shift = $false } }
+        ':' { return [pscustomobject]@{ Code = [uint32]186; Shift = $true } }
+        "'" { return [pscustomobject]@{ Code = [uint32]222; Shift = $false } }
+        '"' { return [pscustomobject]@{ Code = [uint32]222; Shift = $true } }
+        ',' { return [pscustomobject]@{ Code = [uint32]188; Shift = $false } }
+        '<' { return [pscustomobject]@{ Code = [uint32]188; Shift = $true } }
+        '.' { return [pscustomobject]@{ Code = [uint32]190; Shift = $false } }
+        '>' { return [pscustomobject]@{ Code = [uint32]190; Shift = $true } }
+        '/' { return [pscustomobject]@{ Code = [uint32]191; Shift = $false } }
+        '?' { return [pscustomobject]@{ Code = [uint32]191; Shift = $true } }
+        '\' { return [pscustomobject]@{ Code = [uint32]220; Shift = $false } }
+        '|' { return [pscustomobject]@{ Code = [uint32]220; Shift = $true } }
+        '`' { return [pscustomobject]@{ Code = [uint32]192; Shift = $false } }
+        '~' { return [pscustomobject]@{ Code = [uint32]192; Shift = $true } }
+        default { throw "Unsupported console text character: U+$([int]$Character).ToString('X4')" }
+    }
+}
+
+function Send-TextAsKeys {
     param(
         [Parameter(Mandatory = $true)]$Keyboard,
         [Parameter(Mandatory = $true)][string]$VMName,
@@ -118,17 +184,25 @@ function Send-Text {
     if ($Value -match '[\r\n]') {
         throw "Text payload for $VMName may not contain newlines."
     }
-    $response = Invoke-CimMethod `
-        -InputObject $Keyboard `
-        -MethodName 'TypeText' `
-        -Arguments @{ asciiText = $Value } `
-        -ErrorAction Stop
-    $returnValue = [uint32]$response.ReturnValue
-    if ($returnValue -ne 0) {
-        throw "TypeText failed for $VMName with return value $returnValue"
+
+    foreach ($character in $Value.ToCharArray()) {
+        $stroke = Get-CharacterStroke -Character $character
+        if ($stroke.Shift) {
+            Invoke-KeyboardMethod -Keyboard $Keyboard -VMName $VMName -Method PressKey -Code ([uint32]16)
+        }
+        try {
+            Invoke-KeyboardMethod -Keyboard $Keyboard -VMName $VMName -Method TypeKey -Code ([uint32]$stroke.Code)
+        }
+        finally {
+            if ($stroke.Shift) {
+                Invoke-KeyboardMethod -Keyboard $Keyboard -VMName $VMName -Method ReleaseKey -Code ([uint32]16)
+            }
+        }
+        Start-Sleep -Milliseconds 40
     }
+
     $kind = if ($Secret) { 'secret' } else { 'text' }
-    "sent-$kind vm=$VMName chars=$($Value.Length)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
+    "sent-$kind-as-keys vm=$VMName chars=$($Value.Length)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
     Start-Sleep -Milliseconds 300
 }
 
@@ -159,13 +233,13 @@ try {
                     }
                     'text' {
                         $value = [string]$action.value
-                        Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $false
+                        Send-TextAsKeys -Keyboard $keyboard -VMName $name -Value $value -Secret $false
                         $actionResults += [pscustomobject]@{ Kind = 'text'; CharacterCount = $value.Length; Status = 'success' }
                     }
                     'secret' {
                         $secretName = [string]$action.name
                         $value = Get-CredentialValue -Name $secretName
-                        Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $true
+                        Send-TextAsKeys -Keyboard $keyboard -VMName $name -Value $value -Secret $true
                         $actionResults += [pscustomobject]@{ Kind = 'secret'; Name = $secretName; CharacterCount = $value.Length; Status = 'success' }
                     }
                     'sleep' {
@@ -190,7 +264,7 @@ try {
             }
             if ($target.PSObject.Properties['text'] -and -not [string]::IsNullOrEmpty([string]$target.text)) {
                 $value = [string]$target.text
-                Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $false
+                Send-TextAsKeys -Keyboard $keyboard -VMName $name -Value $value -Secret $false
                 $actionResults += [pscustomobject]@{ Kind = 'text'; CharacterCount = $value.Length; Status = 'success' }
             }
         }
@@ -217,7 +291,7 @@ catch {
 }
 finally {
     $report = [pscustomobject]@{
-        SchemaVersion = '2.0'
+        SchemaVersion = '2.1'
         RequestId = [string]$request.requestId
         ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         Host = $env:COMPUTERNAME
