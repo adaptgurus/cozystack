@@ -1,0 +1,71 @@
+name: LayerSentry Create and Start Three Hyper-V VMs V3
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-create-3-vms-v3.yml
+      - hack/layersentry/provision-hyperv-3-vms-v3.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-create-three-hyperv-vms-v3
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Create configure and start sen1 sen2 sen3
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact V3 provisioner
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Parse V3 provisioner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path -LiteralPath 'hack/layersentry/provision-hyperv-3-vms-v3.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message) }
+            exit 1
+          }
+          Write-Host "PowerShell parser accepted $path"
+
+      - name: Provision all three nodes and boot ISO
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-create-3-vms-v3'
+          & 'hack/layersentry/provision-hyperv-3-vms-v3.ps1' `
+            -IsoPath 'C:\Users\opc\Downloads\final iso\layersentry-v1.0-amd64.iso' `
+            -SwitchName 'Cozystack-NAT' `
+            -NatName 'Cozystack-NAT' `
+            -VmRoot 'C:\Hyper-V\LayerSentry' `
+            -EvidenceDirectory $evidence
+
+      - name: Upload V3 provisioning evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-create-3-vms-v3-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-create-3-vms-v3
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
