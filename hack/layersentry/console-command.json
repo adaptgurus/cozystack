@@ -1,23 +1,31 @@
 {
-  "requestId": "submit-sen1-password-and-accept-default-roles-20260901-03",
-  "delayAfterSeconds": 8,
+  "requestId": "configure-node-passwords-all-nodes-20260901-04",
+  "delayAfterSeconds": 12,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 9},
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     }
