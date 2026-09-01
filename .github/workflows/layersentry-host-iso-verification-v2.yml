@@ -1,0 +1,133 @@
+name: LayerSentry Host ISO Verification V2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-host-iso-verification-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Calculate SHA-256 for the LayerSentry ISO on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Hash ISO and collect adjacent evidence files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $isoPath = 'C:\Users\opc\Downloads\final iso\layersentry-v1.0-amd64.iso'
+          if (-not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
+            throw "ISO file was not found: $isoPath"
+          }
+
+          $outDir = Join-Path $env:RUNNER_TEMP 'layersentry-host-iso-verification-v2'
+          if (Test-Path -LiteralPath $outDir) {
+            Remove-Item -LiteralPath $outDir -Recurse -Force
+          }
+          New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "LAYERSENTRY_ISO_VERIFY_V2_DIR=$outDir"
+
+          $iso = Get-Item -LiteralPath $isoPath -ErrorAction Stop
+          $sha256 = (Get-FileHash -LiteralPath $isoPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+          $folder = $iso.DirectoryName
+
+          $folderFiles = @(
+            Get-ChildItem -LiteralPath $folder -File -ErrorAction Stop |
+              Sort-Object Name |
+              ForEach-Object {
+                [pscustomobject]@{
+                  Name = $_.Name
+                  FullName = $_.FullName
+                  LengthBytes = $_.Length
+                  SizeGiB = [math]::Round(([double]$_.Length / 1GB), 4)
+                  CreationTimeUtc = $_.CreationTimeUtc.ToString('o')
+                  LastWriteTimeUtc = $_.LastWriteTimeUtc.ToString('o')
+                }
+              }
+          )
+
+          $smallEvidenceFiles = @(
+            $folderFiles |
+              Where-Object {
+                $_.LengthBytes -le 10MB -and $_.Name -match '(?i)\.(txt|json|sha256|sha512|md|yml|yaml)$'
+              } |
+              ForEach-Object {
+                $text = $null
+                $errorText = $null
+                try {
+                  $text = Get-Content -LiteralPath $_.FullName -Raw -ErrorAction Stop
+                }
+                catch {
+                  $errorText = $_.Exception.Message
+                }
+
+                [pscustomobject]@{
+                  Name = $_.Name
+                  FullName = $_.FullName
+                  TextContent = $text
+                  TextReadError = $errorText
+                }
+              }
+          )
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '2.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            CollectionMode = 'read-only-no-mount'
+            Iso = [pscustomobject]@{
+              Name = $iso.Name
+              FullName = $iso.FullName
+              LengthBytes = $iso.Length
+              SizeGiB = [math]::Round(([double]$iso.Length / 1GB), 4)
+              CreationTimeUtc = $iso.CreationTimeUtc.ToString('o')
+              LastWriteTimeUtc = $iso.LastWriteTimeUtc.ToString('o')
+              Sha256 = $sha256
+            }
+            FolderFiles = $folderFiles
+            SmallEvidenceFiles = $smallEvidenceFiles
+          }
+
+          $jsonPath = Join-Path $outDir 'layersentry-host-iso-verification-v2.json'
+          $summaryPath = Join-Path $outDir 'layersentry-host-iso-verification-v2.txt'
+          $sumsPath = Join-Path $outDir 'SHA256SUMS.txt'
+
+          $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+          @(
+            'LayerSentry host ISO verification V2'
+            "Collected UTC: $($report.CollectedAtUtc)"
+            "ISO: $($iso.FullName)"
+            "Size bytes: $($iso.Length)"
+            "Size GiB: $($report.Iso.SizeGiB)"
+            "SHA256: $sha256"
+            ''
+            'Files in the same folder:'
+            ($folderFiles | Select-Object Name, LengthBytes, LastWriteTimeUtc | Format-Table -AutoSize | Out-String -Width 300)
+          ) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+          "$sha256  $($iso.Name)" | Set-Content -LiteralPath $sumsPath -Encoding ASCII
+
+          Get-Content -LiteralPath $summaryPath
+
+          @(
+            '# LayerSentry ISO on Hyper-V host'
+            ''
+            "File: $($iso.Name)"
+            "Size: $($report.Iso.SizeGiB) GiB"
+            "SHA-256: $sha256"
+            'Verification mode: read-only and without mounting the ISO'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Upload ISO verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-host-iso-verification-v2-${{ github.run_id }}
+          path: ${{ env.LAYERSENTRY_ISO_VERIFY_V2_DIR }}
+          if-no-files-found: error
+          retention-days: 30
