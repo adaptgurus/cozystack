@@ -1,0 +1,326 @@
+name: LayerSentry Hyper-V Preflight V3
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-hyperv-preflight-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Read Hyper-V capacity, NAT, IP and ISO state
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Collect read-only preflight
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Hyper-V -ErrorAction Stop
+
+          function Convert-ToGiB {
+            param([object]$Value)
+            if ($null -eq $Value) { return $null }
+            return [math]::Round(([double]$Value / 1GB), 2)
+          }
+
+          function Invoke-SafeRead {
+            param([scriptblock]$Script)
+            try {
+              return @(& $Script)
+            }
+            catch {
+              Write-Warning $_.Exception.Message
+              return @()
+            }
+          }
+
+          $outDir = Join-Path $env:RUNNER_TEMP 'layersentry-hyperv-preflight-v3'
+          if (Test-Path -LiteralPath $outDir) {
+            Remove-Item -LiteralPath $outDir -Recurse -Force
+          }
+          New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "LAYERSENTRY_PREFLIGHT_V3_DIR=$outDir"
+
+          $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+          $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+          $volumeC = Get-Volume -DriveLetter C -ErrorAction Stop
+
+          $totalMemoryGiB = Convert-ToGiB $computer.TotalPhysicalMemory
+          $freeMemoryGiB = [math]::Round(([double]$operatingSystem.FreePhysicalMemory / 1MB), 2)
+          $volumeCSizeGiB = Convert-ToGiB $volumeC.Size
+          $volumeCFreeGiB = Convert-ToGiB $volumeC.SizeRemaining
+
+          $plannedMemoryGiB = 96
+          $plannedVirtualDiskGiB = 1200
+          $memoryRemainingGiB = [math]::Round(($totalMemoryGiB - $plannedMemoryGiB), 2)
+          $storageRemainingGiB = [math]::Round(($volumeCFreeGiB - $plannedVirtualDiskGiB), 2)
+
+          $memoryStatus = if ($memoryRemainingGiB -ge 20) {
+            'PASS'
+          }
+          elseif ($memoryRemainingGiB -gt 0) {
+            'RISK'
+          }
+          else {
+            'BLOCKED'
+          }
+
+          $storageStatus = if ($storageRemainingGiB -ge 150) {
+            'PASS'
+          }
+          elseif ($storageRemainingGiB -ge 0) {
+            'RISK'
+          }
+          else {
+            'BLOCKED'
+          }
+
+          $switches = @(
+            Get-VMSwitch -ErrorAction Stop | ForEach-Object {
+              [pscustomobject]@{
+                Name = $_.Name
+                SwitchType = [string]$_.SwitchType
+                NetAdapterInterfaceDescription = $_.NetAdapterInterfaceDescription
+                AllowManagementOS = $_.AllowManagementOS
+              }
+            }
+          )
+
+          $natObjects = Invoke-SafeRead {
+            Get-NetNat -ErrorAction Stop | ForEach-Object {
+              [pscustomobject]@{
+                Name = $_.Name
+                InternalIPInterfaceAddressPrefix = $_.InternalIPInterfaceAddressPrefix
+                Active = $_.Active
+              }
+            }
+          }
+
+          $natMappings = Invoke-SafeRead {
+            Get-NetNatStaticMapping -ErrorAction Stop | ForEach-Object {
+              [pscustomobject]@{
+                NatName = $_.NatName
+                Protocol = [string]$_.Protocol
+                ExternalIPAddress = $_.ExternalIPAddress
+                ExternalPort = $_.ExternalPort
+                InternalIPAddress = $_.InternalIPAddress
+                InternalPort = $_.InternalPort
+              }
+            }
+          }
+
+          $ipv4Addresses = Invoke-SafeRead {
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+              Sort-Object InterfaceIndex, IPAddress |
+              ForEach-Object {
+                [pscustomobject]@{
+                  InterfaceAlias = $_.InterfaceAlias
+                  InterfaceIndex = $_.InterfaceIndex
+                  IPAddress = $_.IPAddress
+                  PrefixLength = $_.PrefixLength
+                  PrefixOrigin = [string]$_.PrefixOrigin
+                  AddressState = [string]$_.AddressState
+                }
+              }
+          }
+
+          $defaultRoutes = Invoke-SafeRead {
+            Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+              Sort-Object RouteMetric, InterfaceMetric |
+              ForEach-Object {
+                [pscustomobject]@{
+                  InterfaceAlias = $_.InterfaceAlias
+                  InterfaceIndex = $_.InterfaceIndex
+                  NextHop = $_.NextHop
+                  RouteMetric = $_.RouteMetric
+                  InterfaceMetric = $_.InterfaceMetric
+                  State = [string]$_.State
+                }
+              }
+          }
+
+          $dnsServers = Invoke-SafeRead {
+            Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop |
+              Where-Object { @($_.ServerAddresses).Count -gt 0 } |
+              ForEach-Object {
+                [pscustomobject]@{
+                  InterfaceAlias = $_.InterfaceAlias
+                  InterfaceIndex = $_.InterfaceIndex
+                  ServerAddresses = @($_.ServerAddresses)
+                }
+              }
+          }
+
+          $hostAdapters = Invoke-SafeRead {
+            Get-NetAdapter -ErrorAction Stop | ForEach-Object {
+              [pscustomobject]@{
+                Name = $_.Name
+                InterfaceDescription = $_.InterfaceDescription
+                InterfaceIndex = $_.ifIndex
+                Status = [string]$_.Status
+                LinkSpeed = [string]$_.LinkSpeed
+                MacAddress = $_.MacAddress
+                HardwareInterface = $_.HardwareInterface
+                Virtual = $_.Virtual
+              }
+            }
+          }
+
+          $hyperVFeature = $null
+          if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
+            $feature = Get-WindowsFeature -Name Hyper-V -ErrorAction SilentlyContinue
+            if ($null -ne $feature) {
+              $hyperVFeature = [pscustomobject]@{
+                Name = $feature.Name
+                Installed = $feature.Installed
+                InstallState = [string]$feature.InstallState
+              }
+            }
+          }
+
+          $systemInfoLines = Invoke-SafeRead {
+            systeminfo.exe 2>&1 |
+              Where-Object { $_ -match 'Hyper-V|hypervisor|Virtualization|VM Monitor|Second Level|DEP' }
+          }
+
+          $isoRoots = New-Object System.Collections.Generic.List[string]
+          foreach ($fixedRoot in @('C:\Downloads', 'C:\ISO', 'C:\ISOs', 'C:\Images', 'C:\Hyper-V')) {
+            $isoRoots.Add($fixedRoot)
+          }
+
+          if (Test-Path -LiteralPath 'C:\Users') {
+            foreach ($userDir in @(Get-ChildItem -LiteralPath 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
+              $isoRoots.Add((Join-Path $userDir.FullName 'Downloads'))
+              $isoRoots.Add((Join-Path $userDir.FullName 'Desktop'))
+            }
+          }
+
+          $isoFiles = New-Object System.Collections.Generic.List[object]
+          foreach ($root in @($isoRoots | Select-Object -Unique)) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+              continue
+            }
+
+            $scanDirs = @($root)
+            $scanDirs += @(
+              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                Select-Object -First 100 -ExpandProperty FullName
+            )
+
+            foreach ($directory in @($scanDirs | Select-Object -Unique)) {
+              foreach ($iso in @(Get-ChildItem -LiteralPath $directory -File -Filter '*.iso' -ErrorAction SilentlyContinue)) {
+                $isoFiles.Add([pscustomobject]@{
+                  Name = $iso.Name
+                  FullName = $iso.FullName
+                  SizeGiB = Convert-ToGiB $iso.Length
+                  LastWriteTimeUtc = $iso.LastWriteTimeUtc.ToString('o')
+                })
+              }
+            }
+          }
+          $isoFiles = @($isoFiles | Sort-Object FullName -Unique)
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '3.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            CollectionMode = 'read-only'
+            Host = [pscustomobject]@{
+              ComputerName = $env:COMPUTERNAME
+              OperatingSystem = $operatingSystem.Caption
+              OperatingSystemVersion = $operatingSystem.Version
+              TotalMemoryGiB = $totalMemoryGiB
+              FreeMemoryAtCollectionGiB = $freeMemoryGiB
+              VolumeCSizeGiB = $volumeCSizeGiB
+              VolumeCFreeGiB = $volumeCFreeGiB
+            }
+            RequestedPlan = [pscustomobject]@{
+              NodeCount = 3
+              VCpuPerNode = 10
+              MemoryPerNodeGiB = 32
+              OsDiskPerNodeGiB = 100
+              DataDiskPerNodeGiB = 300
+              PlannedMemoryGiB = $plannedMemoryGiB
+              PlannedVirtualDiskGiB = $plannedVirtualDiskGiB
+            }
+            CapacityAssessment = [pscustomobject]@{
+              MemoryRemainingAfterPlanGiB = $memoryRemainingGiB
+              MemoryStatus = $memoryStatus
+              StorageRemainingAtFullVhdGrowthGiB = $storageRemainingGiB
+              StorageStatus = $storageStatus
+            }
+            HyperVFeature = $hyperVFeature
+            VMSwitches = @($switches)
+            NatObjects = @($natObjects)
+            NatStaticMappings = @($natMappings)
+            IPv4Addresses = @($ipv4Addresses)
+            DefaultRoutes = @($defaultRoutes)
+            DnsServers = @($dnsServers)
+            HostAdapters = @($hostAdapters)
+            SystemInfoHyperVLines = @($systemInfoLines)
+            IsoFiles = @($isoFiles)
+          }
+
+          $jsonPath = Join-Path $outDir 'layersentry-hyperv-preflight-v3.json'
+          $summaryPath = Join-Path $outDir 'layersentry-hyperv-preflight-v3-summary.txt'
+          $hashPath = Join-Path $outDir 'SHA256SUMS.txt'
+
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+          @(
+            'LayerSentry Hyper-V preflight V3'
+            "Collected UTC: $($report.CollectedAtUtc)"
+            "Host: $env:COMPUTERNAME"
+            "OS: $($operatingSystem.Caption) $($operatingSystem.Version)"
+            ''
+            'Requested plan: 3 nodes; each 10 vCPU, 32 GiB RAM, 100 GiB OS disk, 300 GiB data disk'
+            "Host total and free RAM now: $totalMemoryGiB GiB / $freeMemoryGiB GiB"
+            "RAM remaining after the requested plan: $memoryRemainingGiB GiB [$memoryStatus]"
+            "C drive total and free: $volumeCSizeGiB GiB / $volumeCFreeGiB GiB"
+            "Storage remaining if every planned VHDX grows to full size: $storageRemainingGiB GiB [$storageStatus]"
+            ''
+            'Hyper-V switches:'
+            ($switches | Format-Table -AutoSize | Out-String -Width 300)
+            'NAT objects:'
+            ($natObjects | Format-Table -AutoSize | Out-String -Width 300)
+            'IPv4 addresses:'
+            ($ipv4Addresses | Format-Table InterfaceAlias, IPAddress, PrefixLength, PrefixOrigin, AddressState -AutoSize | Out-String -Width 300)
+            'Default routes:'
+            ($defaultRoutes | Format-Table InterfaceAlias, NextHop, RouteMetric, InterfaceMetric, State -AutoSize | Out-String -Width 300)
+            'DNS servers:'
+            ($dnsServers | Format-Table -AutoSize | Out-String -Width 300)
+            'ISO files found:'
+            ($isoFiles | Format-Table Name, SizeGiB, FullName -AutoSize | Out-String -Width 300)
+          ) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+
+          $hashLines = foreach ($file in @(Get-ChildItem -LiteralPath $outDir -File)) {
+            $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $($file.Name)"
+          }
+          $hashLines | Set-Content -LiteralPath $hashPath -Encoding ASCII
+
+          Get-Content -LiteralPath $summaryPath
+
+          @(
+            '# LayerSentry Hyper-V preflight V3'
+            ''
+            "- Memory status: **$memoryStatus**; remaining after plan: $memoryRemainingGiB GiB."
+            "- Storage status: **$storageStatus**; remaining at full VHD growth: $storageRemainingGiB GiB."
+            "- Hyper-V switches: $($switches.Count)."
+            "- NAT objects: $($natObjects.Count)."
+            "- ISO files found: $($isoFiles.Count)."
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Upload preflight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hyperv-preflight-v3-${{ github.run_id }}
+          path: ${{ env.LAYERSENTRY_PREFLIGHT_V3_DIR }}
+          if-no-files-found: error
+          retention-days: 14
