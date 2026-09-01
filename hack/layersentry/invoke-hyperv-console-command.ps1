@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$RequestPath = 'hack/layersentry/console-command.json',
-    [string]$OutputDirectory = (Join-Path $env:RUNNER_TEMP 'layersentry-console-command')
+    [string]$OutputDirectory = (Join-Path $env:RUNNER_TEMP 'layersentry-console-command'),
+    [string]$CredentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
 )
 
 Set-StrictMode -Version Latest
@@ -19,7 +20,6 @@ $tracePath = Join-Path $OutputDirectory 'console-command-trace.txt'
 if (-not (Test-Path -LiteralPath $RequestPath -PathType Leaf)) {
     throw "Console command request not found: $RequestPath"
 }
-
 $request = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($null -eq $request.requestId -or [string]::IsNullOrWhiteSpace([string]$request.requestId)) {
     throw 'requestId is required.'
@@ -29,6 +29,7 @@ if ($null -eq $request.targets -or @($request.targets).Count -eq 0) {
 }
 
 $allowedNames = @('sen1', 'sen2', 'sen3')
+$allowedSecrets = @('nodePassword', 'clusterToken', 'adminPassword')
 $allowedKeyCodes = @(
     8, 9, 13, 27, 32,
     33, 34, 35, 36, 37, 38, 39, 40,
@@ -39,9 +40,100 @@ $allowedKeyCodes = @(
     112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123
 )
 
+$credentials = $null
+function Get-CredentialValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if ($allowedSecrets -notcontains $Name) {
+        throw "Secret reference is not permitted: $Name"
+    }
+    if ($null -eq $script:credentials) {
+        if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) {
+            throw "Bootstrap credential file not found: $CredentialPath"
+        }
+        $script:credentials = Get-Content -LiteralPath $CredentialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    $property = $script:credentials.PSObject.Properties[$Name]
+    if ($null -eq $property -or [string]::IsNullOrEmpty([string]$property.Value)) {
+        throw "Bootstrap credential field is missing: $Name"
+    }
+    return [string]$property.Value
+}
+
+function Get-Keyboard {
+    param([Parameter(Mandatory = $true)][string]$VMName)
+
+    $escapedName = $VMName.Replace("'", "''")
+    $vmcs = Get-CimInstance `
+        -Namespace 'root/virtualization/v2' `
+        -ClassName 'Msvm_ComputerSystem' `
+        -Filter "ElementName='$escapedName'" `
+        -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $vmcs) {
+        throw "Msvm_ComputerSystem not found for $VMName"
+    }
+    $keyboard = Get-CimAssociatedInstance `
+        -InputObject $vmcs `
+        -ResultClassName 'Msvm_Keyboard' `
+        -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $keyboard) {
+        throw "Msvm_Keyboard not found for $VMName"
+    }
+    return $keyboard
+}
+
+function Send-Key {
+    param(
+        [Parameter(Mandatory = $true)]$Keyboard,
+        [Parameter(Mandatory = $true)][string]$VMName,
+        [Parameter(Mandatory = $true)][uint32]$Code
+    )
+
+    if ($allowedKeyCodes -notcontains [int]$Code) {
+        throw "Virtual key code $Code is not permitted."
+    }
+    $response = Invoke-CimMethod `
+        -InputObject $Keyboard `
+        -MethodName 'TypeKey' `
+        -Arguments @{ keyCode = $Code } `
+        -ErrorAction Stop
+    $returnValue = [uint32]$response.ReturnValue
+    if ($returnValue -ne 0) {
+        throw "TypeKey($Code) failed for $VMName with return value $returnValue"
+    }
+    Start-Sleep -Milliseconds 300
+}
+
+function Send-Text {
+    param(
+        [Parameter(Mandatory = $true)]$Keyboard,
+        [Parameter(Mandatory = $true)][string]$VMName,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][bool]$Secret
+    )
+
+    if ($Value.Length -gt 512) {
+        throw "Text payload for $VMName is longer than 512 characters."
+    }
+    if ($Value -match '[\r\n]') {
+        throw "Text payload for $VMName may not contain newlines."
+    }
+    $response = Invoke-CimMethod `
+        -InputObject $Keyboard `
+        -MethodName 'TypeText' `
+        -Arguments @{ asciiText = $Value } `
+        -ErrorAction Stop
+    $returnValue = [uint32]$response.ReturnValue
+    if ($returnValue -ne 0) {
+        throw "TypeText failed for $VMName with return value $returnValue"
+    }
+    $kind = if ($Secret) { 'secret' } else { 'text' }
+    "sent-$kind vm=$VMName chars=$($Value.Length)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
+    Start-Sleep -Milliseconds 300
+}
+
 $results = @()
 $fatalError = $null
-
 try {
     foreach ($target in $request.targets) {
         $name = [string]$target.vm
@@ -53,81 +145,59 @@ try {
         if ($vm.State -ne 'Running') {
             throw "VM $name is not Running. Current state: $($vm.State)"
         }
+        $keyboard = Get-Keyboard -VMName $name
+        $actionResults = @()
 
-        $escapedName = $name.Replace("'", "''")
-        $vmcs = Get-CimInstance `
-            -Namespace 'root/virtualization/v2' `
-            -ClassName 'Msvm_ComputerSystem' `
-            -Filter "ElementName='$escapedName'" `
-            -ErrorAction Stop | Select-Object -First 1
-        if ($null -eq $vmcs) {
-            throw "Msvm_ComputerSystem not found for $name"
+        if ($target.PSObject.Properties['actions']) {
+            foreach ($action in $target.actions) {
+                $kind = ([string]$action.kind).ToLowerInvariant()
+                switch ($kind) {
+                    'key' {
+                        $code = [uint32]$action.code
+                        Send-Key -Keyboard $keyboard -VMName $name -Code $code
+                        $actionResults += [pscustomobject]@{ Kind = 'key'; Code = [int]$code; Status = 'success' }
+                    }
+                    'text' {
+                        $value = [string]$action.value
+                        Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $false
+                        $actionResults += [pscustomobject]@{ Kind = 'text'; CharacterCount = $value.Length; Status = 'success' }
+                    }
+                    'secret' {
+                        $secretName = [string]$action.name
+                        $value = Get-CredentialValue -Name $secretName
+                        Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $true
+                        $actionResults += [pscustomobject]@{ Kind = 'secret'; Name = $secretName; CharacterCount = $value.Length; Status = 'success' }
+                    }
+                    'sleep' {
+                        $milliseconds = [int]$action.milliseconds
+                        if ($milliseconds -lt 0 -or $milliseconds -gt 10000) {
+                            throw 'Action sleep must be between 0 and 10000 milliseconds.'
+                        }
+                        Start-Sleep -Milliseconds $milliseconds
+                        $actionResults += [pscustomobject]@{ Kind = 'sleep'; Milliseconds = $milliseconds; Status = 'success' }
+                    }
+                    default {
+                        throw "Unsupported console action kind: $kind"
+                    }
+                }
+            }
         }
-        "vmcs=$($vmcs.CimSystemProperties.Path)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-
-        $keyboard = Get-CimAssociatedInstance `
-            -InputObject $vmcs `
-            -ResultClassName 'Msvm_Keyboard' `
-            -ErrorAction Stop | Select-Object -First 1
-        if ($null -eq $keyboard) {
-            throw "Msvm_Keyboard not found for $name"
-        }
-        "keyboard=$($keyboard.CimSystemProperties.Path)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-
-        $keyResults = @()
-        foreach ($rawKey in $target.keys) {
-            $key = [uint32]$rawKey
-            if ($allowedKeyCodes -notcontains [int]$key) {
-                throw "Virtual key code $key is not permitted."
+        else {
+            foreach ($rawKey in $target.keys) {
+                $code = [uint32]$rawKey
+                Send-Key -Keyboard $keyboard -VMName $name -Code $code
+                $actionResults += [pscustomobject]@{ Kind = 'key'; Code = [int]$code; Status = 'success' }
             }
-            "before-TypeKey vm=$name key=$key" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-            $response = Invoke-CimMethod `
-                -InputObject $keyboard `
-                -MethodName 'TypeKey' `
-                -Arguments @{ keyCode = $key } `
-                -ErrorAction Stop
-            $returnValue = [uint32]$response.ReturnValue
-            "after-TypeKey vm=$name key=$key return=$returnValue" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-            if ($returnValue -ne 0) {
-                throw "TypeKey($key) failed for $name with return value $returnValue"
-            }
-            $keyResults += [pscustomobject]@{
-                KeyCode = [int]$key
-                ReturnValue = [int]$returnValue
-            }
-            Start-Sleep -Milliseconds 350
-        }
-
-        $textResult = $null
-        if ($target.PSObject.Properties['text'] -and -not [string]::IsNullOrEmpty([string]$target.text)) {
-            $text = [string]$target.text
-            if ($text.Length -gt 512) {
-                throw "Text payload for $name is longer than 512 characters."
-            }
-            if ($text -match '[\r\n]') {
-                throw "Text payload for $name may not contain newlines."
-            }
-            "before-TypeText vm=$name length=$($text.Length)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-            $response = Invoke-CimMethod `
-                -InputObject $keyboard `
-                -MethodName 'TypeText' `
-                -Arguments @{ asciiText = $text } `
-                -ErrorAction Stop
-            $returnValue = [uint32]$response.ReturnValue
-            "after-TypeText vm=$name return=$returnValue" | Add-Content -LiteralPath $tracePath -Encoding UTF8
-            if ($returnValue -ne 0) {
-                throw "TypeText failed for $name with return value $returnValue"
-            }
-            $textResult = [pscustomobject]@{
-                CharacterCount = $text.Length
-                ReturnValue = [int]$returnValue
+            if ($target.PSObject.Properties['text'] -and -not [string]::IsNullOrEmpty([string]$target.text)) {
+                $value = [string]$target.text
+                Send-Text -Keyboard $keyboard -VMName $name -Value $value -Secret $false
+                $actionResults += [pscustomobject]@{ Kind = 'text'; CharacterCount = $value.Length; Status = 'success' }
             }
         }
 
         $results += [pscustomobject]@{
             VM = $name
-            Keys = $keyResults
-            Text = $textResult
+            Actions = $actionResults
             StateAfter = [string](Get-VM -Name $name).State
         }
     }
@@ -147,24 +217,23 @@ catch {
 }
 finally {
     $report = [pscustomobject]@{
-        SchemaVersion = '1.3'
+        SchemaVersion = '2.0'
         RequestId = [string]$request.requestId
         ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         Host = $env:COMPUTERNAME
+        CredentialPathUsed = if ($null -ne $credentials) { $CredentialPath } else { $null }
         Results = $results
         FatalError = $fatalError
     }
-    $report | ConvertTo-Json -Depth 12 |
+    $report | ConvertTo-Json -Depth 15 |
         Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.json') -Encoding UTF8
-
     @(
         'LayerSentry Hyper-V console command'
         "Request ID: $($report.RequestId)"
         "Executed UTC: $($report.ExecutedAtUtc)"
         "Fatal error: $fatalError"
-        ($results | Format-Table -AutoSize | Out-String -Width 300)
+        ($results | Select-Object VM, StateAfter | Format-Table -AutoSize | Out-String -Width 300)
     ) | Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt') -Encoding UTF8
-
     Get-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt')
 }
 
