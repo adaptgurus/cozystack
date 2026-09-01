@@ -1,0 +1,9 @@
+{
+  "requestId": "hardware-check-accept-20260901-01",
+  "delayAfterSeconds": 8,
+  "targets": [
+    {"vm": "sen1", "keys": [13]},
+    {"vm": "sen2", "keys": [13]},
+    {"vm": "sen3", "keys": [13]}
+  ]
+}
