@@ -1,9 +1,29 @@
 {
-  "requestId": "hardware-check-accept-20260901-01",
-  "delayAfterSeconds": 8,
+  "requestId": "configure-sen1-password-and-select-join-20260901-02",
+  "delayAfterSeconds": 10,
   "targets": [
-    {"vm": "sen1", "keys": [13]},
-    {"vm": "sen2", "keys": [13]},
-    {"vm": "sen3", "keys": [13]}
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 9},
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13}
+      ]
+    }
   ]
 }
