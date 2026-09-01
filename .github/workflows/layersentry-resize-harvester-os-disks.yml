@@ -1,0 +1,86 @@
+name: LayerSentry Resize Harvester OS Disks
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-resize-harvester-os-disks.yml
+      - hack/layersentry/resize-harvester-os-disks.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-resize-harvester-os-disks
+  cancel-in-progress: false
+
+jobs:
+  resize:
+    name: Stop nodes resize OS disks to 250 GiB restart and capture installer
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout exact disk-correction and capture scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relative in @(
+            'hack/layersentry/resize-harvester-os-disks.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+      - name: Resize all installation disks and restart nodes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-resize-os-disks'
+          & 'hack/layersentry/resize-harvester-os-disks.ps1' `
+            -VmRoot 'C:\Hyper-V\LayerSentry' `
+            -RequiredOsDiskBytes 250GB `
+            -EvidenceDirectory $evidence
+
+      - name: Capture installer state after disk correction
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $capture = Join-Path $env:RUNNER_TEMP 'layersentry-console-after-os-resize'
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory $capture
+
+      - name: Upload disk-correction and console evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-os-disk-correction-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\layersentry-resize-os-disks
+            ${{ runner.temp }}\layersentry-console-after-os-resize
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
