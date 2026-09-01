@@ -1,0 +1,86 @@
+name: LayerSentry Host ISO SHA512 Check
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-host-iso-sha512-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the ISO against its adjacent SHA-512 manifest
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Compare calculated and recorded SHA-512 values
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $isoPath = 'C:\Users\opc\Downloads\final iso\layersentry-v1.0-amd64.iso'
+          $manifestPath = "$isoPath.sha512"
+
+          if (-not (Test-Path -LiteralPath $isoPath -PathType Leaf)) {
+            throw "Missing ISO: $isoPath"
+          }
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Missing SHA-512 manifest: $manifestPath"
+          }
+
+          $manifestText = [System.IO.File]::ReadAllText($manifestPath).Trim()
+          if ($manifestText -notmatch '^(?<hash>[0-9A-Fa-f]{128})\s+.+$') {
+            throw 'The SHA-512 sidecar does not have a valid sha512sum format.'
+          }
+
+          $expected = $Matches['hash'].ToLowerInvariant()
+          $actual = (Get-FileHash -LiteralPath $isoPath -Algorithm SHA512 -ErrorAction Stop).Hash.ToLowerInvariant()
+          $matches = $actual -eq $expected
+
+          $outDir = Join-Path $env:RUNNER_TEMP 'layersentry-host-iso-sha512-check'
+          if (Test-Path -LiteralPath $outDir) {
+            Remove-Item -LiteralPath $outDir -Recurse -Force
+          }
+          New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "LAYERSENTRY_SHA512_CHECK_DIR=$outDir"
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '1.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            IsoPath = $isoPath
+            ManifestPath = $manifestPath
+            ExpectedSha512 = $expected
+            ActualSha512 = $actual
+            Match = $matches
+            VerificationMode = 'read-only-no-mount'
+          }
+
+          $report | ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath (Join-Path $outDir 'sha512-verification.json') -Encoding UTF8
+          @(
+            'LayerSentry ISO SHA-512 verification'
+            "ISO: $isoPath"
+            "Expected: $expected"
+            "Actual:   $actual"
+            "Match:    $matches"
+          ) | Set-Content -LiteralPath (Join-Path $outDir 'sha512-verification.txt') -Encoding UTF8
+
+          Get-Content -LiteralPath (Join-Path $outDir 'sha512-verification.txt')
+
+          if (-not $matches) {
+            throw 'The ISO SHA-512 does not match its adjacent sidecar.'
+          }
+
+      - name: Upload SHA-512 verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-host-iso-sha512-check-${{ github.run_id }}
+          path: ${{ env.LAYERSENTRY_SHA512_CHECK_DIR }}
+          if-no-files-found: error
+          retention-days: 30
