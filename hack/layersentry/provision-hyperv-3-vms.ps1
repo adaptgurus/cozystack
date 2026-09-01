@@ -30,9 +30,7 @@ $StartDelays = @{
 
 function Convert-ToGiB {
     param([AllowNull()][object]$Bytes)
-    if ($null -eq $Bytes) {
-        return $null
-    }
+    if ($null -eq $Bytes) { return $null }
     return [math]::Round(([double]$Bytes / 1GB), 4)
 }
 
@@ -42,7 +40,7 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-VMProvisioningEvidence {
+function Get-NodeEvidence {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     $vm = Get-VM -Name $Name -ErrorAction SilentlyContinue
@@ -56,29 +54,19 @@ function Get-VMProvisioningEvidence {
 
     $processor = Get-VMProcessor -VMName $Name -ErrorAction Stop
     $memory = Get-VMMemory -VMName $Name -ErrorAction Stop
-    $network = Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop
     $firmware = Get-VMFirmware -VMName $Name -ErrorAction Stop
-    $dvd = Get-VMDvdDrive -VMName $Name -ErrorAction SilentlyContinue
-
+    $adapter = Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop | Select-Object -First 1
+    $dvd = Get-VMDvdDrive -VMName $Name -ErrorAction SilentlyContinue | Select-Object -First 1
     $hardDisks = foreach ($drive in @(Get-VMHardDiskDrive -VMName $Name -ErrorAction Stop)) {
-        $vhd = $null
-        $inspectionError = $null
-        try {
-            $vhd = Get-VHD -Path $drive.Path -ErrorAction Stop
-        }
-        catch {
-            $inspectionError = $_.Exception.Message
-        }
-
+        $vhd = Get-VHD -Path $drive.Path -ErrorAction Stop
         [pscustomobject]@{
             Path = $drive.Path
             ControllerType = [string]$drive.ControllerType
             ControllerNumber = $drive.ControllerNumber
             ControllerLocation = $drive.ControllerLocation
-            VhdType = if ($null -ne $vhd) { [string]$vhd.VhdType } else { $null }
-            VirtualSizeGiB = if ($null -ne $vhd) { Convert-ToGiB $vhd.Size } else { $null }
-            FileSizeGiB = if ($null -ne $vhd) { Convert-ToGiB $vhd.FileSize } else { $null }
-            InspectionError = $inspectionError
+            VhdType = [string]$vhd.VhdType
+            VirtualSizeGiB = Convert-ToGiB $vhd.Size
+            FileSizeGiB = Convert-ToGiB $vhd.FileSize
         }
     }
 
@@ -88,42 +76,24 @@ function Get-VMProvisioningEvidence {
         State = [string]$vm.State
         Status = $vm.Status
         Generation = [int]$vm.Generation
-        Version = [string]$vm.Version
-        ConfigurationPath = $vm.Path
-        Uptime = [string]$vm.Uptime
         VCPU = $processor.Count
-        ExposeVirtualizationExtensions = $processor.ExposeVirtualizationExtensions
-        DynamicMemoryEnabled = $memory.DynamicMemoryEnabled
+        StaticMemory = (-not $memory.DynamicMemoryEnabled)
         StartupMemoryGiB = Convert-ToGiB $memory.Startup
         AssignedMemoryGiB = Convert-ToGiB $vm.MemoryAssigned
+        NestedVirtualization = $processor.ExposeVirtualizationExtensions
         SecureBoot = [string]$firmware.SecureBoot
         CheckpointType = [string]$vm.CheckpointType
         AutomaticStartAction = [string]$vm.AutomaticStartAction
         AutomaticStartDelaySeconds = $vm.AutomaticStartDelay
         AutomaticStopAction = [string]$vm.AutomaticStopAction
-        PlannedNodeAddress = $NodeAddresses[$Name]
-        PlannedClusterVip = $ClusterVip
-        Network = [pscustomobject]@{
-            SwitchName = $network.SwitchName
-            Status = [string]$network.Status
-            Connected = $network.Connected
-            MacAddress = $network.MacAddress
-            MacAddressSpoofing = [string]$network.MacAddressSpoofing
-            DhcpGuard = [string]$network.DhcpGuard
-            RouterGuard = [string]$network.RouterGuard
-            IPAddresses = @($network.IPAddresses)
-        }
+        SwitchName = $adapter.SwitchName
+        NetworkStatus = [string]$adapter.Status
+        MacAddress = $adapter.MacAddress
+        MacAddressSpoofing = [string]$adapter.MacAddressSpoofing
+        PlannedAddress = $NodeAddresses[$Name]
+        PlannedVip = $ClusterVip
         HardDisks = @($hardDisks)
-        DVD = if ($null -ne $dvd) {
-            [pscustomobject]@{
-                Path = $dvd.Path
-                ControllerNumber = $dvd.ControllerNumber
-                ControllerLocation = $dvd.ControllerLocation
-            }
-        }
-        else {
-            $null
-        }
+        DvdPath = if ($null -ne $dvd) { $dvd.Path } else { $null }
         Notes = $vm.Notes
     }
 }
@@ -134,21 +104,20 @@ if (Test-Path -LiteralPath $EvidenceDirectory) {
 New-Item -Path $EvidenceDirectory -ItemType Directory -Force | Out-Null
 $EvidenceDirectory = (Resolve-Path -LiteralPath $EvidenceDirectory).ProviderPath
 
-$CreatedNames = New-Object System.Collections.Generic.List[string]
-$ExistingExpectedNames = New-Object System.Collections.Generic.List[string]
-$StartFailures = New-Object System.Collections.Generic.List[string]
+$Created = New-Object System.Collections.Generic.List[string]
+$Reused = New-Object System.Collections.Generic.List[string]
+$Started = New-Object System.Collections.Generic.List[string]
 $FatalError = $null
 $ActualSha256 = $null
 $ActualSha512 = $null
-$TotalMemoryGiB = $null
-$FreeMemoryBeforeGiB = $null
-$FreeMemoryAfterGiB = $null
-$FreeStorageBeforeGiB = $null
-$FreeStorageAfterGiB = $null
+$FreeMemoryBefore = $null
+$FreeMemoryAfter = $null
+$FreeStorageBefore = $null
+$FreeStorageAfter = $null
 
 try {
     if (-not (Test-IsAdministrator)) {
-        throw 'The runner identity is not a local administrator.'
+        throw 'The GitHub runner identity is not a local administrator.'
     }
 
     $vmms = Get-Service -Name vmms -ErrorAction Stop
@@ -161,51 +130,44 @@ try {
     }
     $sha512Path = "$IsoPath.sha512"
     if (-not (Test-Path -LiteralPath $sha512Path -PathType Leaf)) {
-        throw "LayerSentry ISO SHA-512 sidecar not found: $sha512Path"
+        throw "LayerSentry SHA-512 sidecar not found: $sha512Path"
     }
 
     $ActualSha256 = (Get-FileHash -LiteralPath $IsoPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($ActualSha256 -ne $ExpectedSha256) {
-        throw "ISO SHA-256 mismatch. Expected $ExpectedSha256 but found $ActualSha256"
+        throw "ISO SHA-256 mismatch: $ActualSha256"
     }
 
     $sidecarText = [System.IO.File]::ReadAllText($sha512Path).Trim()
     if ($sidecarText -notmatch '^(?<hash>[0-9A-Fa-f]{128})\s+.+$') {
-        throw 'The ISO SHA-512 sidecar is not in sha512sum format.'
+        throw 'The SHA-512 sidecar is not in sha512sum format.'
     }
-    $sidecarSha512 = $Matches['hash'].ToLowerInvariant()
+    $sidecarHash = $Matches['hash'].ToLowerInvariant()
     $ActualSha512 = (Get-FileHash -LiteralPath $IsoPath -Algorithm SHA512).Hash.ToLowerInvariant()
-    if ($sidecarSha512 -ne $ExpectedSha512 -or $ActualSha512 -ne $ExpectedSha512) {
+    if ($sidecarHash -ne $ExpectedSha512 -or $ActualSha512 -ne $ExpectedSha512) {
         throw 'ISO SHA-512 verification failed.'
     }
 
     $switch = Get-VMSwitch -Name $SwitchName -ErrorAction Stop
     if ([string]$switch.SwitchType -ne 'Internal') {
-        throw "Hyper-V switch $SwitchName is not Internal."
+        throw "$SwitchName is not an Internal Hyper-V switch."
     }
-
     $nat = Get-NetNat -Name $NatName -ErrorAction Stop
     if ($nat.InternalIPInterfaceAddressPrefix -ne $NatPrefix) {
-        throw "NAT $NatName uses $($nat.InternalIPInterfaceAddressPrefix); expected $NatPrefix."
+        throw "$NatName uses $($nat.InternalIPInterfaceAddressPrefix), expected $NatPrefix."
     }
-
     $gatewayAddress = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $Gateway -ErrorAction Stop
     if ($gatewayAddress.PrefixLength -ne 24) {
-        throw "NAT gateway $Gateway does not use prefix length 24."
+        throw "$Gateway does not use prefix length 24."
     }
 
-    $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-    $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-    $volumeC = Get-Volume -DriveLetter C -ErrorAction Stop
-    $TotalMemoryGiB = Convert-ToGiB $computer.TotalPhysicalMemory
-    $FreeMemoryBeforeGiB = [math]::Round(([double]$operatingSystem.FreePhysicalMemory / 1MB), 4)
-    $FreeStorageBeforeGiB = Convert-ToGiB $volumeC.SizeRemaining
-
-    if ($FreeMemoryBeforeGiB -lt 96) {
-        throw "Less than the required 96 GiB free RAM is available: $FreeMemoryBeforeGiB GiB"
+    $FreeMemoryBefore = [math]::Round(((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB), 4)
+    $FreeStorageBefore = Convert-ToGiB ((Get-Volume -DriveLetter C).SizeRemaining)
+    if ($FreeMemoryBefore -lt 96) {
+        throw "Less than 96 GiB free RAM is available: $FreeMemoryBefore GiB"
     }
-    if ($FreeStorageBeforeGiB -lt 100) {
-        throw "Less than 100 GiB physical storage is free for sparse VHDX creation: $FreeStorageBeforeGiB GiB"
+    if ($FreeStorageBefore -lt 100) {
+        throw "Less than 100 GiB physical storage is free: $FreeStorageBefore GiB"
     }
 
     New-Item -Path $VmRoot -ItemType Directory -Force | Out-Null
@@ -219,29 +181,28 @@ try {
 
         if ($null -eq $vm) {
             New-Item -Path $vhdDirectory -ItemType Directory -Force | Out-Null
-            if ((Test-Path -LiteralPath $osDiskPath) -or (Test-Path -LiteralPath $dataDiskPath)) {
-                throw "VHDX files exist without VM $name in $vhdDirectory. Manual review is required."
+            if (Test-Path -LiteralPath $osDiskPath) {
+                throw "OS disk exists without VM $name: $osDiskPath"
             }
-
             New-VM -Name $name -Generation 2 -Path $vmBase `
                 -MemoryStartupBytes 32GB `
                 -NewVHDPath $osDiskPath `
                 -NewVHDSizeBytes 100GB `
                 -SwitchName $SwitchName | Out-Null
-            $CreatedNames.Add($name)
+            $Created.Add($name)
         }
         else {
             if ([int]$vm.Generation -ne 2) {
-                throw "Existing VM $name is not Generation 2. Refusing to modify it."
+                throw "Existing VM $name is not Generation 2."
             }
-            $attachedPaths = @(Get-VMHardDiskDrive -VMName $name -ErrorAction Stop | Select-Object -ExpandProperty Path)
-            if ($attachedPaths -notcontains $osDiskPath) {
-                throw "Existing VM $name is not attached to expected OS disk $osDiskPath."
+            $attachedOsDisks = @(Get-VMHardDiskDrive -VMName $name -ErrorAction Stop | Select-Object -ExpandProperty Path)
+            if ($attachedOsDisks -notcontains $osDiskPath) {
+                throw "Existing VM $name does not use expected OS disk $osDiskPath."
             }
-            $ExistingExpectedNames.Add($name)
             if ($vm.State -ne 'Off') {
                 Stop-VM -Name $name -TurnOff -Force -ErrorAction Stop
             }
+            $Reused.Add($name)
         }
 
         Set-VMProcessor -VMName $name -Count 10 -ExposeVirtualizationExtensions $true
@@ -253,8 +214,17 @@ try {
             -AutomaticStartDelay $StartDelays[$name] `
             -AutomaticStopAction ShutDown
         Set-VMFirmware -VMName $name -EnableSecureBoot Off
-        Set-VMNetworkAdapter -VMName $name `
-            -SwitchName $SwitchName `
+
+        $adapter = Get-VMNetworkAdapter -VMName $name -ErrorAction Stop | Select-Object -First 1
+        if ($null -eq $adapter) {
+            Add-VMNetworkAdapter -VMName $name -SwitchName $SwitchName -Name 'Network Adapter'
+            $adapter = Get-VMNetworkAdapter -VMName $name -ErrorAction Stop | Select-Object -First 1
+        }
+        if ($adapter.SwitchName -ne $SwitchName) {
+            $adapter | Connect-VMNetworkAdapter -SwitchName $SwitchName
+        }
+        $adapter = Get-VMNetworkAdapter -VMName $name -ErrorAction Stop | Select-Object -First 1
+        $adapter | Set-VMNetworkAdapter `
             -MacAddressSpoofing On `
             -DhcpGuard Off `
             -RouterGuard Off
@@ -267,7 +237,7 @@ try {
             Add-VMHardDiskDrive -VMName $name -ControllerType SCSI -Path $dataDiskPath
         }
 
-        $dvd = Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue
+        $dvd = Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $dvd) {
             $dvd = Add-VMDvdDrive -VMName $name -Path $IsoPath -Passthru
         }
@@ -276,7 +246,7 @@ try {
                 -ControllerNumber $dvd.ControllerNumber `
                 -ControllerLocation $dvd.ControllerLocation `
                 -Path $IsoPath
-            $dvd = Get-VMDvdDrive -VMName $name -ErrorAction Stop
+            $dvd = Get-VMDvdDrive -VMName $name -ErrorAction Stop | Select-Object -First 1
         }
         Set-VMFirmware -VMName $name -FirstBootDevice $dvd
 
@@ -284,7 +254,7 @@ try {
             'LayerSentry v1.0 POC node'
             'Embedded platform target: Harvester v1.8.2'
             "Planned node IP: $($NodeAddresses[$name])"
-            "Cluster VIP plan: $ClusterVip"
+            "Cluster VIP: $ClusterVip"
             "Gateway: $Gateway"
             "ISO SHA-256: $ExpectedSha256"
             "Provisioned by GitHub Actions run $env:GITHUB_RUN_ID"
@@ -293,22 +263,17 @@ try {
     }
 
     foreach ($name in $VmNames) {
-        try {
-            Start-VM -Name $name -ErrorAction Stop | Out-Null
-            $deadline = (Get-Date).AddMinutes(3)
-            do {
-                Start-Sleep -Seconds 3
-                $state = (Get-VM -Name $name -ErrorAction Stop).State
-            } while ($state -ne 'Running' -and (Get-Date) -lt $deadline)
-
-            if ($state -ne 'Running') {
-                throw "VM did not reach Running state; current state is $state"
-            }
-            Start-Sleep -Seconds 15
+        Start-VM -Name $name -ErrorAction Stop | Out-Null
+        $deadline = (Get-Date).AddMinutes(3)
+        do {
+            Start-Sleep -Seconds 3
+            $state = (Get-VM -Name $name -ErrorAction Stop).State
+        } while ($state -ne 'Running' -and (Get-Date) -lt $deadline)
+        if ($state -ne 'Running') {
+            throw "$name did not reach Running state; current state: $state"
         }
-        catch {
-            $StartFailures.Add("${name}: $($_.Exception.Message)")
-        }
+        $Started.Add($name)
+        Start-Sleep -Seconds 12
     }
 }
 catch {
@@ -316,17 +281,15 @@ catch {
 }
 finally {
     try {
-        $FreeMemoryAfterGiB = [math]::Round(((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB), 4)
-        $FreeStorageAfterGiB = Convert-ToGiB ((Get-Volume -DriveLetter C).SizeRemaining)
+        $FreeMemoryAfter = [math]::Round(((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB), 4)
+        $FreeStorageAfter = Convert-ToGiB ((Get-Volume -DriveLetter C).SizeRemaining)
     }
     catch {
-        # Evidence fields remain null when host telemetry is unavailable.
+        # Leave unavailable telemetry fields null.
     }
 
-    $vmEvidence = foreach ($name in $VmNames) {
-        try {
-            Get-VMProvisioningEvidence -Name $name
-        }
+    $Nodes = foreach ($name in $VmNames) {
+        try { Get-NodeEvidence -Name $name }
         catch {
             [pscustomobject]@{
                 Name = $name
@@ -336,10 +299,10 @@ finally {
             }
         }
     }
+    $AllRunning = @($Nodes | Where-Object { -not $_.Exists -or $_.State -ne 'Running' }).Count -eq 0
 
-    $allRunning = @($vmEvidence | Where-Object { -not $_.Exists -or $_.State -ne 'Running' }).Count -eq 0
-    $report = [pscustomobject]@{
-        SchemaVersion = '1.0'
+    $Report = [pscustomobject]@{
+        SchemaVersion = '2.0'
         CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         Operation = 'create-configure-start-three-layer-sentry-vms'
         AuthorizedByUser = $true
@@ -352,17 +315,16 @@ finally {
         }
         Host = [pscustomobject]@{
             ComputerName = $env:COMPUTERNAME
-            TotalMemoryGiB = $TotalMemoryGiB
-            FreeMemoryBeforeGiB = $FreeMemoryBeforeGiB
-            FreeMemoryAfterGiB = $FreeMemoryAfterGiB
-            FreeStorageBeforeGiB = $FreeStorageBeforeGiB
-            FreeStorageAfterGiB = $FreeStorageAfterGiB
+            FreeMemoryBeforeGiB = $FreeMemoryBefore
+            FreeMemoryAfterGiB = $FreeMemoryAfter
+            FreeStorageBeforeGiB = $FreeStorageBefore
+            FreeStorageAfterGiB = $FreeStorageAfter
         }
-        CapacityRisk = [pscustomobject]@{
-            RequestedStaticVmMemoryGiB = 96
-            RequestedMaximumVirtualDiskGiB = 1200
-            MemoryReserveRiskAcceptedByUser = $true
-            DynamicVhdxFullGrowthRiskAcceptedByUser = $true
+        AcceptedCapacityRisk = [pscustomobject]@{
+            StaticVmMemoryTotalGiB = 96
+            MaximumVirtualDiskCapacityGiB = 1200
+            LowHostMemoryReserve = $true
+            DynamicVhdxMayExceedCurrentFreeStorageAtFullGrowth = $true
         }
         NetworkPlan = [pscustomobject]@{
             Switch = $SwitchName
@@ -380,57 +342,48 @@ finally {
             IntegrityVerified = ($ActualSha256 -eq $ExpectedSha256 -and $ActualSha512 -eq $ExpectedSha512)
             Classification = 'POC_CANDIDATE_NOT_PRODUCTION_APPROVED'
         }
-        CreatedVMs = @($CreatedNames)
-        ReusedExpectedVMs = @($ExistingExpectedNames)
-        VirtualMachines = @($vmEvidence)
-        StartFailures = @($StartFailures)
+        CreatedVMs = @($Created)
+        ReusedVMs = @($Reused)
+        StartedVMs = @($Started)
+        VirtualMachines = @($Nodes)
+        AllRunning = $AllRunning
         FatalError = $FatalError
-        AllRunning = $allRunning
-        InstallationPerformed = $false
+        InstallerBootRequested = $true
+        InstallationCompleted = $false
         RuntimeQualified = $false
-        ReleaseApproved = $false
+        ProductionIsoApproved = $false
     }
 
     $jsonPath = Join-Path $EvidenceDirectory 'layersentry-three-vm-provisioning.json'
     $summaryPath = Join-Path $EvidenceDirectory 'layersentry-three-vm-provisioning.txt'
-    $report | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-
+    $Report | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
     @(
-        'LayerSentry three-VM Hyper-V provisioning'
-        "Collected UTC: $($report.CollectedAtUtc)"
+        'LayerSentry three-node Hyper-V provisioning'
         "Host: $env:COMPUTERNAME"
         "ISO: $IsoPath"
         "ISO SHA-256: $ActualSha256"
-        "Created VMs: $($CreatedNames -join ', ')"
-        "Reused expected VMs: $($ExistingExpectedNames -join ', ')"
-        "All VMs running: $allRunning"
-        "Free RAM before and after: $FreeMemoryBeforeGiB / $FreeMemoryAfterGiB GiB"
-        "Free C drive before and after: $FreeStorageBeforeGiB / $FreeStorageAfterGiB GiB"
+        "Created VMs: $($Created -join ', ')"
+        "Reused VMs: $($Reused -join ', ')"
+        "Started VMs: $($Started -join ', ')"
+        "All running: $AllRunning"
+        "Free RAM before / after: $FreeMemoryBefore / $FreeMemoryAfter GiB"
+        "Free storage before / after: $FreeStorageBefore / $FreeStorageAfter GiB"
         "Fatal error: $FatalError"
-        "Start failures: $($StartFailures -join '; ')"
         ''
-        ($vmEvidence | Select-Object Name, Exists, State, Generation, VCPU, StartupMemoryGiB, DynamicMemoryEnabled, ExposeVirtualizationExtensions, SecureBoot, PlannedNodeAddress |
+        ($Nodes | Select-Object Name, Exists, State, Generation, VCPU, StaticMemory, StartupMemoryGiB, NestedVirtualization, SecureBoot, SwitchName, PlannedAddress |
             Format-Table -AutoSize | Out-String -Width 300)
-        'The VMs boot the verified candidate ISO. Installation is not yet confirmed.'
-        'Production approval remains false.'
+        'Installer boot was requested. Installation and production qualification remain pending.'
     ) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 
-    $hashLines = foreach ($file in @(Get-ChildItem -LiteralPath $EvidenceDirectory -File)) {
+    $HashLines = foreach ($file in @(Get-ChildItem -LiteralPath $EvidenceDirectory -File)) {
         $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
         "$($hash.Hash.ToLowerInvariant())  $($file.Name)"
     }
-    $hashLines | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'SHA256SUMS.txt') -Encoding ASCII
+    $HashLines | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'SHA256SUMS.txt') -Encoding ASCII
     Get-Content -LiteralPath $summaryPath
 }
 
-if ($null -ne $FatalError) {
-    throw $FatalError
-}
-if ($StartFailures.Count -gt 0) {
-    throw "One or more VMs failed to start: $($StartFailures -join '; ')"
-}
-if (-not $allRunning) {
-    throw 'Not all three VMs are Running.'
-}
+if ($null -ne $FatalError) { throw $FatalError }
+if (-not $AllRunning) { throw 'Not all three LayerSentry VMs are Running.' }
 
 Write-Host 'LAYERSENTRY THREE-VM PROVISIONING: PASS'
