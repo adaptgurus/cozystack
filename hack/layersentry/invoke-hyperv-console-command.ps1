@@ -8,6 +8,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module Hyper-V -ErrorAction Stop
 
+if (Test-Path -LiteralPath $OutputDirectory) {
+    Remove-Item -LiteralPath $OutputDirectory -Recurse -Force
+}
+New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
+$OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
+$tracePath = Join-Path $OutputDirectory 'console-command-trace.txt'
+"start $(Get-Date -Format o)" | Set-Content -LiteralPath $tracePath -Encoding UTF8
+
 if (-not (Test-Path -LiteralPath $RequestPath -PathType Leaf)) {
     throw "Console command request not found: $RequestPath"
 }
@@ -31,18 +39,13 @@ $allowedKeyCodes = @(
     112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123
 )
 
-if (Test-Path -LiteralPath $OutputDirectory) {
-    Remove-Item -LiteralPath $OutputDirectory -Recurse -Force
-}
-New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
-$OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
-
-$results = New-Object System.Collections.Generic.List[object]
+$results = @()
 $fatalError = $null
 
 try {
-    foreach ($target in @($request.targets)) {
+    foreach ($target in $request.targets) {
         $name = [string]$target.vm
+        "target=$name" | Add-Content -LiteralPath $tracePath -Encoding UTF8
         if ($allowedNames -notcontains $name) {
             throw "VM is not in the approved target set: $name"
         }
@@ -60,6 +63,8 @@ try {
         if ($null -eq $vmcs) {
             throw "Msvm_ComputerSystem not found for $name"
         }
+        "vmcs=$($vmcs.CimSystemProperties.Path)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
+
         $keyboard = Get-CimAssociatedInstance `
             -InputObject $vmcs `
             -ResultClassName 'Msvm_Keyboard' `
@@ -67,26 +72,29 @@ try {
         if ($null -eq $keyboard) {
             throw "Msvm_Keyboard not found for $name"
         }
+        "keyboard=$($keyboard.CimSystemProperties.Path)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
 
-        $keyResults = New-Object System.Collections.Generic.List[object]
-        foreach ($rawKey in @($target.keys)) {
+        $keyResults = @()
+        foreach ($rawKey in $target.keys) {
             $key = [uint32]$rawKey
             if ($allowedKeyCodes -notcontains [int]$key) {
                 throw "Virtual key code $key is not permitted."
             }
+            "before-TypeKey vm=$name key=$key" | Add-Content -LiteralPath $tracePath -Encoding UTF8
             $response = Invoke-CimMethod `
                 -InputObject $keyboard `
                 -MethodName 'TypeKey' `
                 -Arguments @{ keyCode = $key } `
                 -ErrorAction Stop
             $returnValue = [uint32]$response.ReturnValue
+            "after-TypeKey vm=$name key=$key return=$returnValue" | Add-Content -LiteralPath $tracePath -Encoding UTF8
             if ($returnValue -ne 0) {
                 throw "TypeKey($key) failed for $name with return value $returnValue"
             }
-            $keyResults.Add([pscustomobject]@{
+            $keyResults += [pscustomobject]@{
                 KeyCode = [int]$key
                 ReturnValue = [int]$returnValue
-            })
+            }
             Start-Sleep -Milliseconds 350
         }
 
@@ -99,12 +107,14 @@ try {
             if ($text -match '[\r\n]') {
                 throw "Text payload for $name may not contain newlines."
             }
+            "before-TypeText vm=$name length=$($text.Length)" | Add-Content -LiteralPath $tracePath -Encoding UTF8
             $response = Invoke-CimMethod `
                 -InputObject $keyboard `
                 -MethodName 'TypeText' `
                 -Arguments @{ asciiText = $text } `
                 -ErrorAction Stop
             $returnValue = [uint32]$response.ReturnValue
+            "after-TypeText vm=$name return=$returnValue" | Add-Content -LiteralPath $tracePath -Encoding UTF8
             if ($returnValue -ne 0) {
                 throw "TypeText failed for $name with return value $returnValue"
             }
@@ -114,12 +124,12 @@ try {
             }
         }
 
-        $results.Add([pscustomobject]@{
+        $results += [pscustomobject]@{
             VM = $name
-            Keys = @($keyResults)
+            Keys = $keyResults
             Text = $textResult
             StateAfter = [string](Get-VM -Name $name).State
-        })
+        }
     }
 
     $delay = 5
@@ -133,14 +143,15 @@ try {
 }
 catch {
     $fatalError = $_.Exception.Message
+    "fatal=$fatalError" | Add-Content -LiteralPath $tracePath -Encoding UTF8
 }
 finally {
     $report = [pscustomobject]@{
-        SchemaVersion = '1.2'
+        SchemaVersion = '1.3'
         RequestId = [string]$request.requestId
         ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
         Host = $env:COMPUTERNAME
-        Results = @($results)
+        Results = $results
         FatalError = $fatalError
     }
     $report | ConvertTo-Json -Depth 12 |
