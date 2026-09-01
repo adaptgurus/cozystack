@@ -1,0 +1,273 @@
+name: LayerSentry Hyper-V Preflight V2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-hyperv-preflight-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Inspect Hyper-V capacity, NAT, addressing and ISO files
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Collect read-only preflight evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          function ToGiB([object]$Value) {
+            if ($null -eq $Value) { return $null }
+            return [math]::Round(([double]$Value / 1GB), 2)
+          }
+
+          $outDir = Join-Path $env:RUNNER_TEMP 'layersentry-preflight-v2'
+          if (Test-Path -LiteralPath $outDir) {
+            Remove-Item -LiteralPath $outDir -Recurse -Force
+          }
+          New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+          Add-Content -Path $env:GITHUB_ENV -Value "LAYERSENTRY_PREFLIGHT_V2_DIR=$outDir"
+
+          $nodeCount = 3
+          $memoryPerNodeGiB = 32
+          $osDiskPerNodeGiB = 100
+          $dataDiskPerNodeGiB = 300
+          $plannedMemoryGiB = $nodeCount * $memoryPerNodeGiB
+          $plannedDiskGiB = $nodeCount * ($osDiskPerNodeGiB + $dataDiskPerNodeGiB)
+
+          $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+          $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+          $volumeC = Get-Volume -DriveLetter C -ErrorAction Stop
+
+          $totalMemoryGiB = ToGiB $computer.TotalPhysicalMemory
+          $freeMemoryGiB = [math]::Round(([double]$operatingSystem.FreePhysicalMemory / 1MB), 2)
+          $memoryAfterPlanGiB = [math]::Round(($totalMemoryGiB - $plannedMemoryGiB), 2)
+          $volumeCSizeGiB = ToGiB $volumeC.Size
+          $volumeCFreeGiB = ToGiB $volumeC.SizeRemaining
+          $storageAfterFullGrowthGiB = [math]::Round(($volumeCFreeGiB - $plannedDiskGiB), 2)
+
+          $memoryStatus = if ($memoryAfterPlanGiB -ge 20) { 'PASS' } elseif ($memoryAfterPlanGiB -gt 0) { 'RISK' } else { 'BLOCKED' }
+          $storageStatus = if ($storageAfterFullGrowthGiB -ge 150) { 'PASS' } elseif ($storageAfterFullGrowthGiB -ge 0) { 'RISK' } else { 'BLOCKED' }
+
+          $switches = @(
+            Get-VMSwitch -ErrorAction Stop |
+              Select-Object Name, SwitchType, NetAdapterInterfaceDescription, AllowManagementOS
+          )
+
+          $natObjects = @(
+            Get-NetNat -ErrorAction SilentlyContinue |
+              Select-Object Name, InternalIPInterfaceAddressPrefix, Active, Store
+          )
+
+          $natMappings = @(
+            Get-NetNatStaticMapping -ErrorAction SilentlyContinue |
+              Select-Object NatName, Protocol, ExternalIPAddress, ExternalPort,
+                InternalIPAddress, InternalPort
+          )
+
+          $ipv4Addresses = @(
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Sort-Object InterfaceIndex, IPAddress |
+              Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength,
+                PrefixOrigin, SuffixOrigin, AddressState, SkipAsSource
+          )
+
+          $defaultRoutes = @(
+            Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+              Sort-Object RouteMetric, InterfaceMetric |
+              Select-Object InterfaceAlias, InterfaceIndex, NextHop, RouteMetric,
+                InterfaceMetric, State, Protocol
+          )
+
+          $dnsServers = @(
+            Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object { @($_.ServerAddresses).Count -gt 0 } |
+              Select-Object InterfaceAlias, InterfaceIndex, ServerAddresses
+          )
+
+          $networkProfiles = @(
+            Get-NetConnectionProfile -ErrorAction SilentlyContinue |
+              Select-Object Name, InterfaceAlias, InterfaceIndex, NetworkCategory,
+                IPv4Connectivity, IPv6Connectivity
+          )
+
+          $firewallProfiles = @(
+            Get-NetFirewallProfile -ErrorAction SilentlyContinue |
+              Select-Object Name, Enabled, DefaultInboundAction, DefaultOutboundAction,
+                AllowInboundRules, AllowLocalFirewallRules
+          )
+
+          $hyperVFeature = $null
+          if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
+            $feature = Get-WindowsFeature -Name Hyper-V -ErrorAction SilentlyContinue
+            if ($feature) {
+              $hyperVFeature = [pscustomobject]@{
+                Name = $feature.Name
+                Installed = $feature.Installed
+                InstallState = [string]$feature.InstallState
+                RestartNeeded = [string]$feature.RestartNeeded
+              }
+            }
+          }
+
+          $systemInfoLines = @()
+          try {
+            $systemInfoLines = @(
+              & systeminfo.exe 2>&1 |
+                Where-Object { $_ -match 'Hyper-V|hypervisor|Virtualization|VM Monitor|Second Level|DEP' }
+            )
+          }
+          catch {
+            $systemInfoLines = @("systeminfo failed: $($_.Exception.Message)")
+          }
+
+          $isoRoots = @(
+            'C:\Downloads',
+            'C:\ISO',
+            'C:\ISOs',
+            'C:\Images',
+            'C:\Hyper-V'
+          )
+
+          if (Test-Path -LiteralPath 'C:\Users') {
+            foreach ($userDirectory in @(Get-ChildItem -LiteralPath 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
+              $isoRoots += Join-Path $userDirectory.FullName 'Downloads'
+              $isoRoots += Join-Path $userDirectory.FullName 'Desktop'
+            }
+          }
+
+          $isoFiles = @()
+          foreach ($root in @($isoRoots | Select-Object -Unique)) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+              continue
+            }
+
+            $scanDirectories = @($root)
+            $scanDirectories += @(
+              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                Select-Object -First 100 -ExpandProperty FullName
+            )
+
+            foreach ($directory in @($scanDirectories | Select-Object -Unique)) {
+              $isoFiles += @(
+                Get-ChildItem -LiteralPath $directory -File -Filter '*.iso' -ErrorAction SilentlyContinue |
+                  ForEach-Object {
+                    [pscustomobject]@{
+                      Name = $_.Name
+                      FullName = $_.FullName
+                      SizeGiB = ToGiB $_.Length
+                      LastWriteTimeUtc = $_.LastWriteTimeUtc.ToString('o')
+                    }
+                  }
+              )
+            }
+          }
+          $isoFiles = @($isoFiles | Sort-Object FullName -Unique)
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '2.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            CollectionMode = 'read-only'
+            Host = [pscustomobject]@{
+              ComputerName = $env:COMPUTERNAME
+              OperatingSystem = $operatingSystem.Caption
+              OperatingSystemVersion = $operatingSystem.Version
+              TotalMemoryGiB = $totalMemoryGiB
+              FreeMemoryAtCollectionGiB = $freeMemoryGiB
+              VolumeCSizeGiB = $volumeCSizeGiB
+              VolumeCFreeGiB = $volumeCFreeGiB
+            }
+            RequestedPlan = [pscustomobject]@{
+              Nodes = $nodeCount
+              VCpuPerNode = 10
+              MemoryPerNodeGiB = $memoryPerNodeGiB
+              OsDiskPerNodeGiB = $osDiskPerNodeGiB
+              DataDiskPerNodeGiB = $dataDiskPerNodeGiB
+              TotalMemoryGiB = $plannedMemoryGiB
+              TotalVirtualDiskGiB = $plannedDiskGiB
+            }
+            Assessment = [pscustomobject]@{
+              MemoryRemainingAfterPlanGiB = $memoryAfterPlanGiB
+              MemoryStatus = $memoryStatus
+              StorageRemainingAtFullVhdGrowthGiB = $storageAfterFullGrowthGiB
+              StorageStatus = $storageStatus
+            }
+            HyperVFeature = $hyperVFeature
+            VMSwitches = $switches
+            NatObjects = $natObjects
+            NatStaticMappings = $natMappings
+            IPv4Addresses = $ipv4Addresses
+            DefaultRoutes = $defaultRoutes
+            DnsServers = $dnsServers
+            NetworkProfiles = $networkProfiles
+            FirewallProfiles = $firewallProfiles
+            SystemInfoHyperVLines = $systemInfoLines
+            IsoFiles = $isoFiles
+          }
+
+          $jsonPath = Join-Path $outDir 'layersentry-hyperv-preflight-v2.json'
+          $summaryPath = Join-Path $outDir 'layersentry-hyperv-preflight-v2-summary.txt'
+          $hashPath = Join-Path $outDir 'SHA256SUMS.txt'
+
+          $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+          @(
+            'LayerSentry Hyper-V preflight V2'
+            "Collected UTC: $($report.CollectedAtUtc)"
+            "Host: $env:COMPUTERNAME"
+            "OS: $($operatingSystem.Caption) $($operatingSystem.Version)"
+            ''
+            "Requested plan: 3 nodes, each 10 vCPU, 32 GiB RAM, 100 GiB OS disk, 300 GiB data disk"
+            "Host total/free RAM now: $totalMemoryGiB / $freeMemoryGiB GiB"
+            "RAM remaining after planned allocation: $memoryAfterPlanGiB GiB [$memoryStatus]"
+            "C drive total/free: $volumeCSizeGiB / $volumeCFreeGiB GiB"
+            "Storage remaining if all planned VHDX files reach full capacity: $storageAfterFullGrowthGiB GiB [$storageStatus]"
+            ''
+            'Hyper-V switches:'
+            ($switches | Format-Table -AutoSize | Out-String -Width 300)
+            'NAT objects:'
+            ($natObjects | Format-Table -AutoSize | Out-String -Width 300)
+            'IPv4 addresses:'
+            ($ipv4Addresses | Format-Table InterfaceAlias, IPAddress, PrefixLength, PrefixOrigin, AddressState -AutoSize | Out-String -Width 300)
+            'Default routes:'
+            ($defaultRoutes | Format-Table InterfaceAlias, NextHop, RouteMetric, InterfaceMetric, State -AutoSize | Out-String -Width 300)
+            'DNS servers:'
+            ($dnsServers | Format-Table -AutoSize | Out-String -Width 300)
+            'ISO files found:'
+            ($isoFiles | Format-Table Name, SizeGiB, FullName -AutoSize | Out-String -Width 300)
+          ) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+
+          $hashLines = foreach ($file in @(Get-ChildItem -LiteralPath $outDir -File)) {
+            $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $($file.Name)"
+          }
+          $hashLines | Set-Content -LiteralPath $hashPath -Encoding ASCII
+
+          Get-Content -LiteralPath $summaryPath
+
+          @(
+            '# LayerSentry Hyper-V preflight V2'
+            ''
+            "- Memory status: **$memoryStatus**; remaining after plan: $memoryAfterPlanGiB GiB."
+            "- Storage status: **$storageStatus**; remaining at full VHD growth: $storageAfterFullGrowthGiB GiB."
+            "- Hyper-V switches: $($switches.Count)."
+            "- NAT objects: $($natObjects.Count)."
+            "- ISO files found: $($isoFiles.Count)."
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Upload preflight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hyperv-preflight-v2-${{ github.run_id }}
+          path: ${{ env.LAYERSENTRY_PREFLIGHT_V2_DIR }}
+          if-no-files-found: error
+          retention-days: 14
