@@ -1,0 +1,50 @@
+name: LayerSentry Capture Hyper-V Console
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-capture-hyperv-console.yml
+      - hack/layersentry/capture-hyperv-console.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-capture-hyperv-console
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    name: Capture sen1 sen2 sen3 console thumbnails and boot state
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact capture script
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Capture read-only boot evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-console-capture'
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory $output
+
+      - name: Upload console evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-console-capture-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-console-capture
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
