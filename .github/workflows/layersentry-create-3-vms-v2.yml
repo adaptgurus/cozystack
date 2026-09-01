@@ -6,6 +6,7 @@ on:
       - ops/layersentry-hyperv-inventory
     paths:
       - .github/workflows/layersentry-create-3-vms-v2.yml
+      - hack/layersentry/provision-hyperv-3-vms.ps1
   workflow_dispatch:
 
 permissions:
