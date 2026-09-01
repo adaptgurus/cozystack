@@ -16,7 +16,7 @@ function New-CryptoString {
     if ($Length -le 0 -or [string]::IsNullOrEmpty($Alphabet)) {
         throw 'Invalid cryptographic string parameters.'
     }
-    $bytes = New-Object byte[] $Length
+    $bytes = [byte[]]::new($Length)
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try {
         $rng.GetBytes($bytes)
@@ -24,7 +24,7 @@ function New-CryptoString {
     finally {
         $rng.Dispose()
     }
-    $characters = New-Object char[] $Length
+    $characters = [char[]]::new($Length)
     for ($index = 0; $index -lt $Length; $index++) {
         $characters[$index] = $Alphabet[[int]($bytes[$index] % $Alphabet.Length)]
     }
@@ -34,30 +34,30 @@ function New-CryptoString {
 function Protect-CredentialFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
     $propagation = [System.Security.AccessControl.PropagationFlags]::None
     $allow = [System.Security.AccessControl.AccessControlType]::Allow
     $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
     $read = [System.Security.AccessControl.FileSystemRights]::Read
-    $systemRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $systemRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
         'NT AUTHORITY\SYSTEM',
         $fullControl,
         $inheritance,
         $propagation,
         $allow
     )
-    $adminRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $adminRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
         'BUILTIN\Administrators',
         $read,
         $inheritance,
         $propagation,
         $allow
     )
-    $acl.AddAccessRule($systemRule)
-    $acl.AddAccessRule($adminRule)
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    [void]$acl.AddAccessRule($systemRule)
+    [void]$acl.AddAccessRule($adminRule)
+    Set-Acl -Path $Path -AclObject $acl
 }
 
 if (Test-Path -LiteralPath $EvidenceDirectory) {
@@ -66,7 +66,10 @@ if (Test-Path -LiteralPath $EvidenceDirectory) {
 New-Item -Path $EvidenceDirectory -ItemType Directory -Force | Out-Null
 $EvidenceDirectory = (Resolve-Path -LiteralPath $EvidenceDirectory).ProviderPath
 
-$credentialDirectory = Split-Path -LiteralPath $CredentialPath -Parent
+$credentialDirectory = [System.IO.Path]::GetDirectoryName($CredentialPath)
+if ([string]::IsNullOrWhiteSpace($credentialDirectory)) {
+    throw "Credential path has no parent directory: $CredentialPath"
+}
 New-Item -Path $credentialDirectory -ItemType Directory -Force | Out-Null
 $created = $false
 
@@ -104,7 +107,7 @@ foreach ($name in $required) {
 }
 Protect-CredentialFile -Path $CredentialPath
 
-$acl = Get-Acl -LiteralPath $CredentialPath
+$acl = Get-Acl -Path $CredentialPath
 $access = @(
     $acl.Access | ForEach-Object {
         [pscustomobject]@{
@@ -116,7 +119,7 @@ $access = @(
     }
 )
 $report = [pscustomobject]@{
-    SchemaVersion = '1.0'
+    SchemaVersion = '1.1'
     GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     CredentialPath = $CredentialPath
     CreatedThisRun = $created
