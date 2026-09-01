@@ -1,23 +1,23 @@
 {
-  "requestId": "disk-screen-focus-next-control-20260902-01",
+  "requestId": "open-data-disk-selector-20260902-02",
   "delayAfterSeconds": 6,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 13}
       ]
     }
   ]
