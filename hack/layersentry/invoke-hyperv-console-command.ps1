@@ -64,21 +64,25 @@ foreach ($target in @($request.targets)) {
 
     $keyResults = New-Object System.Collections.Generic.List[object]
     foreach ($rawKey in @($target.keys)) {
-        $key = [int]$rawKey
-        if ($allowedKeyCodes -notcontains $key) {
+        $key = [uint32]$rawKey
+        if ($allowedKeyCodes -notcontains [int]$key) {
             throw "Virtual key code $key is not permitted."
         }
-        $response = $keyboard.TypeKey($key)
+        $response = Invoke-WmiMethod `
+            -InputObject $keyboard `
+            -Name TypeKey `
+            -ArgumentList $key `
+            -ErrorAction Stop
         $returnValue = if ($response.PSObject.Properties['ReturnValue']) {
-            [int]$response.ReturnValue
+            [uint32]$response.ReturnValue
         }
         else {
-            [int]$response
+            [uint32]$response
         }
         if ($returnValue -ne 0) {
             throw "TypeKey($key) failed for $name with return value $returnValue"
         }
-        $keyResults.Add([pscustomobject]@{ KeyCode = $key; ReturnValue = $returnValue })
+        $keyResults.Add([pscustomobject]@{ KeyCode = [int]$key; ReturnValue = [int]$returnValue })
         Start-Sleep -Milliseconds 350
     }
 
@@ -91,19 +95,23 @@ foreach ($target in @($request.targets)) {
         if ($text -match '[\r\n]') {
             throw "Text payload for $name may not contain newlines."
         }
-        $response = $keyboard.TypeText($text)
+        $response = Invoke-WmiMethod `
+            -InputObject $keyboard `
+            -Name TypeText `
+            -ArgumentList ([string]$text) `
+            -ErrorAction Stop
         $returnValue = if ($response.PSObject.Properties['ReturnValue']) {
-            [int]$response.ReturnValue
+            [uint32]$response.ReturnValue
         }
         else {
-            [int]$response
+            [uint32]$response
         }
         if ($returnValue -ne 0) {
             throw "TypeText failed for $name with return value $returnValue"
         }
         $textResult = [pscustomobject]@{
             CharacterCount = $text.Length
-            ReturnValue = $returnValue
+            ReturnValue = [int]$returnValue
         }
     }
 
@@ -125,7 +133,7 @@ if ($delay -lt 0 -or $delay -gt 120) {
 Start-Sleep -Seconds $delay
 
 $report = [pscustomobject]@{
-    SchemaVersion = '1.0'
+    SchemaVersion = '1.1'
     RequestId = [string]$request.requestId
     ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     Host = $env:COMPUTERNAME
