@@ -1,0 +1,79 @@
+name: LayerSentry Hyper-V Console Command
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-console-command.yml
+      - hack/layersentry/invoke-hyperv-console-command.ps1
+      - hack/layersentry/console-command.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  command:
+    name: Execute approved keyboard command and capture consoles
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact command request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Parse command executor
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message) }
+            exit 1
+          }
+
+      - name: Execute VM console command
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-command'
+          & 'hack/layersentry/invoke-hyperv-console-command.ps1' `
+            -RequestPath 'hack/layersentry/console-command.json' `
+            -OutputDirectory $resultDirectory
+
+      - name: Capture console state after command
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $captureDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-after-command'
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory $captureDirectory
+
+      - name: Upload command and console evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-console-command-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\layersentry-console-command
+            ${{ runner.temp }}\layersentry-console-after-command
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
