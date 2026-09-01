@@ -1,0 +1,482 @@
+name: LayerSentry Hyper-V Read-Only Inventory
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-hyperv-inventory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-hyperv-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Inventory real Hyper-V host and existing LayerSentry VMs
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Validate runner and Hyper-V access
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          $isAdministrator = $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+          )
+
+          if (-not $isAdministrator) {
+            throw 'The self-hosted runner account does not have local administrator rights.'
+          }
+
+          Import-Module Hyper-V -ErrorAction Stop
+          $null = Get-VMHost -ErrorAction Stop
+          $vmms = Get-Service -Name vmms -ErrorAction Stop
+
+          if ($vmms.Status -ne 'Running') {
+            throw "Hyper-V Virtual Machine Management service is $($vmms.Status), not Running."
+          }
+
+          $inventoryDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-hyperv-inventory'
+          if (Test-Path -LiteralPath $inventoryDirectory) {
+            Remove-Item -LiteralPath $inventoryDirectory -Recurse -Force
+          }
+          New-Item -Path $inventoryDirectory -ItemType Directory -Force | Out-Null
+
+          Add-Content -Path $env:GITHUB_ENV -Value "LAYERSENTRY_INVENTORY_DIR=$inventoryDirectory"
+
+          Write-Host "Runner name: $env:RUNNER_NAME"
+          Write-Host "Runner OS/architecture: $env:RUNNER_OS/$env:RUNNER_ARCH"
+          Write-Host "Runner identity: $($identity.Name)"
+          Write-Host "Administrator: $isAdministrator"
+          Write-Host "Hyper-V VMMS: $($vmms.Status)"
+          Write-Host "Inventory directory: $inventoryDirectory"
+
+      - name: Collect read-only host, VM, storage, network and firmware inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          function Convert-BytesToGiB {
+            param([AllowNull()][object]$Bytes)
+            if ($null -eq $Bytes) {
+              return $null
+            }
+            return [math]::Round(([double]$Bytes / 1GB), 2)
+          }
+
+          function Get-SafeProperty {
+            param(
+              [AllowNull()][object]$Object,
+              [Parameter(Mandatory = $true)][string]$Name
+            )
+            if ($null -eq $Object) {
+              return $null
+            }
+            $property = $Object.PSObject.Properties[$Name]
+            if ($null -eq $property) {
+              return $null
+            }
+            return $property.Value
+          }
+
+          $targetNames = @('sen1', 'sen2', 'sen3')
+          $allVMs = @(Get-VM -ErrorAction Stop)
+          $vmByName = @{}
+          foreach ($item in $allVMs) {
+            $vmByName[$item.Name] = $item
+          }
+
+          $targetVMs = foreach ($targetName in $targetNames) {
+            if (-not $vmByName.ContainsKey($targetName)) {
+              [pscustomobject]@{
+                Name = $targetName
+                Exists = $false
+                State = $null
+                Status = 'Not found'
+                Generation = $null
+                Version = $null
+                Processor = $null
+                Memory = $null
+                Firmware = $null
+                HardDisks = @()
+                DvdDrives = @()
+                NetworkAdapters = @()
+                Checkpoints = @()
+                IntegrationServices = @()
+              }
+              continue
+            }
+
+            $vm = $vmByName[$targetName]
+            $processor = Get-VMProcessor -VMName $targetName -ErrorAction Stop
+            $memory = Get-VMMemory -VMName $targetName -ErrorAction Stop
+
+            $hardDisks = foreach ($disk in @(Get-VMHardDiskDrive -VMName $targetName -ErrorAction Stop)) {
+              $vhd = $null
+              $vhdError = $null
+              if ($disk.Path) {
+                try {
+                  $vhd = Get-VHD -Path $disk.Path -ErrorAction Stop
+                }
+                catch {
+                  $vhdError = $_.Exception.Message
+                }
+              }
+
+              [pscustomobject]@{
+                ControllerType = [string]$disk.ControllerType
+                ControllerNumber = $disk.ControllerNumber
+                ControllerLocation = $disk.ControllerLocation
+                Path = $disk.Path
+                DiskNumber = Get-SafeProperty -Object $disk -Name 'DiskNumber'
+                SupportPersistentReservations = Get-SafeProperty -Object $disk -Name 'SupportPersistentReservations'
+                VhdFormat = if ($vhd) { [string]$vhd.VhdFormat } else { $null }
+                VhdType = if ($vhd) { [string]$vhd.VhdType } else { $null }
+                VirtualSizeGiB = if ($vhd) { Convert-BytesToGiB $vhd.Size } else { $null }
+                FileSizeGiB = if ($vhd) { Convert-BytesToGiB $vhd.FileSize } else { $null }
+                MinimumSizeGiB = if ($vhd) { Convert-BytesToGiB (Get-SafeProperty -Object $vhd -Name 'MinimumSize') } else { $null }
+                ParentPath = if ($vhd) { $vhd.ParentPath } else { $null }
+                VhdInspectionError = $vhdError
+              }
+            }
+
+            $dvdDrives = foreach ($dvd in @(Get-VMDvdDrive -VMName $targetName -ErrorAction SilentlyContinue)) {
+              [pscustomobject]@{
+                ControllerNumber = $dvd.ControllerNumber
+                ControllerLocation = $dvd.ControllerLocation
+                Path = $dvd.Path
+              }
+            }
+
+            $networkAdapters = foreach ($adapter in @(Get-VMNetworkAdapter -VMName $targetName -ErrorAction Stop)) {
+              $vlan = $null
+              $vlanError = $null
+              try {
+                $vlan = Get-VMNetworkAdapterVlan -VMNetworkAdapter $adapter -ErrorAction Stop
+              }
+              catch {
+                $vlanError = $_.Exception.Message
+              }
+
+              [pscustomobject]@{
+                Name = $adapter.Name
+                SwitchName = $adapter.SwitchName
+                Status = [string]$adapter.Status
+                MacAddress = $adapter.MacAddress
+                DynamicMacAddressEnabled = $adapter.DynamicMacAddressEnabled
+                Connected = $adapter.Connected
+                DeviceNaming = Get-SafeProperty -Object $adapter -Name 'DeviceNaming'
+                DhcpGuard = Get-SafeProperty -Object $adapter -Name 'DhcpGuard'
+                RouterGuard = Get-SafeProperty -Object $adapter -Name 'RouterGuard'
+                IovWeight = Get-SafeProperty -Object $adapter -Name 'IovWeight'
+                VmqWeight = Get-SafeProperty -Object $adapter -Name 'VmqWeight'
+                IPAddresses = @($adapter.IPAddresses)
+                Vlan = if ($vlan) {
+                  [pscustomobject]@{
+                    OperationMode = [string]$vlan.OperationMode
+                    AccessVlanId = Get-SafeProperty -Object $vlan -Name 'AccessVlanId'
+                    NativeVlanId = Get-SafeProperty -Object $vlan -Name 'NativeVlanId'
+                    AllowedVlanIdList = Get-SafeProperty -Object $vlan -Name 'AllowedVlanIdList'
+                    PrimaryVlanId = Get-SafeProperty -Object $vlan -Name 'PrimaryVlanId'
+                    SecondaryVlanIdList = Get-SafeProperty -Object $vlan -Name 'SecondaryVlanIdList'
+                  }
+                }
+                else {
+                  $null
+                }
+                VlanInspectionError = $vlanError
+              }
+            }
+
+            $firmware = $null
+            if ([int]$vm.Generation -eq 2) {
+              try {
+                $vmFirmware = Get-VMFirmware -VMName $targetName -ErrorAction Stop
+                $firmware = [pscustomobject]@{
+                  SecureBoot = [string]$vmFirmware.SecureBoot
+                  SecureBootTemplate = $vmFirmware.SecureBootTemplate
+                  ConsoleMode = [string](Get-SafeProperty -Object $vmFirmware -Name 'ConsoleMode')
+                  PreferredNetworkBootProtocol = [string](Get-SafeProperty -Object $vmFirmware -Name 'PreferredNetworkBootProtocol')
+                  BootOrder = @(
+                    $vmFirmware.BootOrder | ForEach-Object {
+                      [pscustomobject]@{
+                        BootType = [string](Get-SafeProperty -Object $_ -Name 'BootType')
+                        Device = [string](Get-SafeProperty -Object $_ -Name 'Device')
+                        FirmwarePath = [string](Get-SafeProperty -Object $_ -Name 'FirmwarePath')
+                      }
+                    }
+                  )
+                }
+              }
+              catch {
+                $firmware = [pscustomobject]@{
+                  InspectionError = $_.Exception.Message
+                }
+              }
+            }
+
+            $checkpoints = @(
+              Get-VMSnapshot -VMName $targetName -ErrorAction SilentlyContinue |
+                Select-Object Name, SnapshotType, CreationTime, ParentSnapshotName
+            )
+
+            $integrationServices = @(
+              Get-VMIntegrationService -VMName $targetName -ErrorAction SilentlyContinue |
+                Select-Object Name, Enabled, PrimaryStatusDescription, SecondaryStatusDescription
+            )
+
+            [pscustomobject]@{
+              Name = $targetName
+              Exists = $true
+              State = [string]$vm.State
+              Status = $vm.Status
+              Generation = [int]$vm.Generation
+              Version = [string]$vm.Version
+              Notes = $vm.Notes
+              Uptime = [string]$vm.Uptime
+              CPUUsagePercent = $vm.CPUUsage
+              MemoryAssignedGiB = Convert-BytesToGiB $vm.MemoryAssigned
+              AutomaticStartAction = [string]$vm.AutomaticStartAction
+              AutomaticStartDelaySeconds = $vm.AutomaticStartDelay
+              AutomaticStopAction = [string]$vm.AutomaticStopAction
+              CheckpointType = [string]$vm.CheckpointType
+              SmartPagingFilePath = $vm.SmartPagingFilePath
+              Processor = [pscustomobject]@{
+                Count = $processor.Count
+                ReservePercent = $processor.Reserve
+                MaximumPercent = $processor.Maximum
+                RelativeWeight = $processor.RelativeWeight
+                CompatibilityForMigrationEnabled = $processor.CompatibilityForMigrationEnabled
+                CompatibilityForOlderOperatingSystemsEnabled = $processor.CompatibilityForOlderOperatingSystemsEnabled
+                ExposeVirtualizationExtensions = $processor.ExposeVirtualizationExtensions
+                EnableHostResourceProtection = Get-SafeProperty -Object $processor -Name 'EnableHostResourceProtection'
+              }
+              Memory = [pscustomobject]@{
+                DynamicMemoryEnabled = $memory.DynamicMemoryEnabled
+                StartupGiB = Convert-BytesToGiB $memory.Startup
+                MinimumGiB = Convert-BytesToGiB $memory.Minimum
+                MaximumGiB = Convert-BytesToGiB $memory.Maximum
+                BufferPercent = $memory.Buffer
+                Priority = $memory.Priority
+              }
+              Firmware = $firmware
+              HardDisks = @($hardDisks)
+              DvdDrives = @($dvdDrives)
+              NetworkAdapters = @($networkAdapters)
+              Checkpoints = @($checkpoints)
+              IntegrationServices = @($integrationServices)
+            }
+          }
+
+          $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+          $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+          $processors = @(
+            Get-CimInstance Win32_Processor -ErrorAction Stop |
+              Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors,
+                VirtualizationFirmwareEnabled, VMMonitorModeExtensions,
+                SecondLevelAddressTranslationExtensions
+          )
+          $vmHost = Get-VMHost -ErrorAction Stop
+
+          $switches = @(
+            Get-VMSwitch -ErrorAction Stop | ForEach-Object {
+              [pscustomobject]@{
+                Name = $_.Name
+                SwitchType = [string]$_.SwitchType
+                NetAdapterInterfaceDescription = $_.NetAdapterInterfaceDescription
+                AllowManagementOS = $_.AllowManagementOS
+                IovEnabled = Get-SafeProperty -Object $_ -Name 'IovEnabled'
+                EmbeddedTeamingEnabled = Get-SafeProperty -Object $_ -Name 'EmbeddedTeamingEnabled'
+              }
+            }
+          )
+
+          $netAdapters = @(
+            Get-NetAdapter -ErrorAction SilentlyContinue |
+              Select-Object Name, InterfaceDescription, ifIndex, Status, LinkSpeed,
+                MacAddress, VlanID, HardwareInterface, Virtual
+          )
+
+          $volumes = @(
+            Get-Volume -ErrorAction SilentlyContinue | ForEach-Object {
+              [pscustomobject]@{
+                DriveLetter = $_.DriveLetter
+                FileSystemLabel = $_.FileSystemLabel
+                FileSystem = $_.FileSystem
+                DriveType = [string]$_.DriveType
+                HealthStatus = [string]$_.HealthStatus
+                OperationalStatus = @($_.OperationalStatus | ForEach-Object { [string]$_ })
+                SizeGiB = Convert-BytesToGiB $_.Size
+                SizeRemainingGiB = Convert-BytesToGiB $_.SizeRemaining
+              }
+            }
+          )
+
+          $physicalDisks = @(
+            Get-Disk -ErrorAction SilentlyContinue | ForEach-Object {
+              [pscustomobject]@{
+                Number = $_.Number
+                FriendlyName = $_.FriendlyName
+                BusType = [string]$_.BusType
+                PartitionStyle = [string]$_.PartitionStyle
+                OperationalStatus = @($_.OperationalStatus | ForEach-Object { [string]$_ })
+                HealthStatus = [string]$_.HealthStatus
+                IsBoot = $_.IsBoot
+                IsSystem = $_.IsSystem
+                IsOffline = $_.IsOffline
+                IsReadOnly = $_.IsReadOnly
+                SizeGiB = Convert-BytesToGiB $_.Size
+              }
+            }
+          )
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '1.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            CollectionMode = 'read-only'
+            GitHub = [pscustomobject]@{
+              Repository = $env:GITHUB_REPOSITORY
+              Workflow = $env:GITHUB_WORKFLOW
+              RunId = $env:GITHUB_RUN_ID
+              RunAttempt = $env:GITHUB_RUN_ATTEMPT
+              Sha = $env:GITHUB_SHA
+              Ref = $env:GITHUB_REF
+            }
+            Runner = [pscustomobject]@{
+              Name = $env:RUNNER_NAME
+              OS = $env:RUNNER_OS
+              Architecture = $env:RUNNER_ARCH
+              Identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+              Temp = $env:RUNNER_TEMP
+            }
+            Host = [pscustomobject]@{
+              ComputerName = $env:COMPUTERNAME
+              Manufacturer = $computer.Manufacturer
+              Model = $computer.Model
+              Domain = $computer.Domain
+              PartOfDomain = $computer.PartOfDomain
+              TotalPhysicalMemoryGiB = Convert-BytesToGiB $computer.TotalPhysicalMemory
+              OperatingSystem = $os.Caption
+              OperatingSystemVersion = $os.Version
+              OperatingSystemBuild = $os.BuildNumber
+              LastBootUpTime = $os.LastBootUpTime
+              TimeZone = (Get-TimeZone).Id
+              Processors = $processors
+              HyperV = [pscustomobject]@{
+                VirtualMachinePath = $vmHost.VirtualMachinePath
+                VirtualHardDiskPath = $vmHost.VirtualHardDiskPath
+                LogicalProcessorCount = $vmHost.LogicalProcessorCount
+                MemoryCapacityGiB = Convert-BytesToGiB $vmHost.MemoryCapacity
+                NumaSpanningEnabled = $vmHost.NumaSpanningEnabled
+                EnableEnhancedSessionMode = $vmHost.EnableEnhancedSessionMode
+                IovSupport = Get-SafeProperty -Object $vmHost -Name 'IovSupport'
+                IovSupportReasons = @(Get-SafeProperty -Object $vmHost -Name 'IovSupportReasons')
+              }
+            }
+            VMSwitches = $switches
+            HostNetworkAdapters = $netAdapters
+            HostDisks = $physicalDisks
+            HostVolumes = $volumes
+            AllVMNames = @($allVMs | Sort-Object Name | Select-Object -ExpandProperty Name)
+            TargetVMs = @($targetVMs)
+          }
+
+          $jsonPath = Join-Path $env:LAYERSENTRY_INVENTORY_DIR 'layersentry-hyperv-inventory.json'
+          $summaryPath = Join-Path $env:LAYERSENTRY_INVENTORY_DIR 'layersentry-hyperv-summary.txt'
+          $hashPath = Join-Path $env:LAYERSENTRY_INVENTORY_DIR 'SHA256SUMS.txt'
+
+          $report | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+          $summaryRows = foreach ($vm in $targetVMs) {
+            $diskSizes = if ($vm.Exists) {
+              @($vm.HardDisks | ForEach-Object {
+                if ($null -ne $_.VirtualSizeGiB) { "$($_.VirtualSizeGiB) GiB" }
+                elseif ($_.Path) { "Unknown ($($_.Path))" }
+                else { 'Pass-through/unknown' }
+              }) -join ', '
+            }
+            else {
+              ''
+            }
+
+            $switchNames = if ($vm.Exists) {
+              @($vm.NetworkAdapters | Select-Object -ExpandProperty SwitchName -Unique) -join ', '
+            }
+            else {
+              ''
+            }
+
+            [pscustomobject]@{
+              VM = $vm.Name
+              Exists = $vm.Exists
+              State = $vm.State
+              Generation = $vm.Generation
+              vCPU = if ($vm.Processor) { $vm.Processor.Count } else { $null }
+              StartupGiB = if ($vm.Memory) { $vm.Memory.StartupGiB } else { $null }
+              DynamicMemory = if ($vm.Memory) { $vm.Memory.DynamicMemoryEnabled } else { $null }
+              NestedVirtualization = if ($vm.Processor) { $vm.Processor.ExposeVirtualizationExtensions } else { $null }
+              Switches = $switchNames
+              VirtualDisks = $diskSizes
+              DVD = if ($vm.Exists) { @($vm.DvdDrives | Select-Object -ExpandProperty Path) -join ', ' } else { '' }
+            }
+          }
+
+          @(
+            'LayerSentry Hyper-V read-only inventory'
+            "Collected UTC: $($report.CollectedAtUtc)"
+            "Host: $($report.Host.ComputerName)"
+            "OS: $($report.Host.OperatingSystem) $($report.Host.OperatingSystemVersion) build $($report.Host.OperatingSystemBuild)"
+            "Physical memory: $($report.Host.TotalPhysicalMemoryGiB) GiB"
+            "Logical processors: $($report.Host.HyperV.LogicalProcessorCount)"
+            "Hyper-V default VM path: $($report.Host.HyperV.VirtualMachinePath)"
+            "Hyper-V default VHD path: $($report.Host.HyperV.VirtualHardDiskPath)"
+            ''
+            ($summaryRows | Format-Table -AutoSize | Out-String -Width 300)
+            'Virtual switches:'
+            ($switches | Format-Table Name, SwitchType, NetAdapterInterfaceDescription, AllowManagementOS -AutoSize | Out-String -Width 300)
+          ) | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+
+          $hashLines = foreach ($file in @(Get-ChildItem -LiteralPath $env:LAYERSENTRY_INVENTORY_DIR -File)) {
+            $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $($file.Name)"
+          }
+          $hashLines | Set-Content -LiteralPath $hashPath -Encoding ASCII
+
+          Get-Content -LiteralPath $summaryPath
+
+          $markdown = @()
+          $markdown += '# LayerSentry Hyper-V read-only inventory'
+          $markdown += ''
+          $markdown += "Host: **$($report.Host.ComputerName)**  "
+          $markdown += "OS: **$($report.Host.OperatingSystem) build $($report.Host.OperatingSystemBuild)**  "
+          $markdown += "Memory: **$($report.Host.TotalPhysicalMemoryGiB) GiB**  "
+          $markdown += "Logical processors: **$($report.Host.HyperV.LogicalProcessorCount)**"
+          $markdown += ''
+          $markdown += '| VM | Exists | State | Gen | vCPU | Startup GiB | Dynamic | Nested virtualization | Switches | Virtual disks |'
+          $markdown += '|---|---:|---|---:|---:|---:|---:|---:|---|---|'
+          foreach ($row in $summaryRows) {
+            $safeSwitches = ([string]$row.Switches).Replace('|', '/')
+            $safeDisks = ([string]$row.VirtualDisks).Replace('|', '/')
+            $markdown += "| $($row.VM) | $($row.Exists) | $($row.State) | $($row.Generation) | $($row.vCPU) | $($row.StartupGiB) | $($row.DynamicMemory) | $($row.NestedVirtualization) | $safeSwitches | $safeDisks |"
+          }
+          $markdown | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding UTF8
+
+      - name: Upload inventory evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hyperv-inventory-${{ github.run_id }}
+          path: ${{ env.LAYERSENTRY_INVENTORY_DIR }}
+          if-no-files-found: error
+          retention-days: 14
