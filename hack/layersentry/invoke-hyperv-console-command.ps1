@@ -38,115 +38,125 @@ New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
 
 $results = New-Object System.Collections.Generic.List[object]
-foreach ($target in @($request.targets)) {
-    $name = [string]$target.vm
-    if ($allowedNames -notcontains $name) {
-        throw "VM is not in the approved target set: $name"
-    }
-    $vm = Get-VM -Name $name -ErrorAction Stop
-    if ($vm.State -ne 'Running') {
-        throw "VM $name is not Running. Current state: $($vm.State)"
+$fatalError = $null
+
+try {
+    foreach ($target in @($request.targets)) {
+        $name = [string]$target.vm
+        if ($allowedNames -notcontains $name) {
+            throw "VM is not in the approved target set: $name"
+        }
+        $vm = Get-VM -Name $name -ErrorAction Stop
+        if ($vm.State -ne 'Running') {
+            throw "VM $name is not Running. Current state: $($vm.State)"
+        }
+
+        $escapedName = $name.Replace("'", "''")
+        $vmcs = Get-CimInstance `
+            -Namespace 'root/virtualization/v2' `
+            -ClassName 'Msvm_ComputerSystem' `
+            -Filter "ElementName='$escapedName'" `
+            -ErrorAction Stop | Select-Object -First 1
+        if ($null -eq $vmcs) {
+            throw "Msvm_ComputerSystem not found for $name"
+        }
+        $keyboard = Get-CimAssociatedInstance `
+            -InputObject $vmcs `
+            -ResultClassName 'Msvm_Keyboard' `
+            -ErrorAction Stop | Select-Object -First 1
+        if ($null -eq $keyboard) {
+            throw "Msvm_Keyboard not found for $name"
+        }
+
+        $keyResults = New-Object System.Collections.Generic.List[object]
+        foreach ($rawKey in @($target.keys)) {
+            $key = [uint32]$rawKey
+            if ($allowedKeyCodes -notcontains [int]$key) {
+                throw "Virtual key code $key is not permitted."
+            }
+            $response = Invoke-CimMethod `
+                -InputObject $keyboard `
+                -MethodName 'TypeKey' `
+                -Arguments @{ keyCode = $key } `
+                -ErrorAction Stop
+            $returnValue = [uint32]$response.ReturnValue
+            if ($returnValue -ne 0) {
+                throw "TypeKey($key) failed for $name with return value $returnValue"
+            }
+            $keyResults.Add([pscustomobject]@{
+                KeyCode = [int]$key
+                ReturnValue = [int]$returnValue
+            })
+            Start-Sleep -Milliseconds 350
+        }
+
+        $textResult = $null
+        if ($target.PSObject.Properties['text'] -and -not [string]::IsNullOrEmpty([string]$target.text)) {
+            $text = [string]$target.text
+            if ($text.Length -gt 512) {
+                throw "Text payload for $name is longer than 512 characters."
+            }
+            if ($text -match '[\r\n]') {
+                throw "Text payload for $name may not contain newlines."
+            }
+            $response = Invoke-CimMethod `
+                -InputObject $keyboard `
+                -MethodName 'TypeText' `
+                -Arguments @{ asciiText = $text } `
+                -ErrorAction Stop
+            $returnValue = [uint32]$response.ReturnValue
+            if ($returnValue -ne 0) {
+                throw "TypeText failed for $name with return value $returnValue"
+            }
+            $textResult = [pscustomobject]@{
+                CharacterCount = $text.Length
+                ReturnValue = [int]$returnValue
+            }
+        }
+
+        $results.Add([pscustomobject]@{
+            VM = $name
+            Keys = @($keyResults)
+            Text = $textResult
+            StateAfter = [string](Get-VM -Name $name).State
+        })
     }
 
-    $escapedName = $name.Replace("'", "''")
-    $vmcs = Get-WmiObject `
-        -Namespace 'root\virtualization\v2' `
-        -Class 'Msvm_ComputerSystem' `
-        -Filter "ElementName='$escapedName'" `
-        -ErrorAction Stop
-    if ($null -eq $vmcs) {
-        throw "Msvm_ComputerSystem not found for $name"
+    $delay = 5
+    if ($request.PSObject.Properties['delayAfterSeconds']) {
+        $delay = [int]$request.delayAfterSeconds
     }
-    $keyboard = @($vmcs.GetRelated('Msvm_Keyboard')) | Select-Object -First 1
-    if ($null -eq $keyboard) {
-        throw "Msvm_Keyboard not found for $name"
+    if ($delay -lt 0 -or $delay -gt 120) {
+        throw 'delayAfterSeconds must be between 0 and 120.'
     }
+    Start-Sleep -Seconds $delay
+}
+catch {
+    $fatalError = $_.Exception.Message
+}
+finally {
+    $report = [pscustomobject]@{
+        SchemaVersion = '1.2'
+        RequestId = [string]$request.requestId
+        ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        Host = $env:COMPUTERNAME
+        Results = @($results)
+        FatalError = $fatalError
+    }
+    $report | ConvertTo-Json -Depth 12 |
+        Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.json') -Encoding UTF8
 
-    $keyResults = New-Object System.Collections.Generic.List[object]
-    foreach ($rawKey in @($target.keys)) {
-        $key = [uint32]$rawKey
-        if ($allowedKeyCodes -notcontains [int]$key) {
-            throw "Virtual key code $key is not permitted."
-        }
-        $response = Invoke-WmiMethod `
-            -InputObject $keyboard `
-            -Name TypeKey `
-            -ArgumentList $key `
-            -ErrorAction Stop
-        $returnValue = if ($response.PSObject.Properties['ReturnValue']) {
-            [uint32]$response.ReturnValue
-        }
-        else {
-            [uint32]$response
-        }
-        if ($returnValue -ne 0) {
-            throw "TypeKey($key) failed for $name with return value $returnValue"
-        }
-        $keyResults.Add([pscustomobject]@{ KeyCode = [int]$key; ReturnValue = [int]$returnValue })
-        Start-Sleep -Milliseconds 350
-    }
+    @(
+        'LayerSentry Hyper-V console command'
+        "Request ID: $($report.RequestId)"
+        "Executed UTC: $($report.ExecutedAtUtc)"
+        "Fatal error: $fatalError"
+        ($results | Format-Table -AutoSize | Out-String -Width 300)
+    ) | Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt') -Encoding UTF8
 
-    $textResult = $null
-    if ($target.PSObject.Properties['text'] -and -not [string]::IsNullOrEmpty([string]$target.text)) {
-        $text = [string]$target.text
-        if ($text.Length -gt 512) {
-            throw "Text payload for $name is longer than 512 characters."
-        }
-        if ($text -match '[\r\n]') {
-            throw "Text payload for $name may not contain newlines."
-        }
-        $response = Invoke-WmiMethod `
-            -InputObject $keyboard `
-            -Name TypeText `
-            -ArgumentList ([string]$text) `
-            -ErrorAction Stop
-        $returnValue = if ($response.PSObject.Properties['ReturnValue']) {
-            [uint32]$response.ReturnValue
-        }
-        else {
-            [uint32]$response
-        }
-        if ($returnValue -ne 0) {
-            throw "TypeText failed for $name with return value $returnValue"
-        }
-        $textResult = [pscustomobject]@{
-            CharacterCount = $text.Length
-            ReturnValue = [int]$returnValue
-        }
-    }
-
-    $results.Add([pscustomobject]@{
-        VM = $name
-        Keys = @($keyResults)
-        Text = $textResult
-        StateAfter = [string](Get-VM -Name $name).State
-    })
+    Get-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt')
 }
 
-$delay = 5
-if ($request.PSObject.Properties['delayAfterSeconds']) {
-    $delay = [int]$request.delayAfterSeconds
+if ($null -ne $fatalError) {
+    throw $fatalError
 }
-if ($delay -lt 0 -or $delay -gt 120) {
-    throw 'delayAfterSeconds must be between 0 and 120.'
-}
-Start-Sleep -Seconds $delay
-
-$report = [pscustomobject]@{
-    SchemaVersion = '1.1'
-    RequestId = [string]$request.requestId
-    ExecutedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-    Host = $env:COMPUTERNAME
-    Results = @($results)
-}
-$report | ConvertTo-Json -Depth 12 |
-    Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.json') -Encoding UTF8
-
-@(
-    'LayerSentry Hyper-V console command'
-    "Request ID: $($report.RequestId)"
-    "Executed UTC: $($report.ExecutedAtUtc)"
-    ($results | Format-Table -AutoSize | Out-String -Width 300)
-) | Set-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt') -Encoding UTF8
-
-Get-Content -LiteralPath (Join-Path $OutputDirectory 'console-command-result.txt')
