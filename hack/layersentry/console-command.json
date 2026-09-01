@@ -1,32 +1,23 @@
 {
-  "requestId": "configure-node-passwords-all-nodes-20260901-04",
-  "delayAfterSeconds": 12,
+  "requestId": "disk-screen-focus-next-control-20260902-01",
+  "delayAfterSeconds": 6,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13}
+        {"kind": "key", "code": 9}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13}
+        {"kind": "key", "code": 9}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13}
+        {"kind": "key", "code": 9}
       ]
     }
   ]
