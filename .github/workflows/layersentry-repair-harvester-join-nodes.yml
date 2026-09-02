@@ -1,0 +1,272 @@
+name: LayerSentry Targeted Join-Node Repair
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/join-repair-requests/*.json
+      - hack/layersentry/repair-harvester-join-nodes.ps1
+      - .github/workflows/layersentry-repair-harvester-join-nodes.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-targeted-join-node-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    name: Diagnose, repair and prove sen2/sen3 cluster membership
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout exact targeted-repair source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Validate authorization request and PowerShell sources
+        id: request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/join-repair-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one targeted join-repair request; found $($requests.Count)."
+          }
+          $requestPath = ([string]$requests[0]).Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'REPAIR_HARVESTER_JOIN_NODES') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([string]$request.clusterUrl -ne 'https://10.10.10.10') {
+            throw "Unexpected cluster URL: $($request.clusterUrl)"
+          }
+          if ([string]$request.primaryNodeAddress -ne '10.10.10.11') {
+            throw "Unexpected primary node address: $($request.primaryNodeAddress)"
+          }
+          if ([bool]$request.acceptEula) {
+            throw 'This workflow must not accept the EULA on behalf of the user.'
+          }
+          if ([bool]$request.writeCredentialValuesToEvidence) {
+            throw 'Credential values must never be written to evidence.'
+          }
+          if ([bool]$request.reinstallOrWipeDisks) {
+            throw 'This targeted repair must not reinstall or wipe disks.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'This workflow must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/repair-harvester-join-nodes.ps1',
+            'hack/layersentry/complete-three-node-runtime.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          "request_path=$requestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Validated targeted join-node repair request: $requestPath"
+
+      - name: Repair sen2 and sen3 from their installed operating systems
+        id: join_repair
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/targeted-join-repair'
+          if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/repair-harvester-join-nodes.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNodeAddress '10.10.10.11' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -MaxWaitMinutes 15 `
+            -OutputDirectory (Join-Path $root 'join-repair')
+
+      - name: Complete administrator and authenticated runtime validation
+        id: runtime
+        if: steps.join_repair.outcome == 'success'
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/targeted-join-repair'
+          & 'hack/layersentry/complete-three-node-runtime.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNode '10.10.10.11' `
+            -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -MaxWaitMinutes 12 `
+            -OutputDirectory (Join-Path $root 'runtime')
+
+      - name: Capture final Hyper-V consoles
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/targeted-join-repair'
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory (Join-Path $root 'consoles')
+
+      - name: Build sanitized authoritative result
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/targeted-join-repair'
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          $joinPath = Join-Path $root 'join-repair\join-repair-result.json'
+          $runtimePath = Join-Path $root 'runtime\runtime-completion.json'
+          $joinResult = $null
+          $runtimeResult = $null
+          if (Test-Path -LiteralPath $joinPath -PathType Leaf) {
+            $joinResult = Get-Content -LiteralPath $joinPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          }
+          if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
+            $runtimeResult = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          }
+          $joinPassed = $null -ne $joinResult -and [bool]$joinResult.passed
+          $runtimePassed = $null -ne $runtimeResult -and [bool]$runtimeResult.passed
+          $overall = $joinPassed -and $runtimePassed
+          $failure = if (-not $joinPassed -and $null -ne $joinResult) {
+            [string]$joinResult.failure
+          }
+          elseif (-not $runtimePassed -and $null -ne $runtimeResult) {
+            [string]$runtimeResult.failure
+          }
+          elseif (-not $joinPassed) {
+            'Targeted join-repair evidence was not generated.'
+          }
+          elseif (-not $runtimePassed) {
+            'Authenticated runtime-completion evidence was not generated.'
+          }
+          else {
+            $null
+          }
+
+          [ordered]@{
+            schemaVersion = '1.0'
+            sourceCommit = $env:GITHUB_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            joinRepairPassed = $joinPassed
+            exactlyThreeReadyNodes = if ($null -ne $joinResult) { [bool]$joinResult.threeNodeReady } else { $false }
+            authenticatedRuntimeValidationPassed = $runtimePassed
+            administratorResetSucceeded = if ($null -ne $runtimeResult) { [bool]$runtimeResult.administratorResetSucceeded } else { $false }
+            administratorApiAuthenticated = if ($null -ne $runtimeResult) { [bool]$runtimeResult.administratorApiAuthenticated } else { $false }
+            installationApiCompletion = $overall
+            credentialValuesWrittenToEvidence = $false
+            eulaAutomaticallyAccepted = $false
+            workloadQualified = $false
+            trueAirgapQualified = $false
+            haQualified = $false
+            upgradeQualified = $false
+            backupRestoreQualified = $false
+            productionReleaseApproved = $false
+            failure = $failure
+          } | ConvertTo-Json -Depth 10 |
+            Set-Content -LiteralPath (Join-Path $root 'result.json') -Encoding UTF8
+
+          $marker = if ($overall) { 'SUCCESS' } else { 'FAILURE' }
+          New-Item -Path (Join-Path $root $marker) -ItemType File -Force | Out-Null
+          @"
+          # LayerSentry targeted three-node completion
+
+          - Join-node configuration repair passed: **$joinPassed**
+          - Exactly sen1, sen2 and sen3 Ready: **$(if ($null -ne $joinResult) { [bool]$joinResult.threeNodeReady } else { $false })**
+          - Authenticated runtime validation passed: **$runtimePassed**
+          - Administrator API authentication passed: **$(if ($null -ne $runtimeResult) { [bool]$runtimeResult.administratorApiAuthenticated } else { $false })**
+          - Installation/API completion: **$overall**
+          - Workload qualification: **false**
+          - True air-gap qualification: **false**
+          - Production release approved: **false**
+          - Failure: $failure
+          "@ | Set-Content -LiteralPath (Join-Path $root 'STATUS.md') -Encoding UTF8
+          Get-Content -LiteralPath (Join-Path $root 'STATUS.md')
+
+      - name: Publish sanitized targeted-repair evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $relative = 'hack/layersentry/runtime-evidence/targeted-join-repair'
+          if (-not (Test-Path -LiteralPath $relative)) {
+            throw 'Targeted join-repair evidence directory is missing.'
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C layersentry-targeted-join-repair-status-work $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to create targeted-repair status work branch.'
+          }
+          git add -- $relative
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to stage targeted-repair evidence.'
+          }
+          git commit -m 'ops(status): publish targeted LayerSentry join repair [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to commit targeted-repair evidence.'
+          }
+          git push --force origin 'HEAD:ops/layersentry-targeted-join-repair-status'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to publish targeted-repair status branch.'
+          }
+
+      - name: Upload targeted repair evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-targeted-join-repair-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/targeted-join-repair
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce terminal installation and API completion
+        if: always()
+        shell: powershell
+        run: |
+          $resultPath = 'hack/layersentry/runtime-evidence/targeted-join-repair/result.json'
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'Targeted-repair result.json is missing.'
+          }
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.installationApiCompletion) {
+            throw "LayerSentry three-node completion failed: $($result.failure)"
+          }
+          Write-Host 'LAYERSENTRY TARGETED THREE-NODE COMPLETION: PASS'

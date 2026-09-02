@@ -1,0 +1,24 @@
+{
+  "requestId": "repair-harvester-join-nodes-20260902-resume-01",
+  "operation": "REPAIR_HARVESTER_JOIN_NODES",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "primaryNodeAddress": "10.10.10.11",
+  "joinNodes": {
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "repairScope": [
+    "diagnose installed join nodes over SSH",
+    "back up Harvester, rancherd and RKE2 join configuration",
+    "correct server URL, role, node name and cluster token",
+    "restart only Harvester/RKE2 control services",
+    "verify exactly sen1, sen2 and sen3 are Kubernetes Ready",
+    "validate administrator and management APIs"
+  ],
+  "writeCredentialValuesToEvidence": false,
+  "reinstallOrWipeDisks": false,
+  "acceptEula": false,
+  "productionReleaseApprovalImplied": false
+}
