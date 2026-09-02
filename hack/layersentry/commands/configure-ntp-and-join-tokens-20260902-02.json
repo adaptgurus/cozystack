@@ -1,0 +1,27 @@
+{
+  "requestId": "configure-ntp-and-join-tokens-20260902-02",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "text", "value": "time.cloudflare.com,time.google.com"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "secret", "name": "clusterToken"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "secret", "name": "clusterToken"},
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}
