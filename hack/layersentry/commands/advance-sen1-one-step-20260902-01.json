@@ -1,0 +1,12 @@
+{
+  "requestId": "advance-sen1-one-step-20260902-01",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}
