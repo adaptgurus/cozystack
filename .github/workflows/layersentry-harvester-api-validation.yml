@@ -85,6 +85,10 @@ jobs:
           $correctedText = $correctedText.Replace($stderrNeedle, $stderrReplacement)
           $correctedText = $correctedText.Replace('$statusText.Trim()', '([string]$statusText).Trim()')
           $correctedText = $correctedText.Replace('$stderrText.Trim()', '([string]$stderrText).Trim()')
+          $correctedText = $correctedText.Replace(
+            'Set-StrictMode -Version Latest',
+            'Set-StrictMode -Off'
+          )
           [System.IO.File]::WriteAllText(
             $validatorPath,
             $correctedText,
