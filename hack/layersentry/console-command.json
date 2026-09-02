@@ -1,34 +1,28 @@
 {
-  "requestId": "set-clean-node-passwords-20260902-01",
-  "delayAfterSeconds": 10,
+  "requestId": "open-separate-data-disk-selectors-20260902-01",
+  "delayAfterSeconds": 6,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 1500},
-        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 9},
+        {"kind": "sleep", "milliseconds": 800},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 1500},
-        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 9},
+        {"kind": "sleep", "milliseconds": 800},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 1500},
-        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 9},
+        {"kind": "sleep", "milliseconds": 800},
         {"kind": "key", "code": 13}
       ]
     }
