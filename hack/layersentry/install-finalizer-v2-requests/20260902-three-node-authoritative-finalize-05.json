@@ -1,0 +1,17 @@
+{
+  "requestId": "layersentry-three-node-authoritative-finalizer-20260902-05",
+  "vmNames": ["sen1", "sen2", "sen3"],
+  "expectedNodeIPs": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "vip": "10.10.10.10",
+  "maxWaitMinutes": 90,
+  "pollSeconds": 15,
+  "publishSeconds": 60,
+  "minimumObservationMinutes": 1,
+  "diskStableSeconds": 300,
+  "minimumInstalledDiskFileGiB": 3.0,
+  "requiredStablePolls": 2
+}
