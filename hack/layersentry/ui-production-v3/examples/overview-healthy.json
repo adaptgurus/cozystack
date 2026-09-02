@@ -1,0 +1,59 @@
+{
+  "health": "healthy",
+  "environment": "Lab",
+  "version": "v1.0.0-rc.1",
+  "observedAt": "2026-09-03T00:00:00Z",
+  "nodes": {
+    "ready": 3,
+    "total": 3,
+    "items": [
+      {
+        "name": "sen1",
+        "address": "10.10.10.11",
+        "role": "Management",
+        "state": "ready",
+        "cpuPercent": 18,
+        "memoryPercent": 46
+      },
+      {
+        "name": "sen2",
+        "address": "10.10.10.12",
+        "role": "Worker",
+        "state": "ready",
+        "cpuPercent": 12,
+        "memoryPercent": 39
+      },
+      {
+        "name": "sen3",
+        "address": "10.10.10.13",
+        "role": "Worker",
+        "state": "ready",
+        "cpuPercent": 15,
+        "memoryPercent": 42
+      }
+    ]
+  },
+  "virtualMachines": {
+    "running": 4,
+    "total": 4
+  },
+  "storage": {
+    "usedBytes": 687194767360,
+    "totalBytes": 2199023255552,
+    "healthyVolumes": 9,
+    "totalVolumes": 9
+  },
+  "alerts": {
+    "critical": 0,
+    "warning": 0,
+    "total": 0
+  },
+  "events": [
+    {
+      "severity": "info",
+      "resource": "sen2",
+      "message": "Node is Ready and reporting healthy worker services.",
+      "timestamp": "2026-09-03T00:00:00Z"
+    }
+  ]
+}
