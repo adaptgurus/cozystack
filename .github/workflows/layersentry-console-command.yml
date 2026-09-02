@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: layersentry-hyperv-console-command
@@ -27,7 +27,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
 
       - name: Parse command executor
         shell: powershell
@@ -63,6 +63,79 @@ jobs:
           & 'hack/layersentry/capture-hyperv-console.ps1' `
             -VmNames @('sen1', 'sen2', 'sen3') `
             -OutputDirectory $captureDirectory
+
+      - name: Persist sanitized latest console evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-command'
+          $captureDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-after-command'
+          $evidenceDirectory = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/latest'
+
+          if (Test-Path -LiteralPath $evidenceDirectory) {
+            Remove-Item -LiteralPath $evidenceDirectory -Recurse -Force
+          }
+          New-Item -Path $evidenceDirectory -ItemType Directory -Force | Out-Null
+
+          $resultPath = Join-Path $resultDirectory 'console-command-result.json'
+          if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+            $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($result.PSObject.Properties['CredentialPathUsed'] -and $null -ne $result.CredentialPathUsed) {
+              $result.CredentialPathUsed = 'local-secure-store'
+            }
+            $result | ConvertTo-Json -Depth 20 |
+              Set-Content -LiteralPath (Join-Path $evidenceDirectory 'console-command-result.json') -Encoding UTF8
+          }
+
+          foreach ($name in @(
+            'console-command-result.txt',
+            'console-command-trace.txt'
+          )) {
+            $source = Join-Path $resultDirectory $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              Copy-Item -LiteralPath $source -Destination (Join-Path $evidenceDirectory $name) -Force
+            }
+          }
+
+          foreach ($name in @(
+            'sen1-console.png',
+            'sen2-console.png',
+            'sen3-console.png',
+            'SHA256SUMS.txt'
+          )) {
+            $source = Join-Path $captureDirectory $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              Copy-Item -LiteralPath $source -Destination (Join-Path $evidenceDirectory $name) -Force
+            }
+          }
+
+          [ordered]@{
+            schemaVersion = '1.0'
+            sourceCommit = '${{ github.sha }}'
+            sourceRunId = '${{ github.run_id }}'
+            requestId = if ($null -ne $result) { [string]$result.RequestId } else { $null }
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            containsCredentialValues = $false
+          } | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory 'metadata.json') -Encoding UTF8
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/runtime-evidence/latest'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'No console evidence changes to commit.'
+            exit 0
+          }
+          git commit -m 'ops(evidence): refresh Hyper-V console state [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed with exit code $LASTEXITCODE"
+          }
+          git push origin "HEAD:${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "git push failed with exit code $LASTEXITCODE"
+          }
 
       - name: Upload command and console evidence
         if: always()
