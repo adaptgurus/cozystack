@@ -1,0 +1,101 @@
+name: LayerSentry Harvester API Validation
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/api-validation-requests/*.json
+      - hack/layersentry/test-harvester-cluster-api.ps1
+      - hack/layersentry/test-harvester-cluster-api-safe.ps1
+      - .github/workflows/layersentry-harvester-api-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-three-node-installer-autopilot
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Authenticate and validate Kubernetes, KubeVirt and Longhorn
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact API validation source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/api-validation-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one API-validation request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'VALIDATE_HARVESTER_CLUSTER_API') {
+            throw "Unsupported API-validation operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([bool]$request.writeCredentialValuesToEvidence) {
+            throw 'Credential values must never be written to validation evidence.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'API validation must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/test-harvester-cluster-api.ps1',
+            'hack/layersentry/test-harvester-cluster-api-safe.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated authenticated, non-release API-validation request: $requestPath"
+
+      - name: Run authenticated Harvester and Kubernetes API validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-harvester-api-validation'
+          & 'hack/layersentry/test-harvester-cluster-api-safe.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $output
+
+      - name: Upload authenticated API validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-harvester-api-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-harvester-api-validation\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
