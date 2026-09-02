@@ -1,0 +1,205 @@
+name: LayerSentry Three-Node Installer Autopilot v4
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/autopilot-v4-requests/*.json
+      - hack/layersentry/invoke-harvester-installer-autopilot-v4.ps1
+      - hack/layersentry/read-console-ocr.ps1
+      - hack/layersentry/invoke-hyperv-console-command.ps1
+      - hack/layersentry/capture-hyperv-console.ps1
+      - .github/workflows/layersentry-installer-autopilot-v4.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-three-node-installer-autopilot
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Resume and complete sen1, sen2 and sen3 safely
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout exact v4 autopilot source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate explicit authorization and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/autopilot-v4-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one v4 autopilot request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'RESUME_AND_COMPLETE_THREE_NODE_LAYERSENTRY_POC_V4') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'Required explicit installation authorization is absent.'
+          }
+          $expected = @('sen1', 'sen2', 'sen3')
+          $actual = @($request.virtualMachines | ForEach-Object { [string]$_ } | Sort-Object)
+          if (($actual -join ',') -ne (($expected | Sort-Object) -join ',')) {
+            throw 'The request is not restricted to sen1, sen2, and sen3.'
+          }
+          if (-not [bool]$request.allowDiskInstallation -or -not [bool]$request.allowIsoDetachAndReboot) {
+            throw 'The request does not authorize the required disk installation and media-detach operations.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'POC installation authorization must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/invoke-harvester-installer-autopilot-v4.ps1',
+            'hack/layersentry/read-console-ocr.ps1',
+            'hack/layersentry/invoke-hyperv-console-command.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $resolved = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $resolved,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated authorized idempotent three-node installation request: $requestPath"
+
+      - name: Resume installation from live VM state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-installer-autopilot-v4'
+          & 'hack/layersentry/invoke-harvester-installer-autopilot-v4.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory $output `
+            -MaxIterations 180 `
+            -PollSeconds 12 `
+            -FirstNodeTimeoutMinutes 120 `
+            -JoinNodesTimeoutMinutes 120
+
+      - name: Capture final consoles and host-side VM evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-installer-autopilot-v4'
+          $final = Join-Path $output 'final-state'
+          New-Item -Path $final -ItemType Directory -Force | Out-Null
+
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory (Join-Path $final 'consoles')
+
+          function Test-Tcp {
+            param([string]$Address, [int]$Port)
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne(1500, $false)) {
+                return $false
+              }
+              $client.EndConnect($async)
+              return $true
+            }
+            catch {
+              return $false
+            }
+            finally {
+              $client.Close()
+            }
+          }
+
+          $nodes = [ordered]@{
+            sen1 = '10.10.10.11'
+            sen2 = '10.10.10.12'
+            sen3 = '10.10.10.13'
+          }
+          $records = foreach ($name in @('sen1', 'sen2', 'sen3')) {
+            $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+            if ($null -eq $vm) {
+              [ordered]@{ name = $name; exists = $false }
+              continue
+            }
+            $processor = Get-VMProcessor -VMName $name
+            $adapter = Get-VMNetworkAdapter -VMName $name | Select-Object -First 1
+            $disks = @(Get-VMHardDiskDrive -VMName $name |
+              Sort-Object ControllerNumber, ControllerLocation |
+              ForEach-Object {
+                $vhd = Get-VHD -Path $_.Path
+                [ordered]@{
+                  path = $_.Path
+                  maximumBytes = [int64]$vhd.Size
+                  currentFileBytes = [int64]$vhd.FileSize
+                  controllerNumber = $_.ControllerNumber
+                  controllerLocation = $_.ControllerLocation
+                }
+              })
+            [ordered]@{
+              name = $name
+              expectedAddress = $nodes[$name]
+              exists = $true
+              state = $vm.State.ToString()
+              uptimeSeconds = [int64]$vm.Uptime.TotalSeconds
+              processorCount = $processor.Count
+              exposeVirtualizationExtensions = [bool]$processor.ExposeVirtualizationExtensions
+              startupMemoryBytes = [int64]$vm.MemoryStartup
+              dynamicMemoryEnabled = [bool]$vm.DynamicMemoryEnabled
+              switchName = $adapter.SwitchName
+              macAddressSpoofing = $adapter.MacAddressSpoofing.ToString()
+              reportedAddresses = @($adapter.IPAddresses)
+              ping = [bool](Test-Connection -ComputerName $nodes[$name] -Count 1 -Quiet -ErrorAction SilentlyContinue)
+              sshPort22 = Test-Tcp -Address $nodes[$name] -Port 22
+              disks = $disks
+              dvdMedia = @((Get-VMDvdDrive -VMName $name).Path)
+            }
+          }
+
+          [ordered]@{
+            schemaVersion = '4.0'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            clusterVip = '10.10.10.10'
+            vipHttps443 = Test-Tcp -Address '10.10.10.10' -Port 443
+            vipKubernetes6443 = Test-Tcp -Address '10.10.10.10' -Port 6443
+            virtualMachines = @($records)
+            installationEvidenceOnly = $true
+            runtimeQualificationComplete = $false
+            productionReleaseApproved = $false
+            airgapQualified = $false
+            haQualified = $false
+          } | ConvertTo-Json -Depth 15 |
+            Set-Content -LiteralPath (Join-Path $final 'hyperv-final-state.json') -Encoding UTF8
+
+      - name: Upload complete v4 installer evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-three-node-installer-v4-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-installer-autopilot-v4\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
