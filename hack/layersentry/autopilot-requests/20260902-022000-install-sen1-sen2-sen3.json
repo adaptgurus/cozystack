@@ -1,0 +1,18 @@
+{
+  "requestId": "install-sen1-sen2-sen3-20260902-022000",
+  "operation": "INSTALL_THREE_NODE_LAYERSENTRY_POC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "virtualMachines": ["sen1", "sen2", "sen3"],
+  "clusterVip": "10.10.10.10",
+  "nodeAddresses": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "installationMediaClassification": "POC_CANDIDATE_NOT_PRODUCTION_APPROVED",
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "credentialValuesStoredInGit": false,
+  "allowDiskInstallation": true,
+  "allowIsoDetachAndReboot": true,
+  "releaseApprovalImplied": false
+}
