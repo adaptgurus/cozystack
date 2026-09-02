@@ -1,0 +1,8 @@
+{
+  "requestId": "release-runner-for-join-diagnostic-20260902-01",
+  "operation": "PREEMPT_PASSIVE_FINALIZER_FOR_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "reason": "sen2 and sen3 remain SSH-only after installed-disk boot",
+  "changeVirtualMachineState": false,
+  "productionReleaseApprovalImplied": false
+}
