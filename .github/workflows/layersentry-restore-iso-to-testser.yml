@@ -1,0 +1,150 @@
+name: LayerSentry Restore ISO to TESTSER
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-restore-iso-to-testser.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-restore-iso-to-testser
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Locate and restore LayerSentry ISO on TESTSER
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact restore workflow source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Locate, verify, and restore ISO
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $targetDirectory = 'C:\Users\opc\Downloads\final iso'
+          $targetPath = Join-Path $targetDirectory 'layersentry-v1.0-amd64.iso'
+          $expectedSha256 = 'bc1ca4540faa79ebf6c26f185ebd99247b222077c5310541e06a3acbc2bbda1e'
+          $evidenceDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-iso-restore'
+          New-Item -ItemType Directory -Force -Path $targetDirectory | Out-Null
+          New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
+
+          $searchRoots = @(
+            'C:\Users\opc\Downloads',
+            'C:\actions-runner\_work',
+            'C:\LayerSentry',
+            'C:\ProgramData\LayerSentry'
+          ) | Where-Object { Test-Path -LiteralPath $_ }
+
+          $candidates = New-Object System.Collections.Generic.List[object]
+          foreach ($root in $searchRoots) {
+            Get-ChildItem -LiteralPath $root -Filter '*.iso' -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -ne $targetPath } |
+              ForEach-Object {
+                $nameScore = 0
+                if ($_.Name -ieq 'layersentry-v1.0-amd64.iso') { $nameScore += 100 }
+                if ($_.Name -match '(?i)layersentry') { $nameScore += 50 }
+                if ($_.Name -match '(?i)harvester') { $nameScore += 20 }
+                if ($_.Length -gt 1GB) { $nameScore += 10 }
+                $candidates.Add([pscustomobject]@{
+                  FullName = $_.FullName
+                  Name = $_.Name
+                  Length = [int64]$_.Length
+                  LastWriteTimeUtc = $_.LastWriteTimeUtc
+                  NameScore = $nameScore
+                })
+              }
+          }
+
+          $candidateEvidence = @()
+          $selected = $null
+          foreach ($candidate in ($candidates | Sort-Object NameScore, LastWriteTimeUtc -Descending)) {
+            $hash = (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $record = [ordered]@{
+              path = $candidate.FullName
+              bytes = $candidate.Length
+              sha256 = $hash
+              expectedHashMatch = ($hash -eq $expectedSha256)
+              nameScore = $candidate.NameScore
+              lastWriteTimeUtc = $candidate.LastWriteTimeUtc.ToString('o')
+            }
+            $candidateEvidence += $record
+            if ($hash -eq $expectedSha256) {
+              $selected = $record
+              break
+            }
+          }
+
+          if ($null -eq $selected) {
+            $candidateEvidence | ConvertTo-Json -Depth 8 |
+              Set-Content -LiteralPath (Join-Path $evidenceDirectory 'candidate-search.json') -Encoding UTF8
+            throw "No local ISO matching the previously verified SHA-256 $expectedSha256 was found on TESTSER. Target directory was created, but no unverified ISO was copied."
+          }
+
+          $partialPath = "$targetPath.partial"
+          if (Test-Path -LiteralPath $partialPath) {
+            Remove-Item -LiteralPath $partialPath -Force
+          }
+          Copy-Item -LiteralPath $selected.path -Destination $partialPath -Force
+          $copiedHash = (Get-FileHash -LiteralPath $partialPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($copiedHash -ne $expectedSha256) {
+            Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+            throw "Copied ISO failed SHA-256 verification: expected $expectedSha256, found $copiedHash"
+          }
+
+          Move-Item -LiteralPath $partialPath -Destination $targetPath -Force
+          $finalFile = Get-Item -LiteralPath $targetPath
+          $finalSha256 = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($finalSha256 -ne $expectedSha256) {
+            throw "Final ISO SHA-256 verification failed after move."
+          }
+          $finalSha512 = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA512).Hash.ToLowerInvariant()
+
+          "$finalSha512 *layersentry-v1.0-amd64.iso" |
+            Set-Content -LiteralPath "$targetPath.sha512" -Encoding ASCII
+          "$finalSha256 *layersentry-v1.0-amd64.iso" |
+            Set-Content -LiteralPath "$targetPath.sha256" -Encoding ASCII
+
+          [ordered]@{
+            schemaVersion = '1.0'
+            restoredAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            computerName = $env:COMPUTERNAME
+            runnerName = $env:RUNNER_NAME
+            sourcePath = $selected.path
+            targetPath = $targetPath
+            bytes = [int64]$finalFile.Length
+            sha256 = $finalSha256
+            sha512 = $finalSha512
+            verifiedAgainstPreviouslyRecordedSha256 = $true
+          } | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory 'iso-restore-result.json') -Encoding UTF8
+
+          $candidateEvidence | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $evidenceDirectory 'candidate-search.json') -Encoding UTF8
+
+          Write-Host 'LAYERSENTRY ISO RESTORE: PASS'
+          Write-Host "Target: $targetPath"
+          Write-Host "Bytes: $($finalFile.Length)"
+          Write-Host "SHA-256: $finalSha256"
+
+      - name: Upload restore evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-iso-restore-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-iso-restore\**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
