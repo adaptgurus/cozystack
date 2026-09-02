@@ -107,11 +107,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          $workerRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-worker-plan-correction'
           & 'hack/layersentry/correct-sen2-worker-plan.ps1' `
             -RequestPath $env:REQUEST_PATH `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
-            -OutputDirectory $root `
+            -OutputDirectory $workerRoot `
             -LocalPlanWaitMinutes 10
 
       - name: Repair sen2 service role and enforce twelve-minute local stability
@@ -146,8 +146,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          $workerRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-worker-plan-correction'
           New-Item -Path $root -ItemType Directory -Force | Out-Null
-          $correctionPath = Join-Path $root 'worker-plan-correction-result.json'
+
+          $workerArchive = Join-Path $root 'worker-plan-correction'
+          if (Test-Path -LiteralPath $workerArchive) {
+            Remove-Item -LiteralPath $workerArchive -Recurse -Force
+          }
+          if (Test-Path -LiteralPath $workerRoot -PathType Container) {
+            Copy-Item -LiteralPath $workerRoot -Destination $workerArchive -Recurse -Force
+          }
+
+          $correctionPath = Join-Path $workerRoot 'worker-plan-correction-result.json'
           $repairPath = Join-Path $root 'repair-result.json'
           $runtimePath = Join-Path $root 'runtime\runtime-completion.json'
           $correction = $null
