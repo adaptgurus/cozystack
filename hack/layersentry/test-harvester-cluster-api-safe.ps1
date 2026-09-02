@@ -12,6 +12,12 @@ New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).ProviderPath
 $resultPath = Join-Path $OutputDirectory 'cluster-api-validation.json'
 $statusPath = Join-Path $OutputDirectory 'STATUS.md'
+$transportDirectory = Join-Path $OutputDirectory '.transport'
+if (Test-Path -LiteralPath $transportDirectory) {
+    Remove-Item -LiteralPath $transportDirectory -Recurse -Force
+}
+New-Item -Path $transportDirectory -ItemType Directory -Force | Out-Null
+
 $startedAt = (Get-Date).ToUniversalTime()
 $failure = $null
 $passed = $false
@@ -20,6 +26,10 @@ $authenticatedUser = $null
 $token = $null
 $credentials = $null
 $passwordCandidates = @()
+$loginAttemptCount = 0
+$rootStatusCode = $null
+$curlVersion = $null
+$settings = @()
 $nodes = @()
 $pods = @()
 $deployments = @()
@@ -41,6 +51,9 @@ function Get-PropertyValue {
         [Parameter(Mandatory = $true)][string[]]$Names
     )
 
+    if ($null -eq $Object) {
+        return $null
+    }
     foreach ($name in $Names) {
         $property = $Object.PSObject.Properties |
             Where-Object { $_.Name -ieq $name } |
@@ -84,6 +97,13 @@ function Get-ConditionStatus {
     return [string]$matches[0].status
 }
 
+$curlCommand = Get-Command -Name 'curl.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $curlCommand) {
+    throw 'curl.exe is required for PowerShell 5.1-compatible TLS validation but is not installed.'
+}
+$curlPath = $curlCommand.Source
+$curlVersion = [string]((& $curlPath --version | Select-Object -First 1))
+
 function Invoke-LayerSentryJsonRequest {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('GET','POST')][string]$Method,
@@ -94,59 +114,73 @@ function Invoke-LayerSentryJsonRequest {
         [switch]$AllowHttpError
     )
 
-    $headers = @{
-        Accept = 'application/json'
-        'User-Agent' = 'LayerSentry-Cluster-Validation/1.0'
-    }
-    if (-not [string]::IsNullOrWhiteSpace($BearerToken)) {
-        $headers.Authorization = "Bearer $BearerToken"
-    }
+    $requestId = [Guid]::NewGuid().ToString('N')
+    $responsePath = Join-Path $transportDirectory "$requestId.response.json"
+    $stderrPath = Join-Path $transportDirectory "$requestId.stderr.txt"
+    $requestBodyPath = Join-Path $transportDirectory "$requestId.request.json"
 
-    $parameters = @{
-        Method = $Method
-        Uri = $Uri
-        Headers = $headers
-        UseBasicParsing = $true
-        TimeoutSec = $TimeoutSeconds
-        ErrorAction = 'Stop'
+    $arguments = @(
+        '--silent',
+        '--show-error',
+        '--insecure',
+        '--http1.1',
+        '--connect-timeout', '10',
+        '--max-time', [string]$TimeoutSeconds,
+        '--request', $Method,
+        '--header', 'Accept: application/json',
+        '--header', 'User-Agent: LayerSentry-Cluster-Validation/2.0',
+        '--output', $responsePath,
+        '--write-out', '%{http_code}'
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($BearerToken)) {
+        $arguments += @('--header', "Authorization: Bearer $BearerToken")
     }
     if ($null -ne $Body) {
-        $parameters.ContentType = 'application/json'
-        $parameters.Body = ($Body | ConvertTo-Json -Depth 20 -Compress)
+        $json = $Body | ConvertTo-Json -Depth 20 -Compress
+        [System.IO.File]::WriteAllText(
+            $requestBodyPath,
+            $json,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        $arguments += @(
+            '--header', 'Content-Type: application/json',
+            '--data-binary', "@$requestBodyPath"
+        )
     }
 
-    try {
-        $response = Invoke-WebRequest @parameters
-        $parsedBody = $null
-        if (-not [string]::IsNullOrWhiteSpace([string]$response.Content)) {
-            $parsedBody = $response.Content | ConvertFrom-Json
+    $statusText = [string](& $curlPath @arguments 2> $stderrPath)
+    $curlExitCode = $LASTEXITCODE
+    $stderrText = $null
+    if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+        $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+
+    if ($curlExitCode -ne 0) {
+        $message = "curl.exe failed with exit code $curlExitCode for $Method $Uri"
+        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
+            $message += ": $stderrText"
+        }
+        if (-not $AllowHttpError) {
+            throw $message
         }
         return [pscustomobject]@{
-            StatusCode = [int]$response.StatusCode
-            Body = $parsedBody
-            Error = $null
+            StatusCode = $null
+            Body = $null
+            Error = $message
+            CurlExitCode = $curlExitCode
         }
     }
-    catch [System.Net.WebException] {
-        $exception = $_.Exception
-        $statusCode = $null
-        $responseText = $null
-        if ($null -ne $exception.Response) {
-            $statusCode = [int]$exception.Response.StatusCode
-            $stream = $exception.Response.GetResponseStream()
-            if ($null -ne $stream) {
-                $reader = New-Object System.IO.StreamReader($stream)
-                try {
-                    $responseText = $reader.ReadToEnd()
-                }
-                finally {
-                    $reader.Dispose()
-                    $stream.Dispose()
-                }
-            }
-        }
 
-        $parsedBody = $null
+    $statusCode = 0
+    if (-not [int]::TryParse($statusText.Trim(), [ref]$statusCode)) {
+        throw "curl.exe returned an invalid HTTP status value for $Method $Uri: $statusText"
+    }
+
+    $responseText = $null
+    $parsedBody = $null
+    if (Test-Path -LiteralPath $responsePath -PathType Leaf) {
+        $responseText = Get-Content -LiteralPath $responsePath -Raw -ErrorAction SilentlyContinue
         if (-not [string]::IsNullOrWhiteSpace($responseText)) {
             try {
                 $parsedBody = $responseText | ConvertFrom-Json
@@ -155,15 +189,17 @@ function Invoke-LayerSentryJsonRequest {
                 $parsedBody = $null
             }
         }
+    }
 
-        if (-not $AllowHttpError) {
-            throw "HTTP $Method $Uri failed with status ${statusCode}: $($exception.Message)"
-        }
-        return [pscustomobject]@{
-            StatusCode = $statusCode
-            Body = $parsedBody
-            Error = $exception.Message
-        }
+    if ($statusCode -ge 400 -and -not $AllowHttpError) {
+        throw "HTTP $Method $Uri failed with status ${statusCode}."
+    }
+
+    return [pscustomobject]@{
+        StatusCode = $statusCode
+        Body = $parsedBody
+        Error = if ($statusCode -ge 400) { "HTTP $statusCode" } else { $null }
+        CurlExitCode = $curlExitCode
     }
 }
 
@@ -226,10 +262,6 @@ function Convert-NodeSummary {
     }
 }
 
-$previousCertificateCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-
 try {
     if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) {
         throw "Credential file is missing: $CredentialPath"
@@ -265,12 +297,14 @@ try {
     }
 
     $rootResponse = Invoke-LayerSentryJsonRequest -Method GET -Uri "$ClusterUrl/" -AllowHttpError
-    if ($null -eq $rootResponse.StatusCode) {
+    $rootStatusCode = $rootResponse.StatusCode
+    if ($null -eq $rootStatusCode) {
         throw "Cluster HTTPS endpoint is not reachable: $($rootResponse.Error)"
     }
 
     foreach ($candidateUser in @('admin', 'rancher')) {
         foreach ($candidatePassword in $passwordCandidates) {
+            $loginAttemptCount++
             $loginResponse = Invoke-LayerSentryJsonRequest `
                 -Method POST `
                 -Uri "$ClusterUrl/v3-public/localProviders/local?action=login" `
@@ -300,7 +334,28 @@ try {
     }
 
     if (-not $authenticated) {
-        throw 'Local administrator authentication failed. The first-login web password may still be unfinished or may differ from the protected bootstrap credential file.'
+        throw 'Local administrator authentication failed. The first-login web password is unfinished or differs from every protected bootstrap credential candidate.'
+    }
+
+    foreach ($settingName in @('first-login', 'eula-agreed', 'ui-pl', 'ui-brand', 'server-url')) {
+        $settingResponse = Invoke-LayerSentryJsonRequest `
+            -Method GET `
+            -Uri "$ClusterUrl/v3/settings/$settingName" `
+            -BearerToken $token `
+            -AllowHttpError
+        if ($settingResponse.StatusCode -ge 200 -and $settingResponse.StatusCode -lt 300 -and $null -ne $settingResponse.Body) {
+            $settings += [ordered]@{
+                name = $settingName
+                value = [string](Get-PropertyValue -Object $settingResponse.Body -Names @('value'))
+                default = [string](Get-PropertyValue -Object $settingResponse.Body -Names @('default'))
+            }
+        }
+        else {
+            $settings += [ordered]@{
+                name = $settingName
+                statusCode = $settingResponse.StatusCode
+            }
+        }
     }
 
     $proxy = "$ClusterUrl/k8s/clusters/local"
@@ -323,16 +378,15 @@ try {
         Get-CollectionItems -Body $podsResponse.Body |
             ForEach-Object {
                 $conditions = @($_.status.conditions)
+                $restartSum = (@($_.status.containerStatuses) |
+                    Measure-Object -Property restartCount -Sum).Sum
                 [ordered]@{
                     namespace = [string]$_.metadata.namespace
                     name = [string]$_.metadata.name
                     nodeName = [string]$_.spec.nodeName
                     phase = [string]$_.status.phase
                     ready = (Get-ConditionStatus -Conditions $conditions -Type 'Ready')
-                    totalRestarts = [int](
-                        (@($_.status.containerStatuses) |
-                            Measure-Object -Property restartCount -Sum).Sum
-                    )
+                    totalRestarts = if ($null -eq $restartSum) { 0 } else { [int]$restartSum }
                 }
             }
     )
@@ -394,12 +448,9 @@ try {
     $longhornNodes = @(
         Get-CollectionItems -Body $longhornResponse.Body |
             ForEach-Object {
-                [ordered]@{
-                    name = [string]$_.metadata.name
-                    allowScheduling = [bool]$_.spec.allowScheduling
-                    ready = (Get-ConditionStatus -Conditions @($_.status.conditions) -Type 'Ready')
-                    schedulable = (Get-ConditionStatus -Conditions @($_.status.conditions) -Type 'Schedulable')
-                    disks = @($_.status.diskStatus.PSObject.Properties | ForEach-Object {
+                $diskEvidence = @()
+                if ($null -ne $_.status.diskStatus) {
+                    $diskEvidence = @($_.status.diskStatus.PSObject.Properties | ForEach-Object {
                         [ordered]@{
                             name = $_.Name
                             storageAvailable = [int64]$_.Value.storageAvailable
@@ -407,6 +458,13 @@ try {
                             storageScheduled = [int64]$_.Value.storageScheduled
                         }
                     })
+                }
+                [ordered]@{
+                    name = [string]$_.metadata.name
+                    allowScheduling = [bool]$_.spec.allowScheduling
+                    ready = (Get-ConditionStatus -Conditions @($_.status.conditions) -Type 'Ready')
+                    schedulable = (Get-ConditionStatus -Conditions @($_.status.conditions) -Type 'Schedulable')
+                    disks = $diskEvidence
                 }
             }
     )
@@ -424,7 +482,7 @@ try {
         $longhornNodes |
             Where-Object {
                 $_.allowScheduling -and
-                ($_.schedulable -eq 'True' -or $null -eq $_.schedulable)
+                ($_.schedulable -eq 'True' -or [string]::IsNullOrWhiteSpace([string]$_.schedulable))
             }
     ).Count
 
@@ -452,7 +510,8 @@ try {
 
     $expectedNames = @('sen1', 'sen2', 'sen3')
     $actualNames = @($nodes | ForEach-Object { $_.name } | Sort-Object)
-    if ($nodes.Count -ne 3 -or (Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames)) {
+    $nodeDifference = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames)
+    if ($nodes.Count -ne 3 -or $nodeDifference.Count -gt 0) {
         throw "Kubernetes node inventory is [$($actualNames -join ', ')]; expected exactly [sen1, sen2, sen3]."
     }
     if ($readyNodeCount -ne 3) {
@@ -486,16 +545,25 @@ catch {
 finally {
     $finishedAt = (Get-Date).ToUniversalTime()
     $evidence = [ordered]@{
-        schemaVersion = '2.0'
+        schemaVersion = '3.0'
         startedAtUtc = $startedAt.ToString('o')
         finishedAtUtc = $finishedAt.ToString('o')
         durationSeconds = [int64]($finishedAt - $startedAt).TotalSeconds
         clusterUrl = $ClusterUrl
+        transport = [ordered]@{
+            implementation = 'curl.exe'
+            version = $curlVersion
+            tlsCertificateVerification = 'disabled-for-self-signed-lab-endpoint'
+            httpVersion = 'HTTP/1.1'
+            rootStatusCode = $rootStatusCode
+        }
         authenticated = $authenticated
         authenticatedUser = $authenticatedUser
+        loginAttemptCount = $loginAttemptCount
         credentialValuesRetained = $false
         passed = $passed
         failure = $failure
+        rancherSettings = $settings
         kubernetesVersion = $kubernetesVersion
         nodeCount = $nodes.Count
         readyNodeCount = $readyNodeCount
@@ -531,6 +599,8 @@ finally {
 # LayerSentry Harvester API validation
 
 - Cluster URL: $ClusterUrl
+- Transport: curl.exe over HTTP/1.1 with lab certificate verification disabled
+- Root HTTP status: $rootStatusCode
 - Authentication succeeded: $authenticated
 - Authenticated user: $authenticatedUser
 - Kubernetes nodes: $($nodes.Count)
@@ -548,7 +618,9 @@ finally {
 - Failure: $failure
 "@ | Set-Content -LiteralPath $statusPath -Encoding UTF8
 
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCertificateCallback
+    if (Test-Path -LiteralPath $transportDirectory) {
+        Remove-Item -LiteralPath $transportDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
     $token = $null
     $passwordCandidates = @()
     $credentials = $null
