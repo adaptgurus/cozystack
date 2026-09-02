@@ -1,0 +1,26 @@
+{
+  "requestId": "join-node-network-diagnostic-20260902-01",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 123},
+        {"kind": "sleep", "milliseconds": 1500},
+        {"kind": "text", "value": "clear; echo SEN2_NETWORK; ip -4 -br address; ip route; ping -c 2 10.10.10.10"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 5000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 123},
+        {"kind": "sleep", "milliseconds": 1500},
+        {"kind": "text", "value": "clear; echo SEN3_NETWORK; ip -4 -br address; ip route; ping -c 2 10.10.10.10"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 5000}
+      ]
+    }
+  ]
+}
