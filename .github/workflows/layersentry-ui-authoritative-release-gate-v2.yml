@@ -1,0 +1,156 @@
+name: LayerSentry UI Authoritative Release Gate v2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/ui-release-requests-v2/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-ui-authoritative-release-gate-v2
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Qualify exact LayerSentry UI request without cluster mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact release-request commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Bind exactly one release request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t requests < <(
+            git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'hack/layersentry/ui-release-requests-v2/*.json' |
+              sed '/^[[:space:]]*$/d'
+          )
+          if (( ${#requests[@]} != 1 )); then
+            echo "Expected exactly one version-2 UI release request; found ${#requests[@]}." >&2
+            printf '%s\n' "${requests[@]}" >&2
+            exit 1
+          fi
+          request="${requests[0]}"
+          expected='hack/layersentry/ui-release-requests-v2/20260903-qualify-layersentry-ui-production-01.json'
+          if [[ "$request" != "$expected" ]]; then
+            echo "Unexpected release request path: $request" >&2
+            exit 1
+          fi
+          echo "path=$request" >> "$GITHUB_OUTPUT"
+          echo "REQUEST_PATH=$request" >> "$GITHUB_ENV"
+
+      - name: Derive reproducible source epoch and initialize evidence
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+            echo 'Unable to derive a numeric source epoch.' >&2
+            exit 1
+          fi
+          evidence="$RUNNER_TEMP/layersentry-ui-authoritative-v2-$GITHUB_RUN_ID"
+          mkdir -p "$evidence"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
+          echo "LAYERSENTRY_BUILD_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "EVIDENCE_ROOT=$evidence" >> "$GITHUB_ENV"
+
+      - name: Execute structural production release qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hack/layersentry/ui-release-gate/qualify-ui-release.sh
+
+      - name: Upload qualified release candidate
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-ui-authoritative-v2-release-${{ github.run_id }}
+          path: |
+            hack/layersentry/ui-production-v3/release
+            hack/layersentry/ui-production-v3/layersentry-production-ui-v3.tar.gz
+            hack/layersentry/ui-production-v3/layersentry-production-ui-v3.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Upload sanitized qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-ui-authoritative-v2-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/layersentry-ui-authoritative-v2-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+
+      - name: Publish authoritative qualification summary
+        if: always()
+        shell: bash
+        run: |
+          result="$EVIDENCE_ROOT/terminal-result.json"
+          if [[ -s "$result" ]]; then
+            passed="$(jq -r '.qualificationGatePassed' "$result")"
+            stage="$(jq -r '.completedStage' "$result")"
+            failure="$(jq -r '.failure // "none"' "$result")"
+          else
+            passed=false
+            stage=missing-terminal-result
+            failure='Terminal qualification evidence is missing.'
+          fi
+          {
+            echo '## LayerSentry UI authoritative release gate v2'
+            echo
+            echo "- Completed stage: **$stage**"
+            echo "- Qualification passed: **$passed**"
+            echo '- Dependency-free and air-gap deterministic: **required**'
+            echo '- LayerSentry-only visible shell identity: **required**'
+            echo '- Responsive correction: **required**'
+            echo '- Security-header inheritance proof: **required**'
+            echo '- Reproducible assembly: **required**'
+            echo '- SHA-256/SHA-384 manifest and SPDX SBOM: **required**'
+            echo '- Hardened digest-gated deployment template: **required**'
+            echo '- Live cluster deployment performed: **false**'
+            echo '- Protected credential file read: **false**'
+            echo '- Production release approved: **false**'
+            echo "- Failure: $failure"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce terminal qualification result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$EVIDENCE_ROOT/terminal-result.json"
+          test -s "$result"
+          jq -e '
+            .product == "LayerSentry" and
+            .component == "production-ui" and
+            .completedStage == "complete" and
+            .qualificationGatePassed == true and
+            .responsiveCorrectionVerified == true and
+            .securityHeaderInheritanceVerified == true and
+            .reproducibleAssemblyVerified == true and
+            .integrityManifestVerified == true and
+            .spdxSbomVerified == true and
+            .hardenedDeploymentTemplateVerified == true and
+            .liveClusterDeploymentPerformed == false and
+            .bootstrapCredentialFileRead == false and
+            .credentialValuesWrittenToEvidence == false and
+            .kubeconfigPublished == false and
+            .productionReleaseApproved == false
+          ' "$result" >/dev/null
+          echo 'LAYERSENTRY UI AUTHORITATIVE RELEASE GATE V2: PASS'
