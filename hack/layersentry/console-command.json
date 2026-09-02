@@ -1,22 +1,26 @@
 {
-  "requestId": "populate-focused-node-password-fields-20260902-01",
-  "delayAfterSeconds": 5,
+  "requestId": "reset-sen1-and-fill-join-password-confirmations-20260902-01",
+  "delayAfterSeconds": 6,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"}
+        {"kind": "key", "code": 27}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
+        {"kind": "key", "code": 9},
+        {"kind": "sleep", "milliseconds": 1200},
         {"kind": "secret", "name": "nodePassword"}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
+        {"kind": "key", "code": 9},
+        {"kind": "sleep", "milliseconds": 1200},
         {"kind": "secret", "name": "nodePassword"}
       ]
     }
