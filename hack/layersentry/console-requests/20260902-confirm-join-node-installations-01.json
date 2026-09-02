@@ -1,0 +1,20 @@
+{
+  "requestId": "confirm-join-node-installations-20260902-01",
+  "delayAfterSeconds": 30,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}
