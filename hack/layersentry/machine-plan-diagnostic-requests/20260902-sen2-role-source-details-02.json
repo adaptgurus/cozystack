@@ -1,0 +1,12 @@
+{
+  "requestId": "diagnose-sen2-role-source-details-20260902-02",
+  "operation": "READ_ONLY_CLUSTER_MACHINE_PLAN_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "primaryNodeAddress": "10.10.10.11",
+  "targetPlanSecret": "fleet-local/custom-81a2c5e94b13-machine-plan",
+  "comparisonPlanSecret": "fleet-local/custom-a5a2c67354be-machine-plan",
+  "diagnosticPurpose": "Identify the exact controller and owner object that assigned sen2 control-plane and etcd roles, including sanitized managed-field ownership, CustomMachine, RKEBootstrap, RKEControlPlane, provisioning-cluster and event evidence.",
+  "modifyClusterState": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
