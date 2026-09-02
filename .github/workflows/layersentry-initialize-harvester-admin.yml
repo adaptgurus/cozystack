@@ -6,7 +6,7 @@ on:
       - ops/layersentry-hyperv-inventory
     paths:
       - hack/layersentry/admin-reset-requests/*.json
-      - hack/layersentry/initialize-harvester-admin-v2.ps1
+      - hack/layersentry/initialize-harvester-admin-v3.ps1
       - .github/workflows/layersentry-initialize-harvester-admin.yml
   workflow_dispatch:
 
@@ -21,7 +21,7 @@ jobs:
   initialize:
     name: Securely initialize and verify the Harvester administrator
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout exact administrator initialization source
@@ -82,7 +82,7 @@ jobs:
 
           $tokens = $null
           $errors = $null
-          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/initialize-harvester-admin-v2.ps1').ProviderPath
+          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/initialize-harvester-admin-v3.ps1').ProviderPath
           [void][System.Management.Automation.Language.Parser]::ParseFile(
             $scriptPath,
             [ref]$tokens,
@@ -101,7 +101,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $output = Join-Path $env:RUNNER_TEMP 'layersentry-admin-initialization'
-          & 'hack/layersentry/initialize-harvester-admin-v2.ps1' `
+          & 'hack/layersentry/initialize-harvester-admin-v3.ps1' `
             -ClusterUrl 'https://10.10.10.10' `
             -NodeAddress '10.10.10.11' `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
