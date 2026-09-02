@@ -35,16 +35,18 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $requests = @(
-            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/api-validation-requests/*.json'
-          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/api-validation-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
           if ($LASTEXITCODE -ne 0) {
             throw "git diff-tree failed with exit code $LASTEXITCODE"
           }
           if ($requests.Count -ne 1) {
             throw "Expected exactly one API-validation request; found $($requests.Count)."
           }
-          $requestPath = $requests[0].Trim()
+          $requestPath = ([string]$requests[0]).Trim()
           $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
           if ([string]$request.operation -ne 'VALIDATE_HARVESTER_CLUSTER_API') {
             throw "Unsupported API-validation operation: $($request.operation)"
@@ -96,6 +98,6 @@ jobs:
         with:
           name: layersentry-harvester-api-validation-${{ github.run_id }}
           path: ${{ runner.temp }}\layersentry-harvester-api-validation\**
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 90
           compression-level: 6
