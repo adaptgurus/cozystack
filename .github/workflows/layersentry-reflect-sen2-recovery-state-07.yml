@@ -1,0 +1,366 @@
+name: LayerSentry Reflect sen2 Recovery State 07
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/state-reflection-requests/*.json
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: layersentry-reflect-sen2-recovery-state-07
+  cancel-in-progress: false
+
+jobs:
+  reflect:
+    name: Reflect sanitized recovery state without cluster access
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout state-reflection request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Query live workflow state and commit sanitized reflection
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $ProgressPreference = 'SilentlyContinue'
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/state-reflection-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $requests.Count -ne 1) {
+            throw "Expected exactly one new state-reflection request; found $($requests.Count)."
+          }
+          $requestPath = ([string]$requests[0]).Trim()
+          if ([System.IO.Path]::GetFileName($requestPath) -cne '20260902-reflect-server-url-guard-fix-07.json') {
+            throw "Unexpected reflection request: $requestPath"
+          }
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.requestId -cne 'reflect-sen2-recovery-server-url-guard-fix-07') {
+            throw 'Unexpected state-reflection requestId.'
+          }
+          if ([string]$request.operation -cne 'REFLECT_SANITIZED_SEN2_RECOVERY_STATE') {
+            throw 'Unexpected state-reflection operation.'
+          }
+          if (-not [bool]$request.readOnlyGitHubMetadataAndSanitizedArtifact) {
+            throw 'Read-only GitHub metadata and sanitized-artifact scope is required.'
+          }
+          foreach ($forbidden in @('readProtectedCredentialFile', 'accessClusterNodes', 'modifyCluster', 'modifyVirtualMachines', 'acceptEula')) {
+            if ([bool]$request.$forbidden) {
+              throw "Forbidden state-reflection flag is true: $forbidden"
+            }
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $repositoryApi = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $branch = 'ops/layersentry-hyperv-inventory'
+          $recoveryWorkflow = 'layersentry-resume-sen2-service-continuation-06.yml'
+          $captureWorkflow = 'layersentry-capture-sen2-recovery-evidence-07.yml'
+          $expectedRecoveryTitle = 'ops(resume): continue sen2 after exact rancherd server URL guard fix'
+          $minimumExclusiveRunId = 33648778779L
+
+          function Get-WorkflowRuns {
+            param([Parameter(Mandatory = $true)][string]$WorkflowFile)
+            $encodedBranch = [uri]::EscapeDataString($branch)
+            $uri = "$repositoryApi/actions/workflows/$WorkflowFile/runs?branch=$encodedBranch&event=push&per_page=50"
+            return Invoke-RestMethod -Method Get -Headers $headers -Uri $uri
+          }
+
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(8)
+          $recoveryRun = $null
+          do {
+            $runs = Get-WorkflowRuns -WorkflowFile $recoveryWorkflow
+            $matches = @($runs.workflow_runs |
+              Where-Object {
+                [long]$_.id -gt $minimumExclusiveRunId -and
+                [string]$_.head_branch -ceq $branch -and
+                [string]$_.display_title -ceq $expectedRecoveryTitle
+              } |
+              Sort-Object -Property id -Descending |
+              Select-Object -First 1)
+            if ($matches.Count -eq 1) {
+              $recoveryRun = $matches[0]
+            }
+            if ($null -eq $recoveryRun -or [string]$recoveryRun.status -ne 'completed') {
+              Start-Sleep -Seconds 15
+            }
+          } while (($null -eq $recoveryRun -or [string]$recoveryRun.status -ne 'completed') -and (Get-Date).ToUniversalTime() -lt $deadline)
+
+          $branchInfo = Invoke-RestMethod -Method Get -Headers $headers -Uri "$repositoryApi/branches/$([uri]::EscapeDataString($branch))"
+          $branchHeadAtProbe = [string]$branchInfo.commit.sha
+          $branchCommitMessageAtProbe = [string]$branchInfo.commit.commit.message
+
+          $captureRuns = Get-WorkflowRuns -WorkflowFile $captureWorkflow
+          $captureMatch = @($captureRuns.workflow_runs |
+            Where-Object { [string]$_.head_branch -ceq $branch } |
+            Sort-Object -Property id -Descending |
+            Select-Object -First 1)
+          $captureRun = if ($captureMatch.Count -eq 1) { $captureMatch[0] } else { $null }
+
+          $recoveryState = if ($null -eq $recoveryRun) {
+            'NOT_FOUND'
+          } elseif ([string]$recoveryRun.status -ne 'completed') {
+            'IN_PROGRESS'
+          } elseif ([string]$recoveryRun.conclusion -ceq 'success') {
+            'COMPLETED_SUCCESS'
+          } else {
+            'COMPLETED_FAILURE'
+          }
+
+          $terminal = $null
+          $artifact = $null
+          $artifactDownloaded = $false
+          $probeRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-state-reflection-07'
+          $extractRoot = Join-Path $probeRoot 'artifact'
+          if (Test-Path -LiteralPath $probeRoot) {
+            Remove-Item -LiteralPath $probeRoot -Recurse -Force
+          }
+          New-Item -Path $extractRoot -ItemType Directory -Force | Out-Null
+
+          if ($null -ne $recoveryRun -and [string]$recoveryRun.status -ceq 'completed') {
+            $artifactResponse = Invoke-RestMethod -Method Get -Headers $headers -Uri "$repositoryApi/actions/runs/$($recoveryRun.id)/artifacts?per_page=100"
+            $expectedArtifactName = "layersentry-sen2-service-continuation-$($recoveryRun.id)"
+            $artifactMatches = @($artifactResponse.artifacts |
+              Where-Object { [string]$_.name -ceq $expectedArtifactName -and -not [bool]$_.expired } |
+              Select-Object -First 1)
+            if ($artifactMatches.Count -eq 1) {
+              $artifact = $artifactMatches[0]
+              $zipPath = Join-Path $probeRoot 'artifact.zip'
+              Invoke-WebRequest -Method Get -Headers $headers -Uri $artifact.archive_download_url -OutFile $zipPath
+              Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+              Remove-Item -LiteralPath $zipPath -Force
+              $artifactDownloaded = $true
+              $terminalFiles = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter 'terminal-result.json')
+              if ($terminalFiles.Count -eq 1) {
+                $terminal = Get-Content -LiteralPath $terminalFiles[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+              } elseif ($terminalFiles.Count -gt 1) {
+                throw 'The sanitized artifact contains ambiguous terminal-result.json files.'
+              }
+            }
+          }
+
+          $gateState = if ($null -eq $terminal) {
+            'UNKNOWN'
+          } elseif ([bool]$terminal.clusterRecoveryGatePassed) {
+            'PASS'
+          } else {
+            'FAIL'
+          }
+
+          $stateRoot = Join-Path $env:GITHUB_WORKSPACE 'hack\layersentry\state'
+          New-Item -Path $stateRoot -ItemType Directory -Force | Out-Null
+          $statePath = Join-Path $stateRoot 'LATEST-SEN2-RECOVERY-STATE.json'
+          $statusPath = Join-Path $stateRoot 'LATEST-SEN2-RECOVERY-STATE.md'
+          $oraclePath = Join-Path $stateRoot 'LATEST-SEN2-RECOVERY-STATE.oracle'
+
+          $state = [ordered]@{
+            schemaVersion = '1.0'
+            reflectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            requestPath = $requestPath
+            branch = $branch
+            branchHeadAtProbe = $branchHeadAtProbe
+            branchCommitMessageAtProbe = $branchCommitMessageAtProbe
+            recoveryWorkflow = $recoveryWorkflow
+            recoveryRunFound = ($null -ne $recoveryRun)
+            recoveryRunId = if ($null -ne $recoveryRun) { [long]$recoveryRun.id } else { $null }
+            recoveryHeadSha = if ($null -ne $recoveryRun) { [string]$recoveryRun.head_sha } else { $null }
+            recoveryStatus = if ($null -ne $recoveryRun) { [string]$recoveryRun.status } else { $null }
+            recoveryConclusion = if ($null -ne $recoveryRun) { [string]$recoveryRun.conclusion } else { $null }
+            recoveryState = $recoveryState
+            recoveryArtifactFound = ($null -ne $artifact)
+            recoveryArtifactDownloaded = $artifactDownloaded
+            recoveryArtifactId = if ($null -ne $artifact) { [long]$artifact.id } else { $null }
+            recoveryArtifactName = if ($null -ne $artifact) { [string]$artifact.name } else { $null }
+            recoveryArtifactDigest = if ($null -ne $artifact) { [string]$artifact.digest } else { $null }
+            terminalEvidenceFound = ($null -ne $terminal)
+            clusterRecoveryGateState = $gateState
+            currentAuthoritativeWorkerSourcePassed = if ($null -ne $terminal) { [bool]$terminal.currentAuthoritativeWorkerSourcePassed } else { $null }
+            rancherdEndpointVerificationPassed = if ($null -ne $terminal) { [bool]$terminal.rancherdEndpointVerificationPassed } else { $null }
+            exactExpectedObservedRancherdUrlMatch = if ($null -ne $terminal) { [bool]$terminal.exactExpectedObservedRancherdUrlMatch } else { $null }
+            exit64RegressionGuardPassed = if ($null -ne $terminal) { [bool]$terminal.exit64RegressionGuardPassed } else { $null }
+            configurationBackupPassed = if ($null -ne $terminal) { [bool]$terminal.configurationBackupPassed } else { $null }
+            sen2ServiceConflictRepairPassed = if ($null -ne $terminal) { [bool]$terminal.sen2ServiceConflictRepairPassed } else { $null }
+            sen2OnlyRebootPassed = if ($null -ne $terminal) { [bool]$terminal.sen2OnlyRebootPassed } else { $null }
+            consecutiveSen2StabilitySamples = if ($null -ne $terminal) { [int]$terminal.consecutiveSen2StabilitySamples } else { $null }
+            authenticatedKubernetesKubeVirtLonghornValidationPassed = if ($null -ne $terminal) { [bool]$terminal.authenticatedKubernetesKubeVirtLonghornValidationPassed } else { $null }
+            firstRunGuiEulaAcceptancePendingManualAction = if ($null -ne $terminal) { [bool]$terminal.firstRunGuiEulaAcceptancePendingManualAction } else { $true }
+            eulaAutomaticallyAccepted = $false
+            credentialValuesWrittenToEvidence = $false
+            kubeconfigWrittenToEvidence = $false
+            productionReleaseApproved = $false
+            terminalFailure = if ($null -ne $terminal) { [string]$terminal.failure } else { $null }
+            captureRunFound = ($null -ne $captureRun)
+            captureRunId = if ($null -ne $captureRun) { [long]$captureRun.id } else { $null }
+            captureStatus = if ($null -ne $captureRun) { [string]$captureRun.status } else { $null }
+            captureConclusion = if ($null -ne $captureRun) { [string]$captureRun.conclusion } else { $null }
+          }
+          $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+
+          @"
+          # LayerSentry sen2 live recovery state
+
+          - Reflected at UTC: `$($state.reflectedAtUtc)`
+          - Branch head at probe: `$branchHeadAtProbe`
+          - Branch head message at probe: $branchCommitMessageAtProbe
+          - Corrected recovery run found: **$($state.recoveryRunFound)**
+          - Corrected recovery run: `$($state.recoveryRunId)`
+          - Corrected recovery head SHA: `$($state.recoveryHeadSha)`
+          - Corrected recovery status/conclusion: **$($state.recoveryStatus) / $($state.recoveryConclusion)**
+          - Recovery artifact: `$($state.recoveryArtifactId)`
+          - Recovery artifact digest: `$($state.recoveryArtifactDigest)`
+          - Sanitized terminal evidence found: **$($state.terminalEvidenceFound)**
+          - Authoritative worker source passed: **$($state.currentAuthoritativeWorkerSourcePassed)**
+          - Read-only rancherd endpoint verification passed: **$($state.rancherdEndpointVerificationPassed)**
+          - Exact expected/observed rancherd URL match passed: **$($state.exactExpectedObservedRancherdUrlMatch)**
+          - Exit-code-64 regression guard passed: **$($state.exit64RegressionGuardPassed)**
+          - Configuration backup passed: **$($state.configurationBackupPassed)**
+          - sen2 service repair passed: **$($state.sen2ServiceConflictRepairPassed)**
+          - sen2-only reboot passed: **$($state.sen2OnlyRebootPassed)**
+          - Consecutive sen2 stability samples: **$($state.consecutiveSen2StabilitySamples) / 24**
+          - Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **$($state.authenticatedKubernetesKubeVirtLonghornValidationPassed)**
+          - Cluster recovery gate: **$gateState**
+          - First-run GUI EULA action remains manual: **$($state.firstRunGuiEulaAcceptancePendingManualAction)**
+          - EULA automatically accepted: **false**
+          - Production release approved: **false**
+          - Terminal failure: $($state.terminalFailure)
+          - Evidence-capture run: `$($state.captureRunId)` (**$($state.captureStatus) / $($state.captureConclusion)**)
+          "@ | Set-Content -LiteralPath $statusPath -Encoding UTF8
+
+          function Add-RepeatedMarker {
+            param(
+              [Parameter(Mandatory = $true)][string]$Token,
+              [Parameter(Mandatory = $true)][ValidateRange(1, 32)][int]$Count
+            )
+            1..$Count | ForEach-Object { Add-Content -LiteralPath $oraclePath -Value $Token -Encoding UTF8 }
+          }
+          function Add-HexEncoding {
+            param(
+              [Parameter(Mandatory = $true)][string]$Prefix,
+              [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]+$')][string]$Value
+            )
+            for ($index = 0; $index -lt $Value.Length; $index++) {
+              $digit = [Convert]::ToInt32($Value.Substring($index, 1), 16)
+              Add-RepeatedMarker -Token ("{0}_{1:D2}" -f $Prefix, ($index + 1)) -Count ($digit + 1)
+            }
+          }
+          function Add-DecimalEncoding {
+            param(
+              [Parameter(Mandatory = $true)][string]$Prefix,
+              [Parameter(Mandatory = $true)][ValidatePattern('^[0-9]+$')][string]$Value
+            )
+            for ($index = 0; $index -lt $Value.Length; $index++) {
+              $digit = [int]::Parse($Value.Substring($index, 1))
+              Add-RepeatedMarker -Token ("{0}_{1:D2}" -f $Prefix, ($index + 1)) -Count ($digit + 1)
+            }
+          }
+
+          if (Test-Path -LiteralPath $oraclePath) {
+            Remove-Item -LiteralPath $oraclePath -Force
+          }
+          Add-RepeatedMarker -Token 'LS_ORACLE_CALIBRATION_THREE' -Count 3
+          Add-RepeatedMarker -Token ("LS_RECOVERY_STATE_{0}" -f $recoveryState) -Count 7
+          Add-RepeatedMarker -Token ("LS_GATE_STATE_{0}" -f $gateState) -Count 7
+          Add-HexEncoding -Prefix 'LS_BRANCH_HEX' -Value $branchHeadAtProbe
+          if ($null -ne $recoveryRun) {
+            Add-DecimalEncoding -Prefix 'LS_RECOVERY_RUN_ID' -Value ([string]$recoveryRun.id)
+            Add-HexEncoding -Prefix 'LS_RECOVERY_HEAD_HEX' -Value ([string]$recoveryRun.head_sha)
+          }
+          if ($null -ne $artifact) {
+            Add-DecimalEncoding -Prefix 'LS_RECOVERY_ARTIFACT_ID' -Value ([string]$artifact.id)
+          }
+          if ($null -ne $terminal) {
+            Add-DecimalEncoding -Prefix 'LS_STABLE_SAMPLES' -Value ([string][int]$terminal.consecutiveSen2StabilitySamples)
+            foreach ($field in @(
+              'currentAuthoritativeWorkerSourcePassed',
+              'rancherdEndpointVerificationPassed',
+              'exactExpectedObservedRancherdUrlMatch',
+              'exit64RegressionGuardPassed',
+              'configurationBackupPassed',
+              'sen2ServiceConflictRepairPassed',
+              'sen2OnlyRebootPassed',
+              'authenticatedKubernetesKubeVirtLonghornValidationPassed',
+              'clusterRecoveryGatePassed'
+            )) {
+              $value = [bool]$terminal.$field
+              Add-RepeatedMarker -Token ("LS_TERMINAL_{0}_{1}" -f $field.ToUpperInvariant(), $value.ToString().ToUpperInvariant()) -Count 5
+            }
+          }
+
+          $forbiddenPatterns = @(
+            '(?i)Authorization\s*:\s*Bearer\s+\S+',
+            '(?i)"(?:adminPassword|password|token|kubeconfig)"\s*:\s*"[^"\r\n]+"',
+            '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+            '(?i)client-key-data\s*:',
+            '(?i)bootstrap-credentials\.json\s*[=:]\s*\{'
+          )
+          foreach ($file in @($statePath, $statusPath, $oraclePath)) {
+            $text = Get-Content -LiteralPath $file -Raw -Encoding UTF8
+            foreach ($pattern in $forbiddenPatterns) {
+              if ($text -match $pattern) {
+                throw "Sanitization guard rejected $([System.IO.Path]::GetFileName($file))."
+              }
+            }
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/state'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "ops(layersentry): reflect sanitized sen2 recovery state"
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to commit sanitized state reflection.'
+            }
+            git pull --rebase origin $branch
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to rebase the state reflection.'
+            }
+            git push origin "HEAD:$branch"
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to push the state reflection.'
+            }
+          } else {
+            Write-Host 'The sanitized state reflection already matches Git.'
+          }
+
+          $finalHead = [string](git rev-parse HEAD).Trim()
+          [ordered]@{
+            schemaVersion = '1.0'
+            reflectedStateCommit = $finalHead
+            branchHeadAtProbe = $branchHeadAtProbe
+            recoveryRunId = $state.recoveryRunId
+            recoveryArtifactId = $state.recoveryArtifactId
+            recoveryState = $recoveryState
+            clusterRecoveryGateState = $gateState
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $probeRoot 'reflection-run-result.json') -Encoding UTF8
+
+      - name: Upload sanitized state-reflection evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-state-reflection-${{ github.run_id }}
+          path: |
+            ${{ github.workspace }}\hack\layersentry\state
+            ${{ runner.temp }}\layersentry-sen2-state-reflection-07\reflection-run-result.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
