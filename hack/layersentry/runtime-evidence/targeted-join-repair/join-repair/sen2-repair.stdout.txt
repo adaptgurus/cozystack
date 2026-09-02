@@ -1,0 +1,148 @@
+LAYERSENTRY_JOIN_REPAIR_BEGIN:sen2
+LAYERSENTRY_HOSTNAME_BEFORE:sen2
+LAYERSENTRY_NETWORK_BEFORE_BEGIN
+lo               UNKNOWN        127.0.0.1/8 
+mgmt-br          UP             10.10.10.12/24 
+default via 10.10.10.1 dev mgmt-br proto static metric 425 
+10.10.10.0/24 dev mgmt-br proto kernel scope link src 10.10.10.12 metric 425 
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:6443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:9345:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:6443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:9345:open
+LAYERSENTRY_NETWORK_BEFORE_END
+LAYERSENTRY_SERVICE_BEFORE:rancherd:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rancher-system-agent:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rke2-agent:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rke2-server:missing:missing
+LAYERSENTRY_CONFIG:harvester:server=https://10.10.10.11:443:hostname=sen2:mode=join:tokenPresent=true:file=/oem/harvester.config
+LAYERSENTRY_CONFIG:rancherd:server=https://10.10.10.11:443:role=agent:nodeName=sen2:tokenPresent=true:file=/etc/rancher/rancherd/config.yaml
+LAYERSENTRY_CONFIG:rke2-vip:missing:/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+LAYERSENTRY_CONFIG:harvester:server=https://10.10.10.10:443:hostname=sen2:mode=join:tokenPresent=true:file=/oem/harvester.config
+LAYERSENTRY_CONFIG:rancherd:server=https://10.10.10.10:443:role=agent:nodeName=sen2:tokenPresent=true:file=/etc/rancher/rancherd/config.yaml
+LAYERSENTRY_CONFIG:rke2-vip:server=https://10.10.10.10:9345:role=:nodeName=:tokenPresent=false:file=/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+LAYERSENTRY_LOCAL_READINESS:sen2:attempt=1:rke2Agent=:rke2Server=:kubelet10250=true
+LAYERSENTRY_SANITIZED_JOURNAL_BEGIN
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + PROXY_ENV_INFO="
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' -n '' ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: ++ sha256sum /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: ++ awk '{print $1}'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + NEW_ENV_FILE_PATH_HASH=fb2fcf8c2b16f15a42ab01c9d82a1764dfaa7fe8471a130858c489ef10439e62"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 '!=' fb2fcf8c2b16f15a42ab01c9d82a1764dfaa7fe8471a130858c489ef10439e62 ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + RESTART=true"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' -z '' ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + INSTALL_RKE2_TYPE=agent"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + grep -q EnvironmentFile=-/var/lib/rancher/rke2/system-agent-installer/rke2-sa.env /etc/systemd/system/rke2-agent.service"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + echo EnvironmentFile=-/var/lib/rancher/rke2/system-agent-installer/rke2-sa.env"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' -n b412317090b2460ef2be860f67c583db1e71685d2ce98101e4f427c81f2838db ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + echo b412317090b2460ef2be860f67c583db1e71685d2ce98101e4f427c81f2838db"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + systemctl daemon-reload"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' '' = true ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' agent = server ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + systemctl enable rke2-agent"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: Created symlink '/etc/systemd/system/multi-user.target.wants/rke2-agent.service' â†’ '/etc/systemd/system/rke2-agent.service'."
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' '' = true ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + '[' true = true ']'"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a_0:stderr]: + systemctl --no-block restart rke2-agent"
+Sep 02 10:15:50 sen2 rancher-system-agent[5405]: time="2026-09-02T10:15:50Z" level=info msg="[Applyinator] Command sh [-c run.sh] finished with err: <nil> and exit code: 0"
+Sep 02 10:15:50 sen2 systemd[1]: Starting Rancher Kubernetes Engine v2 (agent)...
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + HARVESTER_CONFIG_FILE=/oem/harvester.config
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + RKE2_VIP_CONFIG_FILE=/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + case $1 in
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + update_agent_conf
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5587]: ++ yq -e e .serverurl /oem/harvester.config
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + server_url=https://10.10.10.10:443
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + '[' -z https://10.10.10.10:443 ']'
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5593]: + echo https://10.10.10.10:443
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5594]: + grep -E '^https://(.*):(8443|443)'
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5594]: https://10.10.10.10:443
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5596]: ++ echo https://10.10.10.10:443
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5597]: ++ sed -E 's,^https://(.*):(8443|443),https://\1:9345,'
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + export RKE2_SERVER_URL=https://10.10.10.10:9345
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + RKE2_SERVER_URL=https://10.10.10.10:9345
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + '[' -e /etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml ']'
+Sep 02 10:15:50 sen2 harv-update-rke2-server-url[5585]: + yq -e e '.server = strenv(RKE2_SERVER_URL)' /etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml -i
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="Unknown flag --apiVersion found in config.yaml, skipping\n"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="Unknown flag --kind found in config.yaml, skipping\n"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="Unknown flag --omitStages found in config.yaml, skipping\n"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="Unknown flag --omitStages found in config.yaml, skipping\n"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="Unknown flag --rules found in config.yaml, skipping\n"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=warning msg="not running in CIS mode"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=info msg="Applying Pod Security Admission Configuration"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=info msg="Starting rke2 agent v1.35.6+rke2r1 (343ad2f99359d21f5d506f42c1146d4056658c88)"
+Sep 02 10:15:50 sen2 rke2[5606]: time="2026-09-02T10:15:50Z" level=info msg="Updated load balancer rke2-agent-load-balancer default server: 10.10.10.10:9345"
+Sep 02 10:15:51 sen2 rke2[5606]: time="2026-09-02T10:15:51Z" level=info msg="Running load balancer rke2-agent-load-balancer 127.0.0.1:6444 -> [] [default: 10.10.10.10:9345]"
+Sep 02 10:15:51 sen2 rke2[5606]: time="2026-09-02T10:15:51Z" level=info msg="Updated load balancer rke2-api-server-agent-load-balancer default server: 10.10.10.10:6443"
+Sep 02 10:15:51 sen2 rke2[5606]: time="2026-09-02T10:15:51Z" level=info msg="Running load balancer rke2-api-server-agent-load-balancer 127.0.0.1:6443 -> [] [default: 10.10.10.10:6443]"
+Sep 02 10:15:52 sen2 rke2[5606]: time="2026-09-02T10:15:52Z" level=info msg="Using private registry config file at /etc/rancher/rke2/registries.yaml"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Module overlay was already loaded"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Module br_netfilter was already loaded"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=warning msg="Failed to load kernel module nft-expr-counter with modprobe"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_max' to 327680"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_established' to 86400"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_close_wait' to 3600"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Set sysctl 'net/ipv4/conf/all/forwarding' to 1"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Checking local image archives in /var/lib/rancher/rke2/agent/images for index.docker.io/rancher/rke2-runtime:v1.35.6-rke2r1"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Waiting for cri connection: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial unix /run/k3s/containerd/containerd.sock: connect: no such file or directory\""
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Removed kube-proxy static pod manifest"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=warning msg="SELinux is enabled on this host, but rke2 has not been started with --selinux - containerd SELinux support is disabled"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Getting list of apiserver endpoints from server"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Creating rke2-cert-monitor event broadcaster"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Got apiserver addresses from supervisor: [10.10.10.11:6443]"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Adding server to load balancer rke2-api-server-agent-load-balancer: 10.10.10.11:6443"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Updated load balancer rke2-api-server-agent-load-balancer server addresses -> [10.10.10.11:6443] [default: 10.10.10.10:6443]"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Adding server to load balancer rke2-agent-load-balancer: 10.10.10.11:9345"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Updated load balancer rke2-agent-load-balancer server addresses -> [10.10.10.11:9345] [default: 10.10.10.10:9345]"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Connecting to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Server 10.10.10.11:9345@UNCHECKED->RECOVERING from successful dial"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Connected to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:15:53 sen2 rke2[5606]: time="2026-09-02T10:15:53Z" level=info msg="Remotedialer connected to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:15:54 sen2 rke2[5606]: time="2026-09-02T10:15:54Z" level=info msg="Running kube-proxy --cluster-cidr=10.52.0.0/16 --conntrack-max-per-core=0 --conntrack-tcp-timeout-close-wait=0s --conntrack-tcp-timeout-established=0s --healthz-bind-address=127.0.0.1 --hostname-override=sen2 --kubeconfig=/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig --proxy-mode=iptables"
+Sep 02 10:15:54 sen2 rke2[5606]: time="2026-09-02T10:15:54Z" level=info msg="Server 10.10.10.11:9345@RECOVERING->PREFERRED from successful health check"
+Sep 02 10:15:54 sen2 rke2[5606]: time="2026-09-02T10:15:54Z" level=info msg="Server 10.10.10.11:6443@UNCHECKED->RECOVERING from successful health check"
+Sep 02 10:15:55 sen2 rke2[5606]: time="2026-09-02T10:15:55Z" level=info msg="Server 10.10.10.11:6443@RECOVERING->PREFERRED from successful health check"
+Sep 02 10:16:08 sen2 rke2[5606]: time="2026-09-02T10:16:08Z" level=info msg="Creating directory /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin"
+Sep 02 10:16:08 sen2 rke2[5606]: time="2026-09-02T10:16:08Z" level=info msg="Extracting file bin/containerd to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/containerd"
+Sep 02 10:16:09 sen2 rke2[5606]: time="2026-09-02T10:16:09Z" level=info msg="Extracting file bin/containerd-shim-runc-v2 to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/containerd-shim-runc-v2"
+Sep 02 10:16:09 sen2 rke2[5606]: time="2026-09-02T10:16:09Z" level=info msg="Extracting file bin/crictl to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/crictl"
+Sep 02 10:16:09 sen2 rke2[5606]: time="2026-09-02T10:16:09Z" level=info msg="Extracting file bin/ctr to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/ctr"
+Sep 02 10:16:09 sen2 rke2[5606]: time="2026-09-02T10:16:09Z" level=info msg="Extracting file bin/kubectl to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/kubectl"
+Sep 02 10:16:09 sen2 rke2[5606]: time="2026-09-02T10:16:09Z" level=info msg="Extracting file bin/kubelet to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/kubelet"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file bin/runc to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/bin/runc"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Creating directory /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/harvester-cloud-provider.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/harvester-cloud-provider.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/harvester-csi-driver.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/harvester-csi-driver.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rancher-vsphere-cpi.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rancher-vsphere-cpi.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rancher-vsphere-csi.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rancher-vsphere-csi.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-calico-crd.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-calico-crd.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-calico.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-calico.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-canal.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-canal.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-cilium.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-cilium.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-coredns.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-coredns.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-flannel.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-flannel.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-ingress-nginx.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-ingress-nginx.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-metrics-server.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-metrics-server.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-multus.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-multus.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-runtimeclasses.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-runtimeclasses.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-snapshot-controller-crd.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-snapshot-controller-crd.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-snapshot-controller.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-snapshot-controller.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-snapshot-validation-webhook.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-snapshot-validation-webhook.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-traefik-crd.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-traefik-crd.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Extracting file charts/rke2-traefik.yaml to /var/lib/rancher/rke2/data/v1.35.6-rke2r1-7a33eeffe5c4/charts/rke2-traefik.yaml"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Logging containerd to /var/lib/rancher/rke2/agent/containerd/containerd.log"
+Sep 02 10:16:10 sen2 rke2[5606]: time="2026-09-02T10:16:10Z" level=info msg="Running containerd -c /var/lib/rancher/rke2/agent/etc/containerd/config.toml"
+Sep 02 10:16:11 sen2 rke2[5606]: time="2026-09-02T10:16:11Z" level=info msg="containerd is now running"
+Sep 02 10:16:11 sen2 rke2[5606]: time="2026-09-02T10:16:11Z" level=info msg="Importing images from /var/lib/rancher/rke2/agent/images/rke2-images.linux-amd64-v1.35.6-rke2r1.tar.zst"
+Sep 02 10:16:12 sen2 rke2[5606]: time="2026-09-02T10:16:12Z" level=info msg="Running kubelet --alsologtostderr=false --cloud-provider=external --config-dir=/var/lib/rancher/rke2/agent/etc/kubelet.conf.d --containerd=/run/k3s/containerd/containerd.sock --hostname-override=sen2 --kube-reserved=cpu=594m --kubeconfig=/var/lib/rancher/rke2/agent/kubelet.kubeconfig --log-file=/var/lib/rancher/rke2/agent/logs/kubelet.log --log-file-max-size=50 --logtostderr=false --max-pods=200 --node-ip=10.10.10.12 --node-labels=harvesterhci.io/managed=true,rke.cattle.io/machine=fbc63284-6a86-4827-b2df-477ece763cad --read-only-port=0 --stderrthreshold=FATAL --system-reserved=cpu=396m"
+Sep 02 10:16:12 sen2 rke2[5606]: time="2026-09-02T10:16:12Z" level=info msg="Server 10.10.10.11:6443@PREFERRED->ACTIVE from successful dial"
+Sep 02 10:16:12 sen2 rancherd[5190]: time="2026-09-02T10:16:12Z" level=info msg="[_2:stderr]: time=\"2026-09-02T10:16:12Z\" level=info msg=\"Probe [kubelet] is healthy\""
+Sep 02 10:16:12 sen2 rancherd[5190]: time="2026-09-02T10:16:12Z" level=info msg="[_2:stderr]: time=\"2026-09-02T10:16:12Z\" level=info msg=\"All probes are healthy\""
+Sep 02 10:16:12 sen2 rancherd[5190]: time="2026-09-02T10:16:12Z" level=info msg="[Applyinator] Command /usr/bin/rancherd [probe] finished with err: <nil> and exit code: 0"
+Sep 02 10:16:12 sen2 rancherd[5190]: time="2026-09-02T10:16:12Z" level=info msg="Successfully Bootstrapped Rancher (v2.14.2/v1.35.6+rke2r1)"
+Sep 02 10:16:12 sen2 systemd[1]: rancherd.service: Deactivated successfully.
+Sep 02 10:16:12 sen2 systemd[1]: Finished Rancher Bootstrap.
+Sep 02 10:16:12 sen2 systemd[1]: rancherd.service: Consumed 2.376s CPU time.
+Sep 02 10:16:13 sen2 rke2[5606]: time="2026-09-02T10:16:13Z" level=info msg="Pod for etcd not synced (pod sandbox not found), retrying"
+LAYERSENTRY_SANITIZED_JOURNAL_END
+LAYERSENTRY_JOIN_REPAIR_APPLIED:sen2

@@ -1,0 +1,148 @@
+LAYERSENTRY_JOIN_REPAIR_BEGIN:sen3
+LAYERSENTRY_HOSTNAME_BEFORE:sen3
+LAYERSENTRY_NETWORK_BEFORE_BEGIN
+lo               UNKNOWN        127.0.0.1/8 
+mgmt-br          UP             10.10.10.13/24 
+default via 10.10.10.1 dev mgmt-br proto static metric 425 
+10.10.10.0/24 dev mgmt-br proto kernel scope link src 10.10.10.13 metric 425 
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:6443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.10:9345:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:6443:open
+LAYERSENTRY_REMOTE_PORT:10.10.10.11:9345:open
+LAYERSENTRY_NETWORK_BEFORE_END
+LAYERSENTRY_SERVICE_BEFORE:rancherd:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rancher-system-agent:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rke2-agent:missing:missing
+LAYERSENTRY_SERVICE_BEFORE:rke2-server:missing:missing
+LAYERSENTRY_CONFIG:harvester:server=https://10.10.10.11:443:hostname=sen3:mode=join:tokenPresent=true:file=/oem/harvester.config
+LAYERSENTRY_CONFIG:rancherd:server=https://10.10.10.11:443:role=agent:nodeName=sen3:tokenPresent=true:file=/etc/rancher/rancherd/config.yaml
+LAYERSENTRY_CONFIG:rke2-vip:missing:/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+LAYERSENTRY_CONFIG:harvester:server=https://10.10.10.10:443:hostname=sen3:mode=join:tokenPresent=true:file=/oem/harvester.config
+LAYERSENTRY_CONFIG:rancherd:server=https://10.10.10.10:443:role=agent:nodeName=sen3:tokenPresent=true:file=/etc/rancher/rancherd/config.yaml
+LAYERSENTRY_CONFIG:rke2-vip:server=https://10.10.10.10:9345:role=:nodeName=:tokenPresent=false:file=/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+LAYERSENTRY_LOCAL_READINESS:sen3:attempt=1:rke2Agent=:rke2Server=:kubelet10250=true
+LAYERSENTRY_SANITIZED_JOURNAL_BEGIN
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -f /var/lib/rancher/rke2/system-agent-installer/rke2_restart_stamp ']'"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -n c1fdc390e3e2c59d628018ef64fab7ef8cc31d5db74e98ba88de32e026b8b4e6 ']'"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' '' '!=' c1fdc390e3e2c59d628018ef64fab7ef8cc31d5db74e98ba88de32e026b8b4e6 ']'"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + RESTART=true"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + env INSTALL_RKE2_ARTIFACT_PATH=/var/lib/rancher/agent/work/20260902-101631/306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0 INSTALL_RKE2_TAR_PREFIX=/opt/rke2 installer.sh"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  staging local checksums from /var/lib/rancher/agent/work/20260902-101631/306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0/sha256sum-amd64.txt"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  staging tarball from /var/lib/rancher/agent/work/20260902-101631/306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0/rke2.linux-amd64.tar.gz"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  verifying tarball"
+Sep 02 10:16:32 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:32Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  unpacking tarball file to /opt/rke2"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  updating tarball contents to reflect install path"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  moving systemd units to /etc/systemd/system"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stdout]: [INFO]  install complete; you may want to run:  export PATH=$PATH:/opt/rke2/bin"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -f /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + OLD_ENV_FILE_PATH_HASH=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + install -m 600 /dev/null /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ grep '^RKE2_'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ env"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + RKE2_ENV=RKE2_DATA_DIR=/var/lib/rancher/rke2"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -n RKE2_DATA_DIR=/var/lib/rancher/rke2 ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + echo RKE2_DATA_DIR=/var/lib/rancher/rke2"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ env"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ grep -Ei '^(NO|HTTP|HTTPS)_PROXY'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ true"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + PROXY_ENV_INFO="
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -n '' ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ sha256sum /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: ++ awk '{print $1}'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + NEW_ENV_FILE_PATH_HASH=fb2fcf8c2b16f15a42ab01c9d82a1764dfaa7fe8471a130858c489ef10439e62"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 '!=' fb2fcf8c2b16f15a42ab01c9d82a1764dfaa7fe8471a130858c489ef10439e62 ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + RESTART=true"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -z '' ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + INSTALL_RKE2_TYPE=agent"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + grep -q EnvironmentFile=-/var/lib/rancher/rke2/system-agent-installer/rke2-sa.env /etc/systemd/system/rke2-agent.service"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + echo EnvironmentFile=-/var/lib/rancher/rke2/system-agent-installer/rke2-sa.env"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' -n c1fdc390e3e2c59d628018ef64fab7ef8cc31d5db74e98ba88de32e026b8b4e6 ']'"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + echo c1fdc390e3e2c59d628018ef64fab7ef8cc31d5db74e98ba88de32e026b8b4e6"
+Sep 02 10:16:33 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:33Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + systemctl daemon-reload"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' '' = true ']'"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' agent = server ']'"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + systemctl enable rke2-agent"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: Created symlink '/etc/systemd/system/multi-user.target.wants/rke2-agent.service' â†’ '/etc/systemd/system/rke2-agent.service'."
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' '' = true ']'"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + '[' true = true ']'"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[306a4c8d61cae87916a0962b06d4c6ba117f561aaf848f6d299046f3f44eec18_0:stderr]: + systemctl --no-block restart rke2-agent"
+Sep 02 10:16:34 sen3 rancher-system-agent[10314]: time="2026-09-02T10:16:34Z" level=info msg="[Applyinator] Command sh [-c run.sh] finished with err: <nil> and exit code: 0"
+Sep 02 10:16:34 sen3 systemd[1]: Starting Rancher Kubernetes Engine v2 (agent)...
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + HARVESTER_CONFIG_FILE=/oem/harvester.config
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + RKE2_VIP_CONFIG_FILE=/etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + case $1 in
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + update_agent_conf
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10472]: ++ yq -e e .serverurl /oem/harvester.config
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + server_url=https://10.10.10.10:443
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + '[' -z https://10.10.10.10:443 ']'
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10478]: + echo https://10.10.10.10:443
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10479]: + grep -E '^https://(.*):(8443|443)'
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10479]: https://10.10.10.10:443
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10481]: ++ echo https://10.10.10.10:443
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10482]: ++ sed -E 's,^https://(.*):(8443|443),https://\1:9345,'
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + export RKE2_SERVER_URL=https://10.10.10.10:9345
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + RKE2_SERVER_URL=https://10.10.10.10:9345
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + '[' -e /etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml ']'
+Sep 02 10:16:34 sen3 harv-update-rke2-server-url[10471]: + yq -e e '.server = strenv(RKE2_SERVER_URL)' /etc/rancher/rke2/config.yaml.d/90-harvester-vip.yaml -i
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="Unknown flag --apiVersion found in config.yaml, skipping\n"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="Unknown flag --kind found in config.yaml, skipping\n"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="Unknown flag --omitStages found in config.yaml, skipping\n"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="Unknown flag --omitStages found in config.yaml, skipping\n"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="Unknown flag --rules found in config.yaml, skipping\n"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=warning msg="not running in CIS mode"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=info msg="Applying Pod Security Admission Configuration"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=info msg="Starting rke2 agent v1.35.6+rke2r1 (343ad2f99359d21f5d506f42c1146d4056658c88)"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=info msg="Updated load balancer rke2-agent-load-balancer default server: 10.10.10.10:9345"
+Sep 02 10:16:34 sen3 rke2[10490]: time="2026-09-02T10:16:34Z" level=info msg="Running load balancer rke2-agent-load-balancer 127.0.0.1:6444 -> [] [default: 10.10.10.10:9345]"
+Sep 02 10:16:35 sen3 rke2[10490]: time="2026-09-02T10:16:35Z" level=info msg="Updated load balancer rke2-api-server-agent-load-balancer default server: 10.10.10.10:6443"
+Sep 02 10:16:35 sen3 rke2[10490]: time="2026-09-02T10:16:35Z" level=info msg="Running load balancer rke2-api-server-agent-load-balancer 127.0.0.1:6443 -> [] [default: 10.10.10.10:6443]"
+Sep 02 10:16:35 sen3 rke2[10490]: time="2026-09-02T10:16:35Z" level=info msg="Using private registry config file at /etc/rancher/rke2/registries.yaml"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Module overlay was already loaded"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Module br_netfilter was already loaded"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=warning msg="Failed to load kernel module nft-expr-counter with modprobe"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Set sysctl 'net/ipv4/conf/all/forwarding' to 1"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_max' to 327680"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_established' to 86400"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Set sysctl 'net/netfilter/nf_conntrack_tcp_timeout_close_wait' to 3600"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Removed kube-proxy static pod manifest"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Runtime image index.docker.io/rancher/rke2-runtime:v1.35.6-rke2r1 bin and charts directories already exist; skipping extract"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Waiting for cri connection: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial unix /run/k3s/containerd/containerd.sock: connect: no such file or directory\""
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Creating rke2-cert-monitor event broadcaster"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=warning msg="SELinux is enabled on this host, but rke2 has not been started with --selinux - containerd SELinux support is disabled"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Logging containerd to /var/lib/rancher/rke2/agent/containerd/containerd.log"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Getting list of apiserver endpoints from server"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Running containerd -c /var/lib/rancher/rke2/agent/etc/containerd/config.toml"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Got apiserver addresses from supervisor: [10.10.10.11:6443]"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Adding server to load balancer rke2-api-server-agent-load-balancer: 10.10.10.11:6443"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Updated load balancer rke2-api-server-agent-load-balancer server addresses -> [10.10.10.11:6443] [default: 10.10.10.10:6443]"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Adding server to load balancer rke2-agent-load-balancer: 10.10.10.11:9345"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Updated load balancer rke2-agent-load-balancer server addresses -> [10.10.10.11:9345] [default: 10.10.10.10:9345]"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Connecting to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Connected to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Remotedialer connected to proxy" url="wss://10.10.10.11:9345/v1-rke2/connect"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Running kube-proxy --cluster-cidr=10.52.0.0/16 --conntrack-max-per-core=0 --conntrack-tcp-timeout-close-wait=0s --conntrack-tcp-timeout-established=0s --healthz-bind-address=127.0.0.1 --hostname-override=sen3 --kubeconfig=/var/lib/rancher/rke2/agent/kubeproxy.kubeconfig --proxy-mode=iptables"
+Sep 02 10:16:37 sen3 rke2[10490]: time="2026-09-02T10:16:37Z" level=info msg="Server 10.10.10.11:9345@UNCHECKED->RECOVERING from successful health check"
+Sep 02 10:16:38 sen3 rke2[10490]: time="2026-09-02T10:16:38Z" level=info msg="Server 10.10.10.11:6443@UNCHECKED->RECOVERING from successful health check"
+Sep 02 10:16:38 sen3 rke2[10490]: time="2026-09-02T10:16:38Z" level=info msg="Waiting for containerd startup: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial unix /run/k3s/containerd/containerd.sock: connect: no such file or directory\""
+Sep 02 10:16:38 sen3 rke2[10490]: time="2026-09-02T10:16:38Z" level=info msg="Server 10.10.10.11:9345@RECOVERING->PREFERRED from successful health check"
+Sep 02 10:16:39 sen3 rke2[10490]: time="2026-09-02T10:16:39Z" level=info msg="Server 10.10.10.11:6443@RECOVERING->PREFERRED from successful health check"
+Sep 02 10:16:39 sen3 rke2[10490]: time="2026-09-02T10:16:39Z" level=info msg="Waiting for containerd startup: rpc error: code = Unavailable desc = connection error: desc = \"transport: Error while dialing: dial unix /run/k3s/containerd/containerd.sock: connect: no such file or directory\""
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="containerd is now running"
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="Pulling images from /var/lib/rancher/rke2/agent/images/kube-proxy-image.txt"
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="Image index.docker.io/rancher/hardened-kubernetes:v1.35.6-rke2r1-build20260612 has already been pulled"
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="Imported docker.io/rancher/hardened-kubernetes:v1.35.6-rke2r1-build20260612"
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="Tagged docker.io/rancher/hardened-kubernetes@sha256:1ccf96f6689067f500439463e7fdaa31a3233aa17ee7414e9f05a4ecc050d935"
+Sep 02 10:16:40 sen3 rke2[10490]: time="2026-09-02T10:16:40Z" level=info msg="Imported images from /var/lib/rancher/rke2/agent/images/kube-proxy-image.txt in 274.104987ms"
+Sep 02 10:16:41 sen3 rke2[10490]: time="2026-09-02T10:16:41Z" level=info msg="Running kubelet --alsologtostderr=false --cloud-provider=external --config-dir=/var/lib/rancher/rke2/agent/etc/kubelet.conf.d --containerd=/run/k3s/containerd/containerd.sock --hostname-override=sen3 --kube-reserved=cpu=594m --kubeconfig=/var/lib/rancher/rke2/agent/kubelet.kubeconfig --log-file=/var/lib/rancher/rke2/agent/logs/kubelet.log --log-file-max-size=50 --logtostderr=false --max-pods=200 --node-ip=10.10.10.13 --node-labels=harvesterhci.io/managed=true,rke.cattle.io/machine=4703e4cb-440d-426d-8e18-7c96c4b14ef8 --read-only-port=0 --stderrthreshold=FATAL --system-reserved=cpu=396m"
+Sep 02 10:16:42 sen3 rke2[10490]: time="2026-09-02T10:16:42Z" level=info msg="Server 10.10.10.11:6443@PREFERRED->ACTIVE from successful dial"
+Sep 02 10:16:43 sen3 rancherd[10099]: time="2026-09-02T10:16:43Z" level=info msg="[_2:stderr]: time=\"2026-09-02T10:16:43Z\" level=info msg=\"Probe [kubelet] is healthy\""
+Sep 02 10:16:43 sen3 rancherd[10099]: time="2026-09-02T10:16:43Z" level=info msg="[_2:stderr]: time=\"2026-09-02T10:16:43Z\" level=info msg=\"All probes are healthy\""
+Sep 02 10:16:43 sen3 rancherd[10099]: time="2026-09-02T10:16:43Z" level=info msg="[Applyinator] Command /usr/bin/rancherd [probe] finished with err: <nil> and exit code: 0"
+Sep 02 10:16:43 sen3 rancherd[10099]: time="2026-09-02T10:16:43Z" level=info msg="Successfully Bootstrapped Rancher (v2.14.2/v1.35.6+rke2r1)"
+Sep 02 10:16:43 sen3 systemd[1]: rancherd.service: Deactivated successfully.
+Sep 02 10:16:43 sen3 systemd[1]: Finished Rancher Bootstrap.
+Sep 02 10:16:43 sen3 systemd[1]: rancherd.service: Consumed 2.297s CPU time.
+LAYERSENTRY_SANITIZED_JOURNAL_END
+LAYERSENTRY_JOIN_REPAIR_APPLIED:sen3

@@ -1,0 +1,21 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "sourceCommit":  "07dac002344d32a524c488a8121059cf8c23530f",
+    "workflowRunId":  "33618425189",
+    "completedAtUtc":  "2026-09-02T10:17:29.2541226Z",
+    "joinRepairPassed":  true,
+    "exactlyThreeReadyNodes":  true,
+    "authenticatedRuntimeValidationPassed":  true,
+    "administratorResetSucceeded":  true,
+    "administratorApiAuthenticated":  true,
+    "installationApiCompletion":  true,
+    "credentialValuesWrittenToEvidence":  false,
+    "eulaAutomaticallyAccepted":  false,
+    "workloadQualified":  false,
+    "trueAirgapQualified":  false,
+    "haQualified":  false,
+    "upgradeQualified":  false,
+    "backupRestoreQualified":  false,
+    "productionReleaseApproved":  false,
+    "failure":  null
+}

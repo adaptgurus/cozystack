@@ -1,0 +1,1 @@
+﻿{"capturedAtUtc":"2026-09-02T10:17:05.2131234Z","nodePorts":[{"address":"10.10.10.11","ssh":true,"supervisor":true,"kubelet":true},{"address":"10.10.10.12","ssh":true,"supervisor":false,"kubelet":true},{"address":"10.10.10.13","ssh":true,"supervisor":false,"kubelet":true}],"vip443":true,"vip6443":true,"ready":true}

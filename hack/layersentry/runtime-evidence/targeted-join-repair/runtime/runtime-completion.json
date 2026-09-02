@@ -1,0 +1,83 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "startedAtUtc":  "2026-09-02T10:17:01.9769858Z",
+    "finishedAtUtc":  "2026-09-02T10:17:21.6718565Z",
+    "durationSeconds":  20,
+    "clusterUrl":  "https://10.10.10.10",
+    "primaryNode":  "10.10.10.11",
+    "expectedNodeAddresses":  [
+                                  "10.10.10.11",
+                                  "10.10.10.12",
+                                  "10.10.10.13"
+                              ],
+    "networkReady":  true,
+    "sshKubernetesValidationSucceeded":  true,
+    "administratorResetSucceeded":  true,
+    "administratorApiAuthenticated":  true,
+    "passed":  true,
+    "failure":  null,
+    "kubernetesNodesFromSsh":  [
+                                   {
+                                       "name":  "sen1",
+                                       "status":  "Ready",
+                                       "roles":  "control-plane,etcd",
+                                       "age":  "5h32m",
+                                       "version":  "v1.35.6+rke2r1"
+                                   },
+                                   {
+                                       "name":  "sen2",
+                                       "status":  "Ready,SchedulingDisabled",
+                                       "roles":  "\u003cnone\u003e",
+                                       "age":  "54s",
+                                       "version":  "v1.35.6+rke2r1"
+                                   },
+                                   {
+                                       "name":  "sen3",
+                                       "status":  "Ready",
+                                       "roles":  "\u003cnone\u003e",
+                                       "age":  "24s",
+                                       "version":  "v1.35.6+rke2r1"
+                                   }
+                               ],
+    "kubevirtEvidence":  [
+                             "LAYERSENTRY_KUBEVIRT|kubevirt|5h27m|Deployed"
+                         ],
+    "longhornEvidence":  [
+                             "LAYERSENTRY_LONGHORN|sen1|True|true"
+                         ],
+    "storageClassEvidence":  [
+                                 "LAYERSENTRY_STORAGECLASS|harvester-longhorn|(default)|driver.longhorn.io",
+                                 "LAYERSENTRY_STORAGECLASS|longhorn|driver.longhorn.io|Delete",
+                                 "LAYERSENTRY_STORAGECLASS|longhorn-static|driver.longhorn.io|Delete",
+                                 "LAYERSENTRY_STORAGECLASS|vmstate-persistence|driver.longhorn.io|Delete"
+                             ],
+    "kubernetesNodesFromAuthenticatedApi":  [
+                                                {
+                                                    "name":  "sen1",
+                                                    "ready":  "True",
+                                                    "kubeletVersion":  "v1.35.6+rke2r1",
+                                                    "osImage":  "LayerSentry 1.0"
+                                                },
+                                                {
+                                                    "name":  "sen2",
+                                                    "ready":  "True",
+                                                    "kubeletVersion":  "v1.35.6+rke2r1",
+                                                    "osImage":  "LayerSentry 1.0"
+                                                },
+                                                {
+                                                    "name":  "sen3",
+                                                    "ready":  "True",
+                                                    "kubeletVersion":  "v1.35.6+rke2r1",
+                                                    "osImage":  "LayerSentry 1.0"
+                                                }
+                                            ],
+    "credentialValuesWrittenToEvidence":  false,
+    "eulaAutomaticallyAccepted":  false,
+    "installationApiQualified":  true,
+    "workloadQualified":  false,
+    "trueAirgapQualified":  false,
+    "haQualified":  false,
+    "upgradeQualified":  false,
+    "backupRestoreQualified":  false,
+    "productionReleaseApproved":  false
+}

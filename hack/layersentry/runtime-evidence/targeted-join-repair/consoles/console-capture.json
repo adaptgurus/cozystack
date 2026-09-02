@@ -1,0 +1,176 @@
+﻿{
+    "SchemaVersion":  "1.0",
+    "CollectedAtUtc":  "2026-09-02T10:17:28.4602022Z",
+    "CollectionMode":  "read-only-hyperv-console-thumbnail",
+    "Host":  "TESTSER",
+    "VirtualMachines":  [
+                            {
+                                "Name":  "sen1",
+                                "State":  "Running",
+                                "Status":  "Operating normally",
+                                "UptimeSeconds":  20078,
+                                "CPUUsagePercent":  16,
+                                "AssignedMemoryGiB":  32,
+                                "SwitchName":  "Cozystack-NAT",
+                                "NetworkStatus":  "Ok",
+                                "ReportedIPAddresses":  [
+
+                                                        ],
+                                "IntegrationServices":  [
+                                                            {
+                                                                "Name":  "Guest Service Interface",
+                                                                "Enabled":  false,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Heartbeat",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Key-Value Pair Exchange",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "No Contact",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Shutdown",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Time Synchronization",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "VSS",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  "The protocol version of the component installed in the virtual machine does not match the version expected by the hosting system"
+                                                            }
+                                                        ],
+                                "ConsoleCaptureStatus":  "Success",
+                                "ConsoleCaptureError":  null,
+                                "ConsoleWidth":  1024,
+                                "ConsoleHeight":  768,
+                                "ConsoleImage":  "sen1-console.png"
+                            },
+                            {
+                                "Name":  "sen2",
+                                "State":  "Running",
+                                "Status":  "Operating normally",
+                                "UptimeSeconds":  6404,
+                                "CPUUsagePercent":  12,
+                                "AssignedMemoryGiB":  32,
+                                "SwitchName":  "Cozystack-NAT",
+                                "NetworkStatus":  "Ok",
+                                "ReportedIPAddresses":  [
+
+                                                        ],
+                                "IntegrationServices":  [
+                                                            {
+                                                                "Name":  "Guest Service Interface",
+                                                                "Enabled":  false,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Heartbeat",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Key-Value Pair Exchange",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "No Contact",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Shutdown",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Time Synchronization",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "VSS",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  "The protocol version of the component installed in the virtual machine does not match the version expected by the hosting system"
+                                                            }
+                                                        ],
+                                "ConsoleCaptureStatus":  "Success",
+                                "ConsoleCaptureError":  null,
+                                "ConsoleWidth":  1024,
+                                "ConsoleHeight":  768,
+                                "ConsoleImage":  "sen2-console.png"
+                            },
+                            {
+                                "Name":  "sen3",
+                                "State":  "Running",
+                                "Status":  "Operating normally",
+                                "UptimeSeconds":  5759,
+                                "CPUUsagePercent":  5,
+                                "AssignedMemoryGiB":  32,
+                                "SwitchName":  "Cozystack-NAT",
+                                "NetworkStatus":  "Ok",
+                                "ReportedIPAddresses":  [
+
+                                                        ],
+                                "IntegrationServices":  [
+                                                            {
+                                                                "Name":  "Guest Service Interface",
+                                                                "Enabled":  false,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Heartbeat",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Key-Value Pair Exchange",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "No Contact",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Shutdown",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "Time Synchronization",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  null
+                                                            },
+                                                            {
+                                                                "Name":  "VSS",
+                                                                "Enabled":  true,
+                                                                "PrimaryStatusDescription":  "OK",
+                                                                "SecondaryStatusDescription":  "The protocol version of the component installed in the virtual machine does not match the version expected by the hosting system"
+                                                            }
+                                                        ],
+                                "ConsoleCaptureStatus":  "Success",
+                                "ConsoleCaptureError":  null,
+                                "ConsoleWidth":  1024,
+                                "ConsoleHeight":  768,
+                                "ConsoleImage":  "sen3-console.png"
+                            }
+                        ]
+}

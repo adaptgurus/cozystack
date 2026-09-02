@@ -1,0 +1,89 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "startedAtUtc":  "2026-09-02T10:14:42.0436333Z",
+    "finishedAtUtc":  "2026-09-02T10:17:01.2037576Z",
+    "durationSeconds":  139,
+    "clusterUrl":  "https://10.10.10.10",
+    "primaryNodeAddress":  "10.10.10.11",
+    "joinNodes":  {
+                      "sen2":  "10.10.10.12",
+                      "sen3":  "10.10.10.13"
+                  },
+    "authoritativeTokenSource":  "/etc/rancher/rancherd/config.yaml",
+    "localProtectedTokenMatchedPrimary":  true,
+    "credentialValuesWrittenToEvidence":  false,
+    "repairResults":  [
+                          {
+                              "name":  "sen2",
+                              "address":  "10.10.10.12",
+                              "sshExitCode":  0,
+                              "repairMarker":  true,
+                              "succeeded":  true,
+                              "stdoutEvidence":  "sen2-repair.stdout.txt",
+                              "stderrEvidence":  "sen2-repair.stderr.txt"
+                          },
+                          {
+                              "name":  "sen3",
+                              "address":  "10.10.10.13",
+                              "sshExitCode":  0,
+                              "repairMarker":  true,
+                              "succeeded":  true,
+                              "stdoutEvidence":  "sen3-repair.stdout.txt",
+                              "stderrEvidence":  "sen3-repair.stderr.txt"
+                          }
+                      ],
+    "finalNetworkReadiness":  [
+                                  {
+                                      "name":  "sen1",
+                                      "address":  "10.10.10.11",
+                                      "ping":  true,
+                                      "tcp22":  true,
+                                      "tcp9345":  true,
+                                      "tcp10250":  true
+                                  },
+                                  {
+                                      "name":  "sen2",
+                                      "address":  "10.10.10.12",
+                                      "ping":  true,
+                                      "tcp22":  true,
+                                      "tcp9345":  false,
+                                      "tcp10250":  true
+                                  },
+                                  {
+                                      "name":  "sen3",
+                                      "address":  "10.10.10.13",
+                                      "ping":  true,
+                                      "tcp22":  true,
+                                      "tcp9345":  false,
+                                      "tcp10250":  true
+                                  }
+                              ],
+    "kubernetesNodes":  [
+                            {
+                                "name":  "sen1",
+                                "status":  "Ready",
+                                "roles":  "control-plane,etcd",
+                                "age":  "5h32m",
+                                "version":  "v1.35.6+rke2r1"
+                            },
+                            {
+                                "name":  "sen2",
+                                "status":  "Ready,SchedulingDisabled",
+                                "roles":  "\u003cnone\u003e",
+                                "age":  "49s",
+                                "version":  "v1.35.6+rke2r1"
+                            },
+                            {
+                                "name":  "sen3",
+                                "status":  "Ready",
+                                "roles":  "\u003cnone\u003e",
+                                "age":  "19s",
+                                "version":  "v1.35.6+rke2r1"
+                            }
+                        ],
+    "threeNodeReady":  true,
+    "passed":  true,
+    "eulaAutomaticallyAccepted":  false,
+    "productionReleaseApproved":  false,
+    "failure":  null
+}

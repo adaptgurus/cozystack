@@ -1,0 +1,5 @@
+LAYERSENTRY_KUBERNETES_POLL:attempt=1:total=3:ready=3:names=sen1,sen2,sen3
+LAYERSENTRY_NODE|sen1|Ready|control-plane,etcd|5h32m|v1.35.6+rke2r1
+LAYERSENTRY_NODE|sen2|Ready,SchedulingDisabled|<none>|49s|v1.35.6+rke2r1
+LAYERSENTRY_NODE|sen3|Ready|<none>|19s|v1.35.6+rke2r1
+LAYERSENTRY_THREE_NODE_READY
