@@ -1,0 +1,189 @@
+name: LayerSentry Authoritative Three-Node Completion
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/authoritative-completion-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-authoritative-completion
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    name: Finalize join disks and prove the LayerSentry runtime
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout exact completion request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Validate request and PowerShell sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/authoritative-completion-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one authoritative-completion request; found $($requests.Count)."
+          }
+          $request = Get-Content -LiteralPath $requests[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'AUTHORITATIVE_THREE_NODE_COMPLETION') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([bool]$request.writeCredentialValuesToEvidence) {
+            throw 'Credential values must never be written to evidence.'
+          }
+          if ([bool]$request.acceptEula) {
+            throw 'This workflow must not accept the EULA on behalf of the user.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'This workflow must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/finalize-join-node-disks.ps1',
+            'hack/layersentry/complete-three-node-runtime.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated authoritative-completion request: $($requests[0])"
+
+      - name: Finalize sen2 and sen3 installed-disk boot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/authoritative-completion/disk'
+          & 'hack/layersentry/finalize-join-node-disks.ps1' `
+            -VmNames @('sen2', 'sen3') `
+            -MinimumCompletedDiskGiB 20.0 `
+            -RequiredStableSeconds 120 `
+            -MaxWaitMinutes 30 `
+            -OutputDirectory $output
+
+      - name: Prove Kubernetes and initialize the administrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/authoritative-completion/runtime'
+          & 'hack/layersentry/complete-three-node-runtime.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNode '10.10.10.11' `
+            -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -MaxWaitMinutes 30 `
+            -OutputDirectory $output
+
+      - name: Publish sanitized authoritative evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $relative = 'hack/layersentry/runtime-evidence/authoritative-completion'
+          if (-not (Test-Path -LiteralPath $relative)) {
+            New-Item -Path $relative -ItemType Directory -Force | Out-Null
+          }
+          $diskResult = Join-Path $relative 'disk\join-disk-finalization.json'
+          $runtimeResult = Join-Path $relative 'runtime\runtime-completion.json'
+          $diskPassed = $false
+          $runtimePassed = $false
+          if (Test-Path -LiteralPath $diskResult -PathType Leaf) {
+            $diskPassed = [bool]((Get-Content -LiteralPath $diskResult -Raw -Encoding UTF8 | ConvertFrom-Json).passed)
+          }
+          if (Test-Path -LiteralPath $runtimeResult -PathType Leaf) {
+            $runtimePassed = [bool]((Get-Content -LiteralPath $runtimeResult -Raw -Encoding UTF8 | ConvertFrom-Json).passed)
+          }
+          $overall = $diskPassed -and $runtimePassed
+          @"
+          # LayerSentry authoritative three-node completion
+
+          - Join-disk finalization passed: $diskPassed
+          - Kubernetes/runtime/API validation passed: $runtimePassed
+          - Overall installation/API completion: $overall
+          - Workload qualification: **false**
+          - True air-gap qualification: **false**
+          - Production release approved: **false**
+          "@ | Set-Content -LiteralPath (Join-Path $relative 'STATUS.md') -Encoding UTF8
+
+          foreach ($marker in @('SUCCESS', 'FAILURE')) {
+            $markerPath = Join-Path $relative $marker
+            if (Test-Path -LiteralPath $markerPath) {
+              Remove-Item -LiteralPath $markerPath -Force
+            }
+          }
+          $markerName = if ($overall) { 'SUCCESS' } else { 'FAILURE' }
+          New-Item -Path (Join-Path $relative $markerName) -ItemType File -Force | Out-Null
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C layersentry-authoritative-status-work $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to create authoritative status work branch.'
+          }
+          git add -- $relative
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to stage authoritative evidence.'
+          }
+          git commit -m "ops(status): LayerSentry authoritative completion [$markerName] [skip ci]"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to commit authoritative evidence.'
+          }
+          git push --force origin 'HEAD:ops/layersentry-authoritative-status'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to publish authoritative status branch.'
+          }
+
+      - name: Show authoritative status
+        if: always()
+        shell: powershell
+        run: |
+          $status = 'hack/layersentry/runtime-evidence/authoritative-completion/STATUS.md'
+          if (Test-Path -LiteralPath $status -PathType Leaf) {
+            Get-Content -LiteralPath $status
+          }
+
+      - name: Upload authoritative evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-authoritative-completion-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/authoritative-completion
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
