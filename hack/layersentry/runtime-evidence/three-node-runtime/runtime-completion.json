@@ -1,0 +1,43 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "startedAtUtc":  "2026-09-02T10:03:05.5927700Z",
+    "finishedAtUtc":  "2026-09-02T10:04:38.3011854Z",
+    "durationSeconds":  93,
+    "clusterUrl":  "https://10.10.10.10",
+    "primaryNode":  "10.10.10.11",
+    "expectedNodeAddresses":  [
+                                  "10.10.10.11",
+                                  "10.10.10.12",
+                                  "10.10.10.13"
+                              ],
+    "networkReady":  true,
+    "sshKubernetesValidationSucceeded":  false,
+    "administratorResetSucceeded":  false,
+    "administratorApiAuthenticated":  false,
+    "passed":  false,
+    "failure":  null,
+    "kubernetesNodesFromSsh":  [
+
+                               ],
+    "kubevirtEvidence":  [
+
+                         ],
+    "longhornEvidence":  [
+
+                         ],
+    "storageClassEvidence":  [
+
+                             ],
+    "kubernetesNodesFromAuthenticatedApi":  [
+
+                                            ],
+    "credentialValuesWrittenToEvidence":  false,
+    "eulaAutomaticallyAccepted":  false,
+    "installationApiQualified":  false,
+    "workloadQualified":  false,
+    "trueAirgapQualified":  false,
+    "haQualified":  false,
+    "upgradeQualified":  false,
+    "backupRestoreQualified":  false,
+    "productionReleaseApproved":  false
+}
