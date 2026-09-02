@@ -1,0 +1,20 @@
+{
+  "requestId": "reversible-operational-isolation-20260902-070000",
+  "operation": "VALIDATE_REVERSIBLE_OPERATIONAL_ISOLATION",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "nodeAddresses": ["10.10.10.11", "10.10.10.12", "10.10.10.13"],
+  "natPrefix": "10.10.10.0/24",
+  "probeNamespace": "layersentry-validation",
+  "probePod": "layersentry-egress-probe",
+  "allowTemporaryNatRemoval": true,
+  "requireNatRestoreInFinally": true,
+  "requireEgressBeforeIsolation": true,
+  "requireEgressBlockedDuringIsolation": true,
+  "requireVipAndThreeNodeSurvival": true,
+  "requireKubeVirtAvailable": true,
+  "requireLonghornReady": true,
+  "requireEgressAfterRestore": true,
+  "classification": "OPERATIONAL_ISOLATION_NOT_FRESH_OFFLINE_INSTALLATION",
+  "productionReleaseApprovalImplied": false
+}
