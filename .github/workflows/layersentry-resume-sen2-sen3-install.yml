@@ -1,0 +1,193 @@
+name: LayerSentry Resume sen2 and sen3 Installation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-resume-sen2-sen3-install.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-resume-sen2-sen3-install
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    name: Resume join-node installation and collect evidence
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact operational source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate prerequisites and protected credentials
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Protected credential file is missing: $credentialPath"
+          }
+          foreach ($script in @(
+            'hack/layersentry/invoke-hyperv-console-command.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+              throw "Required script is missing: $script"
+            }
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script).ProviderPath,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}:{1}: {2}" -f $script, $_.Extent.StartLineNumber, $_.Message) }
+              exit 1
+            }
+          }
+          foreach ($vmName in @('sen1','sen2','sen3')) {
+            $vm = Get-VM -Name $vmName -ErrorAction Stop
+            if ($vm.State -ne 'Running') {
+              Start-VM -Name $vmName | Out-Null
+            }
+          }
+
+      - name: Capture consoles before resuming join nodes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-resume-install'
+          $before = Join-Path $output 'before'
+          New-Item -Path $before -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1','sen2','sen3') `
+            -OutputDirectory $before
+
+      - name: Confirm sen2 and sen3 installation only when not already reachable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-resume-install'
+          $requestPath = Join-Path $output 'join-node-confirmation-request.json'
+          $commandOutput = Join-Path $output 'command'
+          $targets = @()
+          $nodeMap = [ordered]@{ sen2 = '10.10.10.12'; sen3 = '10.10.10.13' }
+
+          foreach ($entry in $nodeMap.GetEnumerator()) {
+            $reachable = $false
+            try {
+              $reachable = Test-NetConnection -ComputerName $entry.Value -Port 22 -InformationLevel Quiet -WarningAction SilentlyContinue
+            } catch { $reachable = $false }
+
+            if (-not $reachable) {
+              $targets += [ordered]@{
+                vm = $entry.Key
+                actions = @(
+                  [ordered]@{ kind = 'secret'; name = 'nodePassword' },
+                  [ordered]@{ kind = 'key'; code = 13 }
+                )
+              }
+            }
+          }
+
+          $request = [ordered]@{
+            requestId = "resume-sen2-sen3-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+            delayAfterSeconds = 20
+            targets = @($targets)
+          }
+          $request | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $requestPath -Encoding UTF8
+
+          [ordered]@{
+            generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            targetsSelected = @($targets | ForEach-Object { $_.vm })
+            credentialValuesLogged = $false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'resume-plan.json') -Encoding UTF8
+
+          if ($targets.Count -gt 0) {
+            & 'hack/layersentry/invoke-hyperv-console-command.ps1' `
+              -RequestPath $requestPath `
+              -OutputDirectory $commandOutput
+          } else {
+            Write-Host 'sen2 and sen3 already expose SSH; no console credentials were sent.'
+          }
+
+      - name: Wait for join-node operating systems
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-resume-install'
+          $deadline = (Get-Date).AddMinutes(25)
+          $nodeMap = [ordered]@{ sen1 = '10.10.10.11'; sen2 = '10.10.10.12'; sen3 = '10.10.10.13' }
+          $history = New-Object System.Collections.Generic.List[object]
+
+          do {
+            $allJoinNodesReachable = $true
+            foreach ($entry in $nodeMap.GetEnumerator()) {
+              $ping = $false
+              $ssh = $false
+              $https = $false
+              try { $ping = Test-Connection -ComputerName $entry.Value -Count 1 -Quiet -ErrorAction SilentlyContinue } catch {}
+              try { $ssh = Test-NetConnection -ComputerName $entry.Value -Port 22 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+              try { $https = Test-NetConnection -ComputerName $entry.Value -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue } catch {}
+              $history.Add([ordered]@{
+                checkedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                vm = $entry.Key
+                ip = $entry.Value
+                ping = [bool]$ping
+                tcp22 = [bool]$ssh
+                tcp443 = [bool]$https
+              })
+              if ($entry.Key -in @('sen2','sen3') -and -not $ssh) {
+                $allJoinNodesReachable = $false
+              }
+            }
+            if ($allJoinNodesReachable) { break }
+            Start-Sleep -Seconds 30
+          } while ((Get-Date) -lt $deadline)
+
+          $history | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'network-history.json') -Encoding UTF8
+          $final = @($history | Group-Object vm | ForEach-Object { $_.Group | Select-Object -Last 1 })
+          $final | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'network-final.json') -Encoding UTF8
+
+          $failed = @($final | Where-Object { $_.vm -in @('sen2','sen3') -and -not $_.tcp22 })
+          if ($failed.Count -gt 0) {
+            Write-Warning "Join nodes not yet reachable over SSH: $($failed.vm -join ', ')"
+          } else {
+            Write-Host 'sen2 and sen3 are reachable over SSH.'
+          }
+
+      - name: Capture consoles after resume attempt
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-resume-install'
+          $after = Join-Path $output 'after'
+          New-Item -Path $after -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1','sen2','sen3') `
+            -OutputDirectory $after
+
+          Get-VM -Name sen1,sen2,sen3 | Select-Object Name,State,Status,Uptime,CPUUsage,MemoryAssigned |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'vm-state.json') -Encoding UTF8
+
+      - name: Upload resume evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-resume-sen2-sen3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-resume-install\**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
