@@ -1,0 +1,9 @@
+{
+  "requestId": "inspect-sen2-sen3-joining-services-20260902-02",
+  "operation": "READ_ONLY_JOIN_NODE_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "addresses": ["10.10.10.12", "10.10.10.13"],
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
