@@ -13,14 +13,14 @@ permissions:
 
 jobs:
   cancel:
-    name: Cancel superseded self-hosted workflows
+    name: Cancel stale strict convergence run
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 8
     env:
-      TARGET_RUN_IDS: "33612319426 33612661957 33612996056 33615648828"
+      TARGET_RUN_IDS: "33619216901"
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Cancel stale or superseded runs if still active
+      - name: Cancel the stale run if it is still active
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -53,11 +53,11 @@ jobs:
             esac
           done
 
-      - name: Wait for every superseded run to release the runner
+      - name: Wait for the self-hosted runner slot to be released
         shell: bash
         run: |
           set -Eeuo pipefail
-          for attempt in $(seq 1 90); do
+          for attempt in $(seq 1 60); do
             remaining=0
             for run_id in ${TARGET_RUN_IDS}; do
               api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
@@ -78,5 +78,5 @@ jobs:
             fi
             sleep 5
           done
-          echo "Timed out waiting for superseded workflows to release the runner." >&2
+          echo "Timed out waiting for the stale run to release the runner." >&2
           exit 1
