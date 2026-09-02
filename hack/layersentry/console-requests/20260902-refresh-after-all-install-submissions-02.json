@@ -1,0 +1,12 @@
+{
+  "requestId": "refresh-after-all-install-submissions-20260902-02",
+  "delayAfterSeconds": 20,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    }
+  ]
+}
