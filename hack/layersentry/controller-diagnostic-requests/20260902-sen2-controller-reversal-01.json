@@ -1,0 +1,13 @@
+{
+  "requestId": "diagnose-sen2-controller-reversal-20260902-01",
+  "operation": "READ_ONLY_JOIN_NODE_CONTROLLER_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "addresses": [
+    "10.10.10.12",
+    "10.10.10.13"
+  ],
+  "diagnosticPurpose": "Compare the Rancher system-agent plan, service units and unit-link timestamps after sen2 reverted from rke2-agent to rke2-server approximately ninety seconds after repair.",
+  "modifyNodeState": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
