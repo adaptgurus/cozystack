@@ -1,9 +1,21 @@
 {
-  "requestId": "refresh-consoles-after-cluster-token-20260902-01",
+  "requestId": "capture-installer-state-before-final-confirmation-20260902-01",
   "delayAfterSeconds": 5,
   "targets": [
     {
       "vm": "sen1",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    },
+    {
+      "vm": "sen3",
       "actions": [
         {"kind": "sleep", "milliseconds": 100}
       ]
