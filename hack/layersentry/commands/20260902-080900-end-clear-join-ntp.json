@@ -1,0 +1,26 @@
+{
+  "requestId": "end-clear-and-restore-join-ntp-20260902-01",
+  "delayAfterSeconds": 20,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 35},
+        {"kind": "repeatKey", "code": 8, "count": 120},
+        {"kind": "text", "value": "0.suse.pool.ntp.org"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 6000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 35},
+        {"kind": "repeatKey", "code": 8, "count": 120},
+        {"kind": "text", "value": "0.suse.pool.ntp.org"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 6000}
+      ]
+    }
+  ]
+}
