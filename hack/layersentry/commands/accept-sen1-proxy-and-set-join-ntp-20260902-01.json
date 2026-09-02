@@ -1,0 +1,26 @@
+{
+  "requestId": "accept-sen1-proxy-and-set-join-ntp-20260902-01",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "text", "value": "time.cloudflare.com,time.google.com"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "text", "value": "time.cloudflare.com,time.google.com"},
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}
