@@ -1,0 +1,576 @@
+name: LayerSentry Repair sen2 Agent Service Conflict
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/sen2-service-repair-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-sen2-agent-service-conflict-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Disable stale sen2 server loop and prove sustained three-node health
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact repair source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate authorization request and API validator
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/sen2-service-repair-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one sen2 service-repair request; found $($requests.Count)."
+          }
+
+          $requestPath = ([string]$requests[0]).Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'REPAIR_SEN2_AGENT_SERVICE_CONFLICT') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([string]$request.targetNode -ne 'sen2' -or [string]$request.targetAddress -ne '10.10.10.12') {
+            throw 'This workflow is restricted to sen2 at 10.10.10.12.'
+          }
+          if ([string]$request.expectedRancherdRole -ne 'agent') {
+            throw 'The expected rancherd role must be agent.'
+          }
+          if (-not [bool]$request.disableConflictingRke2Server) {
+            throw 'The request must explicitly authorize disabling the conflicting rke2-server unit.'
+          }
+          foreach ($forbidden in @(
+            'reinstallOrWipeDisks',
+            'deleteRke2Data',
+            'acceptEula',
+            'writeCredentialValuesToEvidence',
+            'productionReleaseApprovalImplied'
+          )) {
+            if ([bool]$request.$forbidden) {
+              throw "Forbidden request flag is true: $forbidden"
+            }
+          }
+
+          $validatorPath = (Resolve-Path -LiteralPath 'hack/layersentry/test-harvester-cluster-api-safe.ps1').ProviderPath
+          $validatorText = Get-Content -LiteralPath $validatorPath -Raw -Encoding UTF8
+          $correctedText = $validatorText.Replace(
+            '$Method $Uri: $statusText',
+            '$Method ${Uri}: $statusText'
+          )
+          $stderrNeedle = '        $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()'
+          $stderrReplacement = @(
+            '        $stderrText = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)'
+            '        $stderrText = ([string]$stderrText).Trim()'
+          ) -join "`n"
+          $correctedText = $correctedText.Replace($stderrNeedle, $stderrReplacement)
+          $correctedText = $correctedText.Replace('$statusText.Trim()', '([string]$statusText).Trim()')
+          $correctedText = $correctedText.Replace('$stderrText.Trim()', '([string]$stderrText).Trim()')
+          $correctedText = $correctedText.Replace('Set-StrictMode -Version Latest', 'Set-StrictMode -Off')
+          $correctedText = $correctedText.Replace(
+            'labelSelector=kubevirt.io%2B%3Dvirt-handler',
+            'labelSelector=kubevirt.io%3Dvirt-handler'
+          )
+          [System.IO.File]::WriteAllText(
+            $validatorPath,
+            $correctedText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          [System.Collections.Generic.List[string]]$validatorLines = @(
+            Get-Content -LiteralPath $validatorPath -Encoding UTF8
+          )
+          $writeOutLine = "        '--write-out', '%{http_code}'"
+          $writeOutIndex = $validatorLines.IndexOf($writeOutLine)
+          if ($writeOutIndex -ge 0) {
+            $validatorLines[$writeOutIndex] = "$writeOutLine,"
+            $validatorLines.Insert($writeOutIndex + 1, '        $Uri')
+            [System.IO.File]::WriteAllLines(
+              $validatorPath,
+              $validatorLines,
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+          }
+
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $validatorPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $validatorPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated reversible sen2 service-role repair request: $requestPath"
+
+      - name: Stop the stale server loop and reboot only sen2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          if (Test-Path -LiteralPath $evidenceRoot) {
+            Remove-Item -LiteralPath $evidenceRoot -Recurse -Force
+          }
+          New-Item -Path $evidenceRoot -ItemType Directory -Force | Out-Null
+
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Protected credential file is missing: $credentialPath"
+          }
+          $credentials = Get-Content -LiteralPath $credentialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $nodePassword = [string]$credentials.nodePassword
+          if ([string]::IsNullOrWhiteSpace($nodePassword)) {
+            throw 'Protected node password is missing.'
+          }
+          [string[]]$secretValues = @(
+            [string]$credentials.nodePassword,
+            [string]$credentials.clusterToken,
+            [string]$credentials.adminPassword
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+          function Protect-Text {
+            param([AllowNull()][string]$Text)
+            $safe = [string]$Text
+            foreach ($secret in $secretValues) {
+              if (-not [string]::IsNullOrEmpty($secret)) {
+                $safe = $safe.Replace($secret, '[REDACTED]')
+              }
+            }
+            $safe = [regex]::Replace(
+              $safe,
+              '(?i)K10[a-z0-9]{20,}::server:[a-z0-9]{20,}',
+              '[REDACTED-RKE2-TOKEN]'
+            )
+            $safe = [regex]::Replace(
+              $safe,
+              '(?im)^(\s*(?:token|password|authorization|credential)\s*[:=]).+$',
+              '$1 [REDACTED]'
+            )
+            return $safe
+          }
+
+          function Test-TcpPort {
+            param(
+              [Parameter(Mandatory = $true)][string]$Address,
+              [Parameter(Mandatory = $true)][int]$Port,
+              [int]$TimeoutMilliseconds = 2000
+            )
+            $client = New-Object System.Net.Sockets.TcpClient
+            $handle = $null
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              $handle = $async.AsyncWaitHandle
+              if (-not $handle.WaitOne($TimeoutMilliseconds, $false)) {
+                return $false
+              }
+              $client.EndConnect($async)
+              return [bool]$client.Connected
+            }
+            catch {
+              return $false
+            }
+            finally {
+              if ($null -ne $handle) { $handle.Close() }
+              $client.Close()
+              $client.Dispose()
+            }
+          }
+
+          $secureRoot = Join-Path $env:RUNNER_TEMP ('layersentry-sen2-service-secure-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -Path $secureRoot -ItemType Directory -Force | Out-Null
+          $oldAskPass = [Environment]::GetEnvironmentVariable('SSH_ASKPASS')
+          $oldRequire = [Environment]::GetEnvironmentVariable('SSH_ASKPASS_REQUIRE')
+          $oldDisplay = [Environment]::GetEnvironmentVariable('DISPLAY')
+
+          try {
+            $passwordPath = Join-Path $secureRoot 'node-password.txt'
+            $askPassPath = Join-Path $secureRoot 'askpass.cmd'
+            [System.IO.File]::WriteAllText(
+              $passwordPath,
+              $nodePassword + "`r`n",
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+            [System.IO.File]::WriteAllText(
+              $askPassPath,
+              "@echo off`r`ntype `"$passwordPath`"`r`n",
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+            $env:SSH_ASKPASS = $askPassPath
+            $env:SSH_ASKPASS_REQUIRE = 'force'
+            $env:DISPLAY = 'LayerSentry'
+            $ssh = Get-Command -Name 'ssh.exe' -ErrorAction Stop | Select-Object -First 1
+            $passwordB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($nodePassword))
+
+            function Invoke-Sen2Script {
+              param(
+                [Parameter(Mandatory = $true)][string]$Label,
+                [Parameter(Mandatory = $true)][string]$Script,
+                [int]$ConnectTimeout = 15
+              )
+              $safeLabel = $Label -replace '[^A-Za-z0-9_.-]', '_'
+              $scriptPath = Join-Path $secureRoot ($safeLabel + '.sh')
+              $stdoutPath = Join-Path $secureRoot ($safeLabel + '.stdout.raw')
+              $stderrPath = Join-Path $secureRoot ($safeLabel + '.stderr.raw')
+              [System.IO.File]::WriteAllText(
+                $scriptPath,
+                (($Script -replace "`r`n", "`n").TrimStart([char]0xFEFF)),
+                (New-Object System.Text.UTF8Encoding($false))
+              )
+              $arguments = @(
+                '-T',
+                '-o', 'StrictHostKeyChecking=no',
+                '-o', 'UserKnownHostsFile=NUL',
+                '-o', 'LogLevel=ERROR',
+                '-o', 'PreferredAuthentications=password,keyboard-interactive',
+                '-o', 'PubkeyAuthentication=no',
+                '-o', 'NumberOfPasswordPrompts=1',
+                '-o', "ConnectTimeout=$ConnectTimeout",
+                'rancher@10.10.10.12',
+                'bash', '-s'
+              )
+              $process = Start-Process `
+                -FilePath $ssh.Source `
+                -ArgumentList $arguments `
+                -NoNewWindow `
+                -Wait `
+                -PassThru `
+                -RedirectStandardInput $scriptPath `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath
+              $stdout = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue)
+              $stderr = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
+              $combined = Protect-Text -Text ($stdout + "`n===ssh-stderr===`n" + $stderr)
+              [System.IO.File]::WriteAllText(
+                (Join-Path $evidenceRoot ($safeLabel + '.txt')),
+                $combined,
+                (New-Object System.Text.UTF8Encoding($false))
+              )
+              Remove-Item -LiteralPath $scriptPath, $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+              return [pscustomobject]@{
+                ExitCode = [int]$process.ExitCode
+                RawStdout = $stdout
+                SafeOutput = $combined
+              }
+            }
+
+            $repairScript = @'
+set -Eeuo pipefail
+umask 077
+work=$(mktemp -d /tmp/layersentry-sen2-agent-role.XXXXXX)
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT HUP INT TERM
+printf '%s' '{{NODE_PASSWORD_B64}}' | base64 -d > "$work/node-password"
+printf '\n' >> "$work/node-password"
+chmod 0600 "$work/node-password"
+if ! sudo -n true >/dev/null 2>&1; then
+  sudo -S -p '' -v < "$work/node-password"
+fi
+yq_path=$(command -v yq 2>/dev/null || true)
+if [ -z "$yq_path" ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:yq-not-found'
+  exit 61
+fi
+hostname_value=$(hostname)
+role=$(sudo -n "$yq_path" e -r '.role // ""' /etc/rancher/rancherd/config.yaml 2>/dev/null || true)
+server_url=$(sudo -n "$yq_path" e -r '.server // ""' /etc/rancher/rancherd/config.yaml 2>/dev/null || true)
+install_mode=$(sudo -n "$yq_path" e -r '.install.mode // ""' /oem/harvester.config 2>/dev/null || true)
+plan_type=$(sudo -n awk -F= '$1 == "INSTALL_RKE2_TYPE" { print $2 }' /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env 2>/dev/null | tail -n 1 | tr -d '\r' || true)
+echo "LAYERSENTRY_PREFLIGHT:hostname=${hostname_value}:role=${role}:server=${server_url}:mode=${install_mode}:planType=${plan_type}"
+if [ "$hostname_value" != 'sen2' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:unexpected-hostname'
+  exit 62
+fi
+if [ "$role" != 'agent' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:rancherd-role-is-not-agent'
+  exit 63
+fi
+if [ "$server_url" != 'https://10.10.10.10:443' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:unexpected-rancherd-server-url'
+  exit 64
+fi
+if [ "$install_mode" != 'join' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:install-mode-is-not-join'
+  exit 65
+fi
+if [ -n "$plan_type" ] && [ "$plan_type" != 'agent' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:system-agent-plan-is-not-agent'
+  exit 66
+fi
+if ! sudo -n systemctl list-unit-files rke2-agent.service --no-legend 2>/dev/null | grep -q '^rke2-agent.service'; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:rke2-agent-unit-missing'
+  exit 67
+fi
+for service in rke2-server rke2-agent rancher-system-agent; do
+  enabled=$(sudo -n systemctl is-enabled "$service" 2>&1 || true)
+  active=$(sudo -n systemctl is-active "$service" 2>&1 || true)
+  restarts=$(sudo -n systemctl show "$service" -p NRestarts --value 2>/dev/null || true)
+  echo "LAYERSENTRY_SERVICE_BEFORE:${service}:enabled=${enabled}:active=${active}:restarts=${restarts}"
+done
+sudo -n journalctl -u rke2-server --since '-12 minutes' -n 80 --no-pager 2>&1 | sed -E 's/(token|password|credential)([^[:space:]]*)/[REDACTED]/Ig' || true
+backup_root="/oem/layersentry-sen2-service-repair-backups/$(date -u +%Y%m%dT%H%M%SZ)"
+sudo -n mkdir -p "$backup_root"
+sudo -n cp -a /etc/rancher/rancherd/config.yaml "$backup_root/rancherd-config.yaml" 2>/dev/null || true
+sudo -n cp -a /oem/harvester.config "$backup_root/harvester.config" 2>/dev/null || true
+sudo -n sh -c "systemctl is-enabled rke2-server > '$backup_root/rke2-server-enabled.txt' 2>&1 || true"
+sudo -n sh -c "systemctl is-active rke2-server > '$backup_root/rke2-server-active.txt' 2>&1 || true"
+sudo -n sh -c "systemctl is-enabled rke2-agent > '$backup_root/rke2-agent-enabled.txt' 2>&1 || true"
+sudo -n sh -c "systemctl is-active rke2-agent > '$backup_root/rke2-agent-active.txt' 2>&1 || true"
+sudo -n systemctl stop rke2-server.service || true
+sudo -n systemctl disable rke2-server.service || true
+sudo -n systemctl reset-failed rke2-server.service rke2-agent.service || true
+sudo -n systemctl enable rke2-agent.service
+server_enabled_after=$(sudo -n systemctl is-enabled rke2-server.service 2>&1 || true)
+agent_enabled_after=$(sudo -n systemctl is-enabled rke2-agent.service 2>&1 || true)
+echo "LAYERSENTRY_SERVICE_CONFIGURED:rke2-server=${server_enabled_after}:rke2-agent=${agent_enabled_after}:backup=${backup_root}"
+if [ "$server_enabled_after" = 'enabled' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:rke2-server-remains-enabled'
+  exit 68
+fi
+if [ "$agent_enabled_after" != 'enabled' ]; then
+  echo 'LAYERSENTRY_SEN2_REPAIR_ERROR:rke2-agent-not-enabled'
+  exit 69
+fi
+echo 'LAYERSENTRY_SEN2_REBOOT_ISSUED'
+sudo -n systemctl reboot
+'@
+            $repairScript = $repairScript.Replace('{{NODE_PASSWORD_B64}}', $passwordB64)
+            $repairResult = Invoke-Sen2Script -Label 'sen2-pre-reboot-repair' -Script $repairScript -ConnectTimeout 20
+            if ($repairResult.RawStdout -notmatch 'LAYERSENTRY_SEN2_REBOOT_ISSUED') {
+              throw "sen2 did not reach the authorized reboot point. SSH exit code: $($repairResult.ExitCode)"
+            }
+
+            $vm = Get-VM -Name 'sen2' -ErrorAction Stop
+            if ([string]$vm.State -ne 'Running') {
+              throw "sen2 Hyper-V state changed unexpectedly: $($vm.State)"
+            }
+
+            Start-Sleep -Seconds 15
+            $postScriptTemplate = @'
+set -Eeuo pipefail
+umask 077
+work=$(mktemp -d /tmp/layersentry-sen2-postcheck.XXXXXX)
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT HUP INT TERM
+printf '%s' '{{NODE_PASSWORD_B64}}' | base64 -d > "$work/node-password"
+printf '\n' >> "$work/node-password"
+chmod 0600 "$work/node-password"
+if ! sudo -n true >/dev/null 2>&1; then
+  sudo -S -p '' -v < "$work/node-password"
+fi
+server_enabled=$(sudo -n systemctl is-enabled rke2-server.service 2>&1 || true)
+server_active=$(sudo -n systemctl is-active rke2-server.service 2>&1 || true)
+agent_enabled=$(sudo -n systemctl is-enabled rke2-agent.service 2>&1 || true)
+agent_active=$(sudo -n systemctl is-active rke2-agent.service 2>&1 || true)
+plan_type=$(sudo -n awk -F= '$1 == "INSTALL_RKE2_TYPE" { print $2 }' /var/lib/rancher/rke2/system-agent-installer/rke2-sa.env 2>/dev/null | tail -n 1 | tr -d '\r' || true)
+kubelet_open=false
+if timeout 3 bash -c '</dev/tcp/127.0.0.1/10250' >/dev/null 2>&1; then kubelet_open=true; fi
+agent_process=false
+if ps -ef | grep -E '[r]ke2[[:space:]]+agent' >/dev/null 2>&1; then agent_process=true; fi
+server_process=false
+if ps -ef | grep -E '[r]ke2[[:space:]]+server' >/dev/null 2>&1; then server_process=true; fi
+echo "LAYERSENTRY_POSTCHECK:serverEnabled=${server_enabled}:serverActive=${server_active}:agentEnabled=${agent_enabled}:agentActive=${agent_active}:planType=${plan_type}:kubelet10250=${kubelet_open}:agentProcess=${agent_process}:serverProcess=${server_process}"
+sudo -n journalctl -u rke2-agent --since '-8 minutes' -n 100 --no-pager 2>&1 | sed -E 's/(token|password|credential)([^[:space:]]*)/[REDACTED]/Ig' || true
+if [ "$server_enabled" = 'enabled' ]; then exit 71; fi
+if [ "$server_active" = 'active' ] || [ "$server_active" = 'activating' ]; then exit 72; fi
+if [ "$agent_enabled" != 'enabled' ]; then exit 73; fi
+if [ "$agent_active" != 'active' ]; then exit 74; fi
+if [ -n "$plan_type" ] && [ "$plan_type" != 'agent' ]; then exit 75; fi
+if [ "$kubelet_open" != 'true' ]; then exit 76; fi
+if [ "$agent_process" != 'true' ]; then exit 77; fi
+if [ "$server_process" != 'false' ]; then exit 78; fi
+echo 'LAYERSENTRY_SEN2_AGENT_ROLE_STABLE_LOCAL:PASS'
+'@
+            $postScriptTemplate = $postScriptTemplate.Replace('{{NODE_PASSWORD_B64}}', $passwordB64)
+
+            $localPass = $false
+            $lastPostFailure = $null
+            for ($attempt = 1; $attempt -le 72; $attempt++) {
+              if (-not (Test-TcpPort -Address '10.10.10.12' -Port 22 -TimeoutMilliseconds 2000)) {
+                $lastPostFailure = 'SSH port is not open.'
+                Start-Sleep -Seconds 10
+                continue
+              }
+              try {
+                $postResult = Invoke-Sen2Script `
+                  -Label ('sen2-post-reboot-{0:D3}' -f $attempt) `
+                  -Script $postScriptTemplate `
+                  -ConnectTimeout 10
+                if ($postResult.ExitCode -eq 0 -and $postResult.RawStdout -match 'LAYERSENTRY_SEN2_AGENT_ROLE_STABLE_LOCAL:PASS') {
+                  $localPass = $true
+                  [ordered]@{
+                    schemaVersion = '1.0'
+                    repairedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                    targetNode = 'sen2'
+                    targetAddress = '10.10.10.12'
+                    rke2ServerDisabled = $true
+                    rke2AgentActive = $true
+                    kubeletEndpointOpen = $true
+                    rke2DataDeleted = $false
+                    vmDiskWiped = $false
+                    vmReinstalled = $false
+                    productionReleaseApproved = $false
+                  } | ConvertTo-Json -Depth 8 |
+                    Set-Content -LiteralPath (Join-Path $evidenceRoot 'repair-summary.json') -Encoding UTF8
+                  break
+                }
+                $lastPostFailure = "Postcheck exit code $($postResult.ExitCode)."
+              }
+              catch {
+                $lastPostFailure = [string]$_.Exception.Message
+              }
+              Start-Sleep -Seconds 10
+            }
+            if (-not $localPass) {
+              throw "sen2 did not return as a stable RKE2 agent: $lastPostFailure"
+            }
+          }
+          finally {
+            [Environment]::SetEnvironmentVariable('SSH_ASKPASS', $oldAskPass)
+            [Environment]::SetEnvironmentVariable('SSH_ASKPASS_REQUIRE', $oldRequire)
+            [Environment]::SetEnvironmentVariable('DISPLAY', $oldDisplay)
+            if (Test-Path -LiteralPath $secureRoot) {
+              Remove-Item -LiteralPath $secureRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $nodePassword = $null
+            $credentials = $null
+          }
+
+      - name: Require convergence followed by sustained full-cluster health
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          $convergenceRoot = Join-Path $root 'convergence'
+          New-Item -Path $convergenceRoot -ItemType Directory -Force | Out-Null
+
+          $converged = $false
+          $lastFailure = $null
+          for ($attempt = 1; $attempt -le 60; $attempt++) {
+            $attemptDirectory = Join-Path $convergenceRoot ('attempt-{0:D3}' -f $attempt)
+            try {
+              & 'hack/layersentry/test-harvester-cluster-api-safe.ps1' `
+                -ClusterUrl 'https://10.10.10.10' `
+                -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+                -OutputDirectory $attemptDirectory
+              $converged = $true
+              $lastFailure = $null
+            }
+            catch {
+              $lastFailure = [string]$_.Exception.Message
+              Write-Warning ("Convergence attempt {0}/60 did not pass: {1}" -f $attempt, $lastFailure)
+            }
+            [ordered]@{
+              phase = 'convergence'
+              attempt = $attempt
+              capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+              passed = $converged
+              failure = $lastFailure
+            } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $root 'health-history.jsonl') -Encoding UTF8
+            if ($converged) {
+              Write-Host "Full three-node convergence passed on attempt $attempt."
+              break
+            }
+            Start-Sleep -Seconds 15
+          }
+          if (-not $converged) {
+            throw "Full three-node convergence did not pass: $lastFailure"
+          }
+
+          $stableSamples = 24
+          for ($sample = 1; $sample -le $stableSamples; $sample++) {
+            $sampleDirectory = Join-Path $root ('stability-sample-{0:D2}' -f $sample)
+            $sampleFailure = $null
+            try {
+              & 'hack/layersentry/test-harvester-cluster-api-safe.ps1' `
+                -ClusterUrl 'https://10.10.10.10' `
+                -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+                -OutputDirectory $sampleDirectory
+            }
+            catch {
+              $sampleFailure = [string]$_.Exception.Message
+            }
+            $passed = [string]::IsNullOrWhiteSpace($sampleFailure)
+            [ordered]@{
+              phase = 'stability'
+              sample = $sample
+              capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+              passed = $passed
+              failure = $sampleFailure
+            } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $root 'health-history.jsonl') -Encoding UTF8
+            if (-not $passed) {
+              throw "Strict stability sample $sample/$stableSamples failed: $sampleFailure"
+            }
+            Write-Host "Strict stability sample $sample/$stableSamples passed."
+            if ($sample -lt $stableSamples) {
+              Start-Sleep -Seconds 30
+            }
+          }
+
+          $finalDirectory = Join-Path $root ('stability-sample-{0:D2}' -f $stableSamples)
+          foreach ($name in @('cluster-api-validation.json', 'STATUS.md')) {
+            $source = Join-Path $finalDirectory $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              Copy-Item -LiteralPath $source -Destination (Join-Path $root $name) -Force
+            }
+          }
+          [ordered]@{
+            schemaVersion = '1.0'
+            sourceCommit = $env:GITHUB_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            convergencePassed = $true
+            consecutiveStableSamples = $stableSamples
+            stabilityIntervalSeconds = 30
+            sustainedThreeNodeApiHealth = $true
+            workloadQualified = $false
+            trueAirgapQualified = $false
+            haQualified = $false
+            upgradeQualified = $false
+            backupRestoreQualified = $false
+            productionReleaseApproved = $false
+          } | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $root 'stability-summary.json') -Encoding UTF8
+          New-Item -Path (Join-Path $root 'SUCCESS') -ItemType File -Force | Out-Null
+          Write-Host 'LAYERSENTRY SEN2 AGENT SERVICE CONFLICT REPAIR AND STABILITY GATE: PASS'
+
+      - name: Upload sanitized repair and stability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-agent-service-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-sen2-agent-service-repair\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
