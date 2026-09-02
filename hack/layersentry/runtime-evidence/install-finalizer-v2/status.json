@@ -1,0 +1,154 @@
+﻿{
+    "schemaVersion":  "2.0",
+    "requestId":  "layersentry-three-node-finalize-after-join-20260902-01",
+    "sourceCommit":  "b28a9fade8ae096229c29029c85edd5b6c3d84e9",
+    "sourceRequest":  "hack/layersentry/install-finalizer-v2-requests/20260902-three-node-finalize-after-join-01.json",
+    "status":  "waiting",
+    "message":  "Waiting for three installed nodes and VIP readiness; stable=0/2.",
+    "startedAtUtc":  "2026-09-02T09:07:09.9394591Z",
+    "publishedAtUtc":  "2026-09-02T10:00:19.6877223Z",
+    "elapsedMinutes":  53.16,
+    "stablePolls":  0,
+    "requiredStablePolls":  2,
+    "vip":  {
+                "address":  "10.10.10.10",
+                "ping":  true,
+                "tcp443":  true,
+                "tcp6443":  true,
+                "httpsStatusCode":  302,
+                "ready":  true
+            },
+    "nodes":  {
+                  "sen3":  {
+                               "expectedIPAddress":  "10.10.10.13",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  4729,
+                               "cpuCount":  10,
+                               "exposeVirtualizationExtensions":  true,
+                               "startupMemoryGiB":  32,
+                               "assignedMemoryGiB":  32,
+                               "dynamicMemoryEnabled":  false,
+                               "switchNames":  [
+                                                   "Cozystack-NAT"
+                                               ],
+                               "macAddressSpoofing":  [
+                                                          "On"
+                                                      ],
+                               "dvdAttached":  false,
+                               "dvdPaths":  [
+
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen3\\Virtual Hard Disks\\sen3-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  58.91,
+                                              "type":  "Dynamic"
+                                          },
+                               "dataDisk":  {
+                                                "path":  "C:\\Hyper-V\\LayerSentry\\sen3\\Virtual Hard Disks\\sen3-data.vhdx",
+                                                "virtualSizeGiB":  300,
+                                                "fileSizeGiB":  5.254,
+                                                "type":  "Dynamic"
+                                            },
+                               "bootTransitionCompleted":  true,
+                               "bootTransitionReason":  "installation-media-already-ejected",
+                               "bootTransitionAtUtc":  "2026-09-02T09:07:15.0162158Z",
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  false,
+                                               "tcp10250":  false,
+                                               "serviceCount":  1
+                                           },
+                               "online":  false
+                           },
+                  "sen1":  {
+                               "expectedIPAddress":  "10.10.10.11",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  19045,
+                               "cpuCount":  10,
+                               "exposeVirtualizationExtensions":  true,
+                               "startupMemoryGiB":  32,
+                               "assignedMemoryGiB":  32,
+                               "dynamicMemoryEnabled":  false,
+                               "switchNames":  [
+                                                   "Cozystack-NAT"
+                                               ],
+                               "macAddressSpoofing":  [
+                                                          "On"
+                                                      ],
+                               "dvdAttached":  false,
+                               "dvdPaths":  [
+
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen1\\Virtual Hard Disks\\sen1-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  71.816,
+                                              "type":  "Dynamic"
+                                          },
+                               "dataDisk":  {
+                                                "path":  "C:\\Hyper-V\\LayerSentry\\sen1\\Virtual Hard Disks\\sen1-data.vhdx",
+                                                "virtualSizeGiB":  300,
+                                                "fileSizeGiB":  5.285,
+                                                "type":  "Dynamic"
+                                            },
+                               "bootTransitionCompleted":  true,
+                               "bootTransitionReason":  "installation-media-already-ejected",
+                               "bootTransitionAtUtc":  "2026-09-02T09:07:12.0814935Z",
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  true,
+                                               "tcp10250":  true,
+                                               "serviceCount":  3
+                                           },
+                               "online":  true
+                           },
+                  "sen2":  {
+                               "expectedIPAddress":  "10.10.10.12",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  5371,
+                               "cpuCount":  10,
+                               "exposeVirtualizationExtensions":  true,
+                               "startupMemoryGiB":  32,
+                               "assignedMemoryGiB":  32,
+                               "dynamicMemoryEnabled":  false,
+                               "switchNames":  [
+                                                   "Cozystack-NAT"
+                                               ],
+                               "macAddressSpoofing":  [
+                                                          "On"
+                                                      ],
+                               "dvdAttached":  false,
+                               "dvdPaths":  [
+
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen2\\Virtual Hard Disks\\sen2-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  23.691,
+                                              "type":  "Dynamic"
+                                          },
+                               "dataDisk":  {
+                                                "path":  "C:\\Hyper-V\\LayerSentry\\sen2\\Virtual Hard Disks\\sen2-data.vhdx",
+                                                "virtualSizeGiB":  300,
+                                                "fileSizeGiB":  5.254,
+                                                "type":  "Dynamic"
+                                            },
+                               "bootTransitionCompleted":  true,
+                               "bootTransitionReason":  "installation-media-already-ejected",
+                               "bootTransitionAtUtc":  "2026-09-02T09:07:13.5615855Z",
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  false,
+                                               "tcp10250":  false,
+                                               "serviceCount":  1
+                                           },
+                               "online":  false
+                           }
+              },
+    "credentialsRead":  false,
+    "containsCredentialValues":  false
+}
