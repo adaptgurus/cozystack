@@ -1,0 +1,20 @@
+{
+  "requestId": "confirm-sen2-sen3-join-installation-20260902-01",
+  "delayAfterSeconds": 30,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 2000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 2000}
+      ]
+    }
+  ]
+}
