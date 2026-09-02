@@ -1,0 +1,359 @@
+name: LayerSentry Diagnose sen2 Reimage Readiness Continuation 13
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/sen2-reimage-readiness-requests-v13/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-diagnose-sen2-reimage-readiness-continuation-13
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Inspect sen2 Hyper-V and network state without mutation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact diagnostic request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Collect read-only Hyper-V and network evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-reimage-readiness-continuation-13'
+          if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          "EVIDENCE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          function Test-TcpPort {
+            param(
+              [Parameter(Mandatory = $true)][string]$Address,
+              [Parameter(Mandatory = $true)][int]$Port,
+              [int]$TimeoutMilliseconds = 2500
+            )
+            $client = New-Object System.Net.Sockets.TcpClient
+            $handle = $null
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              $handle = $async.AsyncWaitHandle
+              if (-not $handle.WaitOne($TimeoutMilliseconds, $false)) { return $false }
+              $client.EndConnect($async)
+              return [bool]$client.Connected
+            }
+            catch { return $false }
+            finally {
+              if ($null -ne $handle) { $handle.Close() }
+              $client.Close()
+              $client.Dispose()
+            }
+          }
+
+          function Convert-BootOrder {
+            param([object[]]$Entries)
+            $items = @()
+            foreach ($entry in @($Entries)) {
+              $items += [ordered]@{
+                bootType = [string]$entry.BootType
+                deviceName = [string]$entry.Device.Name
+                devicePath = [string]$entry.Device.Path
+                deviceControllerType = [string]$entry.Device.ControllerType
+                deviceControllerNumber = [string]$entry.Device.ControllerNumber
+                deviceControllerLocation = [string]$entry.Device.ControllerLocation
+              }
+            }
+            return $items
+          }
+
+          $started = (Get-Date).ToUniversalTime()
+          $resultPath = Join-Path $root 'diagnostic-result.json'
+          $statusPath = Join-Path $root 'STATUS.md'
+          $passed = $false
+          $failure = $null
+          $requestPath = $null
+          $classification = $null
+          $nodes = @()
+          $sen2 = $null
+          $switch = $null
+          $neighbor = @()
+
+          try {
+            if ($env:COMPUTERNAME -cne 'TESTSER') {
+              throw "Diagnostic is restricted to TESTSER; observed $env:COMPUTERNAME."
+            }
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            if ($identity -cne 'NT AUTHORITY\SYSTEM') {
+              throw "Diagnostic runner must execute as NT AUTHORITY\SYSTEM; observed $identity."
+            }
+
+            [string[]]$requests = @(
+              @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/sen2-reimage-readiness-requests-v13/*.json') |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            if ($LASTEXITCODE -ne 0) { throw "git diff-tree failed with exit code $LASTEXITCODE." }
+            if ($requests.Count -ne 1) { throw "Expected exactly one version-13 request; found $($requests.Count)." }
+            $requestPath = ([string]$requests[0]).Trim()
+            $expectedPath = 'hack/layersentry/sen2-reimage-readiness-requests-v13/20260903-diagnose-sen2-before-manual-reimage-13.json'
+            if ($requestPath -cne $expectedPath) { throw "Unexpected request path: $requestPath" }
+
+            $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ([string]$request.requestId -cne 'diagnose-sen2-before-manual-reimage-20260903-13' -or
+                [string]$request.operation -cne 'DIAGNOSE_SEN2_HYPERV_AND_NETWORK_READ_ONLY' -or
+                [string]$request.authorization -cne 'USER_GRANTED_READ_ONLY_HYPERV_DIAGNOSTIC') {
+              throw 'The diagnostic request identity or authorization is invalid.'
+            }
+            if ([string]$request.targetVm -cne 'sen2' -or [string]$request.targetAddress -cne '10.10.10.12' -or
+                [string]$request.expectedSwitch -cne 'Cozystack-NAT') {
+              throw 'The diagnostic request is not bound to sen2 and Cozystack-NAT.'
+            }
+            foreach ($forbidden in @(
+              'changeVmState', 'changeVmConfiguration', 'changeNetwork', 'mountOrUnmountIso',
+              'writeGuestConfiguration', 'rebootGuest', 'reimageGuest', 'writeCredentialValuesToEvidence'
+            )) {
+              if ([bool]$request.$forbidden) { throw "Forbidden request flag is true: $forbidden" }
+            }
+
+            $switchObject = Get-VMSwitch -Name 'Cozystack-NAT' -ErrorAction Stop
+            $switch = [ordered]@{
+              name = [string]$switchObject.Name
+              switchType = [string]$switchObject.SwitchType
+              id = [string]$switchObject.Id
+              netAdapterInterfaceDescription = [string]$switchObject.NetAdapterInterfaceDescription
+            }
+            if ([string]$switchObject.SwitchType -cne 'Internal') {
+              throw 'Cozystack-NAT is no longer an Internal switch.'
+            }
+
+            $addressMap = [ordered]@{
+              sen1 = '10.10.10.11'
+              sen2 = '10.10.10.12'
+              sen3 = '10.10.10.13'
+            }
+
+            foreach ($name in @('sen1', 'sen2', 'sen3')) {
+              $vm = Get-VM -Name $name -ErrorAction Stop
+              $adapters = @()
+              foreach ($adapter in @(Get-VMNetworkAdapter -VMName $name -ErrorAction Stop)) {
+                $vlan = Get-VMNetworkAdapterVlan -VMNetworkAdapter $adapter -ErrorAction SilentlyContinue
+                $adapters += [ordered]@{
+                  name = [string]$adapter.Name
+                  switchName = [string]$adapter.SwitchName
+                  status = [string]$adapter.Status
+                  macAddress = [string]$adapter.MacAddress
+                  dynamicMacAddressEnabled = [bool]$adapter.DynamicMacAddressEnabled
+                  connected = [bool]$adapter.Connected
+                  ipAddresses = @($adapter.IPAddresses | ForEach-Object { [string]$_ })
+                  vlanOperationMode = if ($null -ne $vlan) { [string]$vlan.OperationMode } else { $null }
+                  accessVlanId = if ($null -ne $vlan) { [int]$vlan.AccessVlanId } else { 0 }
+                }
+              }
+
+              $integration = @()
+              foreach ($service in @(Get-VMIntegrationService -VMName $name -ErrorAction SilentlyContinue)) {
+                $integration += [ordered]@{
+                  name = [string]$service.Name
+                  enabled = [bool]$service.Enabled
+                  primaryStatusDescription = [string]$service.PrimaryStatusDescription
+                  secondaryStatusDescription = [string]$service.SecondaryStatusDescription
+                }
+              }
+
+              $disks = @()
+              foreach ($drive in @(Get-VMHardDiskDrive -VMName $name -ErrorAction SilentlyContinue)) {
+                $vhd = $null
+                if (-not [string]::IsNullOrWhiteSpace([string]$drive.Path) -and (Test-Path -LiteralPath ([string]$drive.Path) -PathType Leaf)) {
+                  $vhd = Get-VHD -Path ([string]$drive.Path) -ErrorAction SilentlyContinue
+                }
+                $disks += [ordered]@{
+                  path = [string]$drive.Path
+                  controllerType = [string]$drive.ControllerType
+                  controllerNumber = [int]$drive.ControllerNumber
+                  controllerLocation = [int]$drive.ControllerLocation
+                  fileExists = if ([string]::IsNullOrWhiteSpace([string]$drive.Path)) { $false } else { Test-Path -LiteralPath ([string]$drive.Path) -PathType Leaf }
+                  vhdType = if ($null -ne $vhd) { [string]$vhd.VhdType } else { $null }
+                  fileSizeBytes = if ($null -ne $vhd) { [long]$vhd.FileSize } else { 0 }
+                  maximumSizeBytes = if ($null -ne $vhd) { [long]$vhd.Size } else { 0 }
+                }
+              }
+
+              $dvds = @()
+              foreach ($dvd in @(Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue)) {
+                $dvds += [ordered]@{
+                  path = [string]$dvd.Path
+                  controllerNumber = [int]$dvd.ControllerNumber
+                  controllerLocation = [int]$dvd.ControllerLocation
+                  mediaMounted = -not [string]::IsNullOrWhiteSpace([string]$dvd.Path)
+                  mediaExists = if ([string]::IsNullOrWhiteSpace([string]$dvd.Path)) { $false } else { Test-Path -LiteralPath ([string]$dvd.Path) -PathType Leaf }
+                }
+              }
+
+              $firmware = Get-VMFirmware -VMName $name -ErrorAction SilentlyContinue
+              $address = [string]$addressMap[$name]
+              $ping = Test-Connection -ComputerName $address -Count 1 -Quiet -ErrorAction SilentlyContinue
+              $node = [ordered]@{
+                vmName = $name
+                expectedAddress = $address
+                state = [string]$vm.State
+                status = [string]$vm.Status
+                generation = [int]$vm.Generation
+                version = [string]$vm.Version
+                uptimeSeconds = [math]::Round($vm.Uptime.TotalSeconds, 0)
+                processorCount = [int]$vm.ProcessorCount
+                memoryAssignedBytes = [long]$vm.MemoryAssigned
+                heartbeat = [string]$vm.Heartbeat
+                automaticStartAction = [string]$vm.AutomaticStartAction
+                automaticStopAction = [string]$vm.AutomaticStopAction
+                networkAdapters = $adapters
+                integrationServices = $integration
+                hardDisks = $disks
+                dvdDrives = $dvds
+                secureBoot = if ($null -ne $firmware) { [bool]$firmware.SecureBoot } else { $null }
+                secureBootTemplate = if ($null -ne $firmware) { [string]$firmware.SecureBootTemplate } else { $null }
+                bootOrder = if ($null -ne $firmware) { Convert-BootOrder -Entries @($firmware.BootOrder) } else { @() }
+                pingReachable = [bool]$ping
+                tcp22Reachable = Test-TcpPort -Address $address -Port 22
+                tcp443Reachable = Test-TcpPort -Address $address -Port 443
+                tcp6443Reachable = Test-TcpPort -Address $address -Port 6443
+              }
+              $nodes += $node
+              if ($name -ceq 'sen2') { $sen2 = $node }
+            }
+
+            $neighbor = @(
+              Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -in @('10.10.10.10', '10.10.10.11', '10.10.10.12', '10.10.10.13') } |
+                ForEach-Object {
+                  [ordered]@{
+                    ipAddress = [string]$_.IPAddress
+                    linkLayerAddress = [string]$_.LinkLayerAddress
+                    state = [string]$_.State
+                    interfaceAlias = [string]$_.InterfaceAlias
+                    interfaceIndex = [int]$_.InterfaceIndex
+                  }
+                }
+            )
+
+            $sen2Adapters = @($sen2.networkAdapters)
+            $sen2ExpectedAdapters = @($sen2Adapters | Where-Object { [string]$_.switchName -ceq 'Cozystack-NAT' })
+            if ([string]$sen2.state -cne 'Running') {
+              $classification = 'SEN2_VM_NOT_RUNNING'
+            }
+            elseif ($sen2ExpectedAdapters.Count -eq 0) {
+              $classification = 'SEN2_NIC_NOT_CONNECTED_TO_COZYSTACK_NAT'
+            }
+            elseif ([bool]$sen2.tcp22Reachable) {
+              $classification = 'SEN2_SSH_REACHABLE'
+            }
+            elseif ([bool]$sen2.pingReachable -or [bool]$sen2.tcp443Reachable -or [bool]$sen2.tcp6443Reachable) {
+              $classification = 'SEN2_GUEST_NETWORK_REACHABLE_BUT_SSH_UNAVAILABLE'
+            }
+            else {
+              $classification = 'SEN2_RUNNING_WITHOUT_OBSERVED_GUEST_NETWORK_RESPONSE'
+            }
+
+            $passed = $true
+          }
+          catch {
+            $failure = [string]$_.Exception.Message
+            throw
+          }
+          finally {
+            $finished = (Get-Date).ToUniversalTime()
+            [ordered]@{
+              schemaVersion = '1.0'
+              requestPath = $requestPath
+              sourceCommit = $env:GITHUB_SHA
+              workflowRunId = $env:GITHUB_RUN_ID
+              startedAtUtc = $started.ToString('o')
+              finishedAtUtc = $finished.ToString('o')
+              durationSeconds = [math]::Round(($finished - $started).TotalSeconds, 3)
+              runnerHost = $env:COMPUTERNAME
+              inspectionMode = 'read-only-hyperv-and-host-network'
+              expectedSwitch = 'Cozystack-NAT'
+              switch = $switch
+              nodes = $nodes
+              neighborCache = $neighbor
+              sen2Classification = $classification
+              vmStateChanged = $false
+              vmConfigurationChanged = $false
+              networkChanged = $false
+              isoMountChanged = $false
+              guestConfigurationChanged = $false
+              guestRebooted = $false
+              guestReimaged = $false
+              credentialFileRead = $false
+              credentialValuesWrittenToEvidence = $false
+              passed = $passed
+              failure = $failure
+            } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+
+            $sen2State = if ($null -ne $sen2) { [string]$sen2.state } else { 'not-observed' }
+            $sen2Heartbeat = if ($null -ne $sen2) { [string]$sen2.heartbeat } else { 'not-observed' }
+            $sen2Ping = if ($null -ne $sen2) { [bool]$sen2.pingReachable } else { $false }
+            $sen2Ssh = if ($null -ne $sen2) { [bool]$sen2.tcp22Reachable } else { $false }
+            $sen2ReportedIps = if ($null -ne $sen2) {
+              @($sen2.networkAdapters | ForEach-Object { @($_.ipAddresses) }) -join ', '
+            } else { 'not-observed' }
+            @"
+            # LayerSentry sen2 reimage-readiness diagnostic
+
+            - Diagnostic completed: **$passed**
+            - sen2 classification: **$classification**
+            - sen2 VM state: **$sen2State**
+            - sen2 heartbeat: **$sen2Heartbeat**
+            - sen2 Hyper-V reported IPs: **$sen2ReportedIps**
+            - Ping 10.10.10.12: **$sen2Ping**
+            - TCP/22 10.10.10.12: **$sen2Ssh**
+            - VM state changed: **false**
+            - VM configuration changed: **false**
+            - Network changed: **false**
+            - ISO mount changed: **false**
+            - Guest reimaged: **false**
+            - Credential file read: **false**
+            - Failure: $failure
+            "@ | Set-Content -LiteralPath $statusPath -Encoding UTF8
+          }
+
+      - name: Upload sanitized read-only diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-reimage-readiness-continuation-13-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-sen2-reimage-readiness-continuation-13
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce read-only diagnostic completion
+        if: always()
+        shell: powershell
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-reimage-readiness-continuation-13\diagnostic-result.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw 'The sen2 diagnostic result is missing.'
+          }
+          $result = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.passed) {
+            throw "The sen2 read-only diagnostic failed: $($result.failure)"
+          }
+          foreach ($flag in @('vmStateChanged','vmConfigurationChanged','networkChanged','isoMountChanged','guestConfigurationChanged','guestRebooted','guestReimaged','credentialFileRead','credentialValuesWrittenToEvidence')) {
+            if ([bool]$result.$flag) { throw "Read-only invariant violated: $flag" }
+          }
+          Write-Host "LAYERSENTRY SEN2 READ-ONLY DIAGNOSTIC: PASS ($($result.sen2Classification))"
