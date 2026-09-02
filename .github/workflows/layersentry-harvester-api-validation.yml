@@ -13,14 +13,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: layersentry-three-node-installer-autopilot
-  cancel-in-progress: false
+  group: layersentry-strict-three-node-api-validation
+  cancel-in-progress: true
 
 jobs:
   validate:
     name: Authenticate and validate Kubernetes, KubeVirt and Longhorn
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 45
+    timeout-minutes: 35
 
     steps:
       - name: Checkout exact API validation source
@@ -89,6 +89,10 @@ jobs:
             'Set-StrictMode -Version Latest',
             'Set-StrictMode -Off'
           )
+          $correctedText = $correctedText.Replace(
+            'labelSelector=kubevirt.io%2B%3Dvirt-handler',
+            'labelSelector=kubevirt.io%3Dvirt-handler'
+          )
           [System.IO.File]::WriteAllText(
             $validatorPath,
             $correctedText,
@@ -125,15 +129,60 @@ jobs:
           }
           Write-Host "Validated authenticated, non-release API-validation request: $requestPath"
 
-      - name: Run authenticated Harvester and Kubernetes API validation
+      - name: Wait for strict three-node Harvester convergence
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $output = Join-Path $env:RUNNER_TEMP 'layersentry-harvester-api-validation'
-          & 'hack/layersentry/test-harvester-cluster-api-safe.ps1' `
-            -ClusterUrl 'https://10.10.10.10' `
-            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
-            -OutputDirectory $output
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-harvester-api-validation'
+          if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+
+          $success = $false
+          $lastFailure = $null
+          $maxAttempts = 80
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            $attemptDirectory = Join-Path $root ('attempt-{0:D3}' -f $attempt)
+            try {
+              & 'hack/layersentry/test-harvester-cluster-api-safe.ps1' `
+                -ClusterUrl 'https://10.10.10.10' `
+                -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+                -OutputDirectory $attemptDirectory
+              $success = $true
+              $lastFailure = $null
+            }
+            catch {
+              $lastFailure = [string]$_.Exception.Message
+              Write-Warning ("Convergence attempt {0}/{1} did not pass: {2}" -f $attempt, $maxAttempts, $lastFailure)
+            }
+
+            foreach ($name in @('cluster-api-validation.json', 'STATUS.md')) {
+              $source = Join-Path $attemptDirectory $name
+              if (Test-Path -LiteralPath $source -PathType Leaf) {
+                Copy-Item -LiteralPath $source -Destination (Join-Path $root $name) -Force
+              }
+            }
+            [ordered]@{
+              attempt = $attempt
+              capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+              passed = $success
+              failure = $lastFailure
+            } | ConvertTo-Json -Compress |
+              Add-Content -LiteralPath (Join-Path $root 'convergence-history.jsonl') -Encoding UTF8
+
+            if ($success) {
+              Write-Host "Strict three-node convergence passed on attempt $attempt."
+              break
+            }
+            if ($attempt -lt $maxAttempts) {
+              Start-Sleep -Seconds 15
+            }
+          }
+
+          if (-not $success) {
+            throw "Strict three-node convergence did not pass: $lastFailure"
+          }
 
       - name: Upload authenticated API validation evidence
         if: always()
@@ -141,6 +190,6 @@ jobs:
         with:
           name: layersentry-harvester-api-validation-${{ github.run_id }}
           path: ${{ runner.temp }}\layersentry-harvester-api-validation\**
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
           compression-level: 6
