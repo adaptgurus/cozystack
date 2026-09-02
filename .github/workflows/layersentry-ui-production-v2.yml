@@ -1,0 +1,148 @@
+name: LayerSentry Production UI v2 Qualification
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/ui-production-v2/**
+      - .github/workflows/layersentry-ui-production-v2.yml
+  pull_request:
+    paths:
+      - hack/layersentry/ui-production-v2/**
+      - .github/workflows/layersentry-ui-production-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-production-ui-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Validate, test and build the air-gap UI bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: hack/layersentry/ui-production-v2
+
+    steps:
+      - name: Checkout exact source commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Enforce supported Node runtime without package installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+          if [[ ! "$major" =~ ^[0-9]+$ ]] || (( major < 20 )); then
+            echo "Node.js 20 or newer is required; observed $(node --version)." >&2
+            exit 1
+          fi
+          if [[ -d node_modules ]]; then
+            echo 'node_modules must not be committed or restored for this dependency-free build.' >&2
+            exit 1
+          fi
+
+      - name: Validate security accessibility responsive and air-gap contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run validate
+
+      - name: Run production UI contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Build deterministic static release and integrity manifest
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.pushed_at || '0' }}
+          LAYERSENTRY_BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm run build
+          test -s dist/index.html
+          test -s dist/assets/layersentry.css
+          test -s dist/assets/layersentry.js
+          test -s dist/asset-manifest.json
+          test -s dist/release-metadata.json
+          test -s dist/SHA256SUMS
+
+      - name: Verify checksums and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS
+          jq -e --arg sha "$GITHUB_SHA" '
+            .product == "LayerSentry" and
+            .component == "production-ui" and
+            .commit == ($sha | ascii_downcase) and
+            .externalRuntimeDependencies == 0 and
+            .credentialStorage == "none" and
+            .apiSessionMode == "same-origin-cookie"
+          ' release-metadata.json >/dev/null
+          jq -e '
+            .schemaVersion == "1.0" and
+            (.files | has("index.html")) and
+            (.files | has("assets/layersentry.css")) and
+            (.files | has("assets/layersentry.js")) and
+            ([.files[].sha256 | test("^[a-f0-9]{64}$")] | all) and
+            ([.files[].integrity | test("^sha384-[A-Za-z0-9+/]+={0,2}$")] | all)
+          ' asset-manifest.json >/dev/null
+
+      - name: Scan deployable output for secret and external-network indicators
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE --exclude='*.svg' 'https?://|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|Bearer[[:space:]]+[A-Za-z0-9._~-]+' dist; then
+            echo 'Deployable UI output contains a forbidden external URL or secret indicator.' >&2
+            exit 1
+          fi
+          if grep -RInE '(password|passwd|secret|token)[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{4,}["'"']' dist; then
+            echo 'Deployable UI output appears to contain a hard-coded credential.' >&2
+            exit 1
+          fi
+          if find dist -type f \( -name '*.map' -o -name '*.pem' -o -name '*.key' -o -name 'kubeconfig*' \) -print -quit | grep -q .; then
+            echo 'Source maps, private keys or kubeconfigs are forbidden in the UI artifact.' >&2
+            exit 1
+          fi
+
+      - name: Publish qualification summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LayerSentry Production UI v2'
+            echo
+            echo '- Dependency-free and air-gap deterministic: **yes**'
+            echo '- External browser assets: **none**'
+            echo '- Credential or kubeconfig persistence: **none**'
+            echo '- Same-origin API session: **required**'
+            echo '- Static asset integrity manifest: **generated**'
+            echo '- Live cluster deployment performed by this workflow: **no**'
+            echo '- Production release approval implied: **no**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload qualified static UI bundle
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-production-ui-v2-${{ github.run_id }}
+          path: hack/layersentry/ui-production-v2/dist
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
