@@ -1,0 +1,15 @@
+{
+  "requestId": "qualify-three-node-installation-20260902-030000",
+  "operation": "QUALIFY_THREE_NODE_LAYERSENTRY_INSTALLATION",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "virtualMachines": ["sen1", "sen2", "sen3"],
+  "clusterVip": "10.10.10.10",
+  "nodeAddresses": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "waitForInstallerAutopilot": true,
+  "allowIsoDetachAndBootOrderFinalization": true,
+  "productionReleaseApprovalImplied": false
+}
