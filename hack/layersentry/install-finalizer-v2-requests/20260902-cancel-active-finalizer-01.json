@@ -1,0 +1,17 @@
+{
+  "requestId": "layersentry-cancel-active-finalizer-20260902-01",
+  "vmNames": ["sen1", "sen2", "sen3"],
+  "expectedNodeIPs": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "vip": "10.10.10.10",
+  "maxWaitMinutes": 1,
+  "pollSeconds": 15,
+  "publishSeconds": 120,
+  "minimumObservationMinutes": 10,
+  "diskStableSeconds": 300,
+  "minimumInstalledDiskFileGiB": 3.0,
+  "requiredStablePolls": 3
+}
