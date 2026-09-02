@@ -1,0 +1,11 @@
+{
+  "requestId": "diagnose-sen2-machine-plan-role-20260902-01",
+  "operation": "READ_ONLY_CLUSTER_MACHINE_PLAN_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "primaryNodeAddress": "10.10.10.11",
+  "targetPlanSecret": "fleet-local/custom-81a2c5e94b13-machine-plan",
+  "diagnosticPurpose": "Trace the sen2 plan that defaults to RKE2 server back to its Rancher Machine roles and compare all machine-plan secrets.",
+  "modifyClusterState": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
