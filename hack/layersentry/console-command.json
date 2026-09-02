@@ -1,23 +1,50 @@
 {
-  "requestId": "expose-ipv4-method-options-20260902-01",
-  "delayAfterSeconds": 5,
+  "requestId": "configure-static-management-network-20260902-01",
+  "delayAfterSeconds": 18,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "text", "value": "10.10.10.11"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "255.255.255.0"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "10.10.10.1"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "text", "value": "10.10.10.12"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "255.255.255.0"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "10.10.10.1"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "text", "value": "10.10.10.13"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "255.255.255.0"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "text", "value": "10.10.10.1"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 900},
+        {"kind": "key", "code": 13}
       ]
     }
   ]
