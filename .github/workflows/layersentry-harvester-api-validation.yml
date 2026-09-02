@@ -77,10 +77,23 @@ jobs:
             '$Method $Uri: $statusText',
             '$Method ${Uri}: $statusText'
           )
-          if ($correctedText -ne $validatorText) {
-            [System.IO.File]::WriteAllText(
+          [System.IO.File]::WriteAllText(
+            $validatorPath,
+            $correctedText,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          [System.Collections.Generic.List[string]]$validatorLines = @(
+            Get-Content -LiteralPath $validatorPath -Encoding UTF8
+          )
+          $writeOutLine = "        '--write-out', '%{http_code}'"
+          $writeOutIndex = $validatorLines.IndexOf($writeOutLine)
+          if ($writeOutIndex -ge 0) {
+            $validatorLines[$writeOutIndex] = "$writeOutLine,"
+            $validatorLines.Insert($writeOutIndex + 1, '        $Uri')
+            [System.IO.File]::WriteAllLines(
               $validatorPath,
-              $correctedText,
+              $validatorLines,
               (New-Object System.Text.UTF8Encoding($false))
             )
           }
