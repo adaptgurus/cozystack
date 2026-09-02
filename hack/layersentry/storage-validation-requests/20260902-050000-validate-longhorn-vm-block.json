@@ -1,0 +1,15 @@
+{
+  "requestId": "validate-longhorn-vm-block-persistence-20260902-050000",
+  "operation": "VALIDATE_LONGHORN_VM_BLOCK_PERSISTENCE",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "namespace": "layersentry-validation",
+  "virtualMachine": "layersentry-storage-vm",
+  "persistentVolumeClaim": "layersentry-storage-vm-disk",
+  "requestedStorage": "2Gi",
+  "volumeMode": "Block",
+  "testMethod": "write-marker-recreate-vmi-read-marker",
+  "retainVmAndPvcForInspection": true,
+  "uploadPrivateKey": false,
+  "productionReleaseApprovalImplied": false
+}
