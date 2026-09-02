@@ -1,0 +1,94 @@
+name: LayerSentry KubeVirt Live Migration Validation
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/migration-validation-requests/*.json
+      - hack/layersentry/test-kubevirt-live-migration.ps1
+      - .github/workflows/layersentry-kubevirt-migration-validation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-three-node-installer-autopilot
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Live-migrate the retained KubeVirt validation VM
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact migration validation source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/migration-validation-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one migration validation request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'LIVE_MIGRATE_RETAINED_KUBEVIRT_VM') {
+            throw "Unsupported migration operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Nested-POC migration validation must not imply production release approval.'
+          }
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path -LiteralPath 'hack/layersentry/test-kubevirt-live-migration.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          Write-Host "Validated user-authorized nested-POC migration request: $requestPath"
+
+      - name: Live-migrate and validate the guest VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-kubevirt-migration-validation'
+          & 'hack/layersentry/test-kubevirt-live-migration.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -Namespace 'layersentry-validation' `
+            -VmName 'layersentry-smoke-vm' `
+            -OutputDirectory $output `
+            -TimeoutMinutes 25
+
+      - name: Upload live-migration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-kubevirt-migration-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-kubevirt-migration-validation\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
