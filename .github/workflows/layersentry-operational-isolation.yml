@@ -1,0 +1,194 @@
+name: LayerSentry Reversible Operational Isolation
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/isolation-requests/*.json
+      - hack/layersentry/test-operational-isolation.ps1
+      - .github/workflows/layersentry-operational-isolation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-runtime-destructive-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Remove guest NAT, prove internal survival, then restore egress
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact isolation source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate authorization and prepare text-log reader
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/isolation-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one isolation request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'VALIDATE_REVERSIBLE_OPERATIONAL_ISOLATION') {
+            throw "Unsupported isolation operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the explicit user authorization marker.'
+          }
+          if (-not [bool]$request.allowTemporaryNatRemoval -or -not [bool]$request.requireNatRestoreInFinally) {
+            throw 'The request does not authorize temporary NAT removal with mandatory restoration.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Operational isolation must not imply production release approval.'
+          }
+
+          # The Kubernetes pod-log endpoint returns plain text. Replace the
+          # generic JSON helper wrapper in the local checkout with a direct
+          # text-safe HTTP reader before parsing and execution.
+          $path = 'hack/layersentry/test-operational-isolation.ps1'
+          $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+          $old = @'
+          function Invoke-TextRequest {
+              param(
+                  [string]$Uri,
+                  [string]$BearerToken,
+                  [switch]$AllowHttpError
+              )
+              $response = Invoke-JsonRequest -Method GET -Uri $Uri -BearerToken $BearerToken -AllowHttpError:$AllowHttpError
+              return $response
+          }
+          '@
+          $new = @'
+          function Invoke-TextRequest {
+              param(
+                  [string]$Uri,
+                  [string]$BearerToken,
+                  [switch]$AllowHttpError
+              )
+              $headers = @{
+                  Accept = 'text/plain'
+                  Authorization = "Bearer $BearerToken"
+                  'User-Agent' = 'LayerSentry-Isolation-Validation/1.0'
+              }
+              try {
+                  $response = Invoke-WebRequest -Method Get -Uri $Uri -Headers $headers `
+                      -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                  return [pscustomobject]@{
+                      statusCode = [int]$response.StatusCode
+                      content = [string]$response.Content
+                      body = $null
+                      error = $null
+                  }
+              }
+              catch [System.Net.WebException] {
+                  if (-not $AllowHttpError) { throw }
+                  $statusCode = $null
+                  $responseText = $null
+                  if ($null -ne $_.Exception.Response) {
+                      $statusCode = [int]$_.Exception.Response.StatusCode
+                      $stream = $_.Exception.Response.GetResponseStream()
+                      if ($null -ne $stream) {
+                          $reader = New-Object System.IO.StreamReader($stream)
+                          try { $responseText = $reader.ReadToEnd() }
+                          finally { $reader.Dispose(); $stream.Dispose() }
+                      }
+                  }
+                  return [pscustomobject]@{
+                      statusCode = $statusCode
+                      content = [string]$responseText
+                      body = $null
+                      error = $_.Exception.Message
+                  }
+              }
+          }
+          '@
+          if (-not $content.Contains($old)) {
+            throw 'The reviewed Invoke-TextRequest block was not found for the local text-safe patch.'
+          }
+          $content.Replace($old, $new) |
+            Set-Content -LiteralPath $path -Encoding UTF8
+
+          $tokens = $null
+          $errors = $null
+          $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $resolved,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          Write-Host "Validated reversible operational-isolation request: $requestPath"
+
+      - name: Execute isolation and mandatory NAT restoration
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-operational-isolation'
+          & 'hack/layersentry/test-operational-isolation.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -Namespace 'layersentry-validation' `
+            -ProbePodName 'layersentry-egress-probe' `
+            -NatPrefix '10.10.10.0/24' `
+            -OutputDirectory $output `
+            -TimeoutMinutes 20
+
+      - name: Capture final NAT and cluster-host state
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-operational-isolation'
+          $final = Join-Path $output 'final-state'
+          New-Item -Path $final -ItemType Directory -Force | Out-Null
+          [ordered]@{
+            schemaVersion = '1.0'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            nats = @(Get-NetNat -ErrorAction SilentlyContinue | ForEach-Object {
+              [ordered]@{
+                name = $_.Name
+                internalPrefix = $_.InternalIPInterfaceAddressPrefix
+                active = $_.Active
+              }
+            })
+            virtualMachines = @(Get-VM -Name sen1,sen2,sen3 -ErrorAction SilentlyContinue | ForEach-Object {
+              [ordered]@{
+                name = $_.Name
+                state = $_.State.ToString()
+                uptimeSeconds = [int64]$_.Uptime.TotalSeconds
+              }
+            })
+            productionReleaseApproved = $false
+          } | ConvertTo-Json -Depth 10 |
+            Set-Content -LiteralPath (Join-Path $final 'host-state.json') -Encoding UTF8
+
+      - name: Upload operational-isolation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-operational-isolation-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-operational-isolation\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
