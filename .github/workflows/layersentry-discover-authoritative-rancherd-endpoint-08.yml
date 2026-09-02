@@ -1,0 +1,204 @@
+name: LayerSentry Discover Authoritative Rancherd Endpoint Read Only
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/rancherd-endpoint-discovery-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-authoritative-rancherd-endpoint-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover-endpoint:
+    name: Compare sen2 and sen3 with the exact authoritative plan without mutation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact discovery request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate runner, request, and read-only discovery source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:RUNNER_NAME -cne 'TESTSER') {
+            throw "This discovery is restricted to runner TESTSER; observed $env:RUNNER_NAME."
+          }
+          if ($env:COMPUTERNAME -cne 'TESTSER') {
+            throw "This discovery is restricted to Hyper-V host TESTSER; observed $env:COMPUTERNAME."
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          if ($identity -ne 'NT AUTHORITY\SYSTEM') {
+            throw "This discovery must run as NT AUTHORITY\SYSTEM; observed $identity."
+          }
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Protected credential file is missing: $credentialPath"
+          }
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/rancherd-endpoint-discovery-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one newly committed endpoint-discovery request; found $($requests.Count)."
+          }
+
+          $requestPath = ([string]$requests[0]).Trim()
+          $expectedRequestPath = 'hack/layersentry/rancherd-endpoint-discovery-requests/20260902-discover-authoritative-rancherd-endpoint-08.json'
+          if ($requestPath -cne $expectedRequestPath) {
+            throw "Unexpected endpoint-discovery request: $requestPath"
+          }
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.requestId -cne 'discover-authoritative-rancherd-endpoint-20260902-08') {
+            throw 'The requestId is not the unique endpoint-discovery identifier.'
+          }
+          if ([string]$request.operation -cne 'DISCOVER_AUTHORITATIVE_RANCHERD_ENDPOINT_READ_ONLY') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -cne 'USER_GRANTED_READ_ONLY_ENDPOINT_DISCOVERY') {
+            throw 'The request is missing the read-only authorization marker.'
+          }
+          if ([string]$request.previousRecoveryRunId -cne '33655993805') {
+            throw 'The request is not bound to the latest failed read-only recovery gate.'
+          }
+          if ([string]$request.previousRecoveryArtifactId -cne '9856731743') {
+            throw 'The request is not bound to the latest sanitized evidence artifact.'
+          }
+          if ([string]$request.previousRecoveryArtifactSha256 -cne '9fbbedead13d6392258b068fa354522b0a854b9245505a161a0fbebf4d8bbb03') {
+            throw 'The request has an unexpected prior artifact SHA-256.'
+          }
+          foreach ($forbidden in @(
+            'mutateAuthoritativeSource',
+            'changeNodeConfiguration',
+            'changeServices',
+            'rebootNode',
+            'reinstallOrWipeDisks',
+            'deleteRke2Data',
+            'acceptEula',
+            'writeCredentialValuesToEvidence',
+            'publishKubeconfig',
+            'productionReleaseApprovalImplied'
+          )) {
+            if ([bool]$request.$forbidden) {
+              throw "Forbidden request flag is true: $forbidden"
+            }
+          }
+
+          $scriptPath = 'hack/layersentry/discover-authoritative-rancherd-endpoint-continuation-08.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path -LiteralPath $scriptPath).ProviderPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $scriptPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+
+          $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+          foreach ($requiredMarker in @(
+            'DISCOVER_AUTHORITATIVE_RANCHERD_ENDPOINT_READ_ONLY',
+            'sen2-rancherd-config-readonly',
+            'sen3-rancherd-config-readonly',
+            'sen1-authoritative-plan-endpoint-discovery-readonly',
+            'candidateOccurrences',
+            'authoritativeRancherdServerUrl',
+            'planPayloadPublished = $false',
+            'nodeConfigurationModified = $false',
+            'servicesModified = $false',
+            'nodeRebooted = $false'
+          )) {
+            if (-not $scriptText.Contains($requiredMarker)) {
+              throw "Read-only endpoint-discovery source is missing required marker: $requiredMarker"
+            }
+          }
+          foreach ($forbiddenText in @(
+            'systemctl disable',
+            'systemctl enable',
+            'systemctl reboot',
+            'shutdown',
+            'rm -rf /var/lib/rancher/rke2',
+            'wipefs',
+            'Clear-Disk',
+            'Initialize-Disk',
+            'accept-eula'
+          )) {
+            if ($scriptText.IndexOf($forbiddenText, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              throw "Forbidden mutation text found in read-only discovery source: $forbiddenText"
+            }
+          }
+
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated unique read-only endpoint-discovery request: $requestPath"
+
+      - name: Discover exact authoritative rancherd endpoint without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputRoot = Join-Path $env:RUNNER_TEMP 'layersentry-rancherd-endpoint-discovery-08'
+          & 'hack/layersentry/discover-authoritative-rancherd-endpoint-continuation-08.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $outputRoot
+
+      - name: Upload sanitized endpoint-discovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-authoritative-rancherd-endpoint-discovery-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-rancherd-endpoint-discovery-08
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce read-only diagnosis completion
+        if: always()
+        shell: powershell
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP 'layersentry-rancherd-endpoint-discovery-08\endpoint-discovery-result.json'
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'Endpoint-discovery result is missing.'
+          }
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.diagnosisEstablished) {
+            throw "Authoritative endpoint discovery failed: $($result.failure)"
+          }
+          foreach ($mustRemainFalse in @(
+            'authoritativeSourceModified',
+            'nodeConfigurationModified',
+            'servicesModified',
+            'nodeRebooted',
+            'planPayloadPublished',
+            'credentialValuesWrittenToEvidence',
+            'kubeconfigWrittenToEvidence',
+            'eulaAutomaticallyAccepted',
+            'productionReleaseApproved'
+          )) {
+            if ([bool]$result.$mustRemainFalse) {
+              throw "Read-only invariant violated: $mustRemainFalse"
+            }
+          }
+          Write-Host "LAYERSENTRY AUTHORITATIVE RANCHERD ENDPOINT: $($result.authoritativeRancherdServerUrl)"
+          Write-Host "LAYERSENTRY ENDPOINT CLASSIFICATION: $($result.endpointClassification)"
