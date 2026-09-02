@@ -74,8 +74,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $request = Get-Content -LiteralPath $env:REQUEST_PATH -Raw -Encoding UTF8 | ConvertFrom-Json
+          $expandedTargets = @()
           foreach ($target in @($request.targets)) {
-            $expanded = New-Object System.Collections.Generic.List[object]
+            $expandedActions = @()
             foreach ($action in @($target.actions)) {
               if ([string]$action.kind -ieq 'repeatKey') {
                 $count = [int]$action.count
@@ -84,17 +85,25 @@ jobs:
                   throw "repeatKey count must be between 1 and 512; got $count"
                 }
                 for ($index = 0; $index -lt $count; $index++) {
-                  $expanded.Add([pscustomobject]@{ kind = 'key'; code = $code })
+                  $expandedActions += [pscustomobject]@{ kind = 'key'; code = $code }
                 }
               }
               else {
-                $expanded.Add($action)
+                $expandedActions += $action
               }
             }
-            $target.actions = @($expanded)
+            $expandedTargets += [pscustomobject]@{
+              vm = [string]$target.vm
+              actions = [object[]]$expandedActions
+            }
+          }
+          $expandedRequest = [pscustomobject]@{
+            requestId = [string]$request.requestId
+            delayAfterSeconds = [int]$request.delayAfterSeconds
+            targets = [object[]]$expandedTargets
           }
           $expandedPath = Join-Path $env:RUNNER_TEMP 'layersentry-expanded-console-command.json'
-          $request | ConvertTo-Json -Depth 20 |
+          $expandedRequest | ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $expandedPath -Encoding UTF8
 
           $resultDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-command'
