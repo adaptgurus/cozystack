@@ -1,0 +1,22 @@
+{
+  "requestId": "repair-sen2-agent-service-conflict-20260902-resume-02",
+  "operation": "REPAIR_SEN2_AGENT_SERVICE_CONFLICT",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "targetNode": "sen2",
+  "targetAddress": "10.10.10.12",
+  "expectedRancherdRole": "agent",
+  "disableConflictingRke2Server": true,
+  "repairScope": [
+    "back up sen2 Harvester and rancherd configuration",
+    "stop and disable only the stale rke2-server service",
+    "enable rke2-agent",
+    "reboot only sen2",
+    "require twelve minutes of consecutive local service stability",
+    "complete authenticated Kubernetes, KubeVirt and Longhorn validation"
+  ],
+  "reinstallOrWipeDisks": false,
+  "deleteRke2Data": false,
+  "acceptEula": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
