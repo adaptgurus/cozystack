@@ -1,0 +1,12 @@
+{
+  "requestId": "diagnose-sen2-owner-managed-fields-20260902-03",
+  "operation": "READ_ONLY_CLUSTER_MACHINE_PLAN_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "primaryNodeAddress": "10.10.10.11",
+  "targetPlanSecret": "fleet-local/custom-81a2c5e94b13-machine-plan",
+  "targetMachineRequestSecret": "local/custom-81a2c5e94b13",
+  "diagnosticPurpose": "Confirm whether the transient MachineRequest Secret still exists and identify managed-field ownership of sen2 role labels across the CAPI Machine, RKEBootstrap and CustomMachine before any role correction.",
+  "modifyClusterState": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
