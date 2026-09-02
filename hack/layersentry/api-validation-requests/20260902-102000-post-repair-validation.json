@@ -1,0 +1,17 @@
+{
+  "requestId": "validate-harvester-cluster-api-20260902-post-repair-01",
+  "operation": "VALIDATE_HARVESTER_CLUSTER_API",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "expectedNodes": ["sen1", "sen2", "sen3"],
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "validationScope": [
+    "three Ready Kubernetes nodes",
+    "KubeVirt available",
+    "three Ready virt-handler pods",
+    "three Ready and schedulable Longhorn nodes",
+    "healthy critical-system pods and deployments"
+  ],
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
