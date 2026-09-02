@@ -1,0 +1,22 @@
+{
+  "requestId": "set-join-management-address-to-sen1-20260902-02",
+  "delayAfterSeconds": 20,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "repeatKey", "code": 8, "count": 220},
+        {"kind": "text", "value": "10.10.10.11"},
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "repeatKey", "code": 8, "count": 220},
+        {"kind": "text", "value": "10.10.10.11"},
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}

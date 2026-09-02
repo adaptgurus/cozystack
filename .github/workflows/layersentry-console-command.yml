@@ -69,13 +69,37 @@ jobs:
             exit 1
           }
 
-      - name: Execute VM console command
+      - name: Expand repeated keys and execute VM console command
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $request = Get-Content -LiteralPath $env:REQUEST_PATH -Raw -Encoding UTF8 | ConvertFrom-Json
+          foreach ($target in @($request.targets)) {
+            $expanded = New-Object System.Collections.Generic.List[object]
+            foreach ($action in @($target.actions)) {
+              if ([string]$action.kind -ieq 'repeatKey') {
+                $count = [int]$action.count
+                $code = [int]$action.code
+                if ($count -lt 1 -or $count -gt 512) {
+                  throw "repeatKey count must be between 1 and 512; got $count"
+                }
+                for ($index = 0; $index -lt $count; $index++) {
+                  $expanded.Add([pscustomobject]@{ kind = 'key'; code = $code })
+                }
+              }
+              else {
+                $expanded.Add($action)
+              }
+            }
+            $target.actions = @($expanded)
+          }
+          $expandedPath = Join-Path $env:RUNNER_TEMP 'layersentry-expanded-console-command.json'
+          $request | ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $expandedPath -Encoding UTF8
+
           $resultDirectory = Join-Path $env:RUNNER_TEMP 'layersentry-console-command'
           & 'hack/layersentry/invoke-hyperv-console-command.ps1' `
-            -RequestPath $env:REQUEST_PATH `
+            -RequestPath $expandedPath `
             -OutputDirectory $resultDirectory
 
       - name: Capture console state after command
