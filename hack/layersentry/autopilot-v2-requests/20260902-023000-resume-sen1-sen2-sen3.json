@@ -1,0 +1,13 @@
+{
+  "requestId": "resume-sen1-sen2-sen3-20260902-023000",
+  "operation": "RESUME_THREE_NODE_LAYERSENTRY_POC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "virtualMachines": ["sen1", "sen2", "sen3"],
+  "clusterVip": "10.10.10.10",
+  "resumeFromCurrentConsoleState": true,
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "credentialValuesStoredInGit": false,
+  "allowDiskInstallation": true,
+  "allowIsoDetachAndReboot": true,
+  "productionReleaseApprovalImplied": false
+}
