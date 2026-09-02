@@ -1,0 +1,8 @@
+{
+  "requestId": "release-stalled-resume-monitor-20260902-01",
+  "operation": "PREEMPT_STALLED_RESUME_MONITOR",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "reason": "post-resume console capture remained active after join nodes became SSH reachable",
+  "changeVirtualMachineState": false,
+  "productionReleaseApprovalImplied": false
+}
