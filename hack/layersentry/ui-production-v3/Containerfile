@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+# BASE_IMAGE is intentionally unset. Production builds must provide an approved,
+# immutable image reference in the form registry/repository@sha256:<64 hex chars>.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG VERSION=unknown
+ARG REVISION=unknown
+ARG CREATED=1970-01-01T00:00:00Z
+
+LABEL org.opencontainers.image.title="LayerSentry Production UI" \
+      org.opencontainers.image.description="Air-gap-safe LayerSentry management interface" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      org.opencontainers.image.vendor="LayerSentry"
+
+COPY --chown=101:101 release/www/ /usr/share/nginx/html/
+COPY --chown=101:101 release/deploy/nginx.conf /etc/nginx/nginx.conf
+
+USER 101:101
+EXPOSE 8080
+STOPSIGNAL SIGQUIT
+CMD ["nginx", "-g", "daemon off;"]
