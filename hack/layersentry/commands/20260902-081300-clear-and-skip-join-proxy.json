@@ -1,0 +1,24 @@
+{
+  "requestId": "clear-and-skip-join-proxy-20260902-01",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 35},
+        {"kind": "repeatKey", "code": 8, "count": 120},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 5000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 35},
+        {"kind": "repeatKey", "code": 8, "count": 120},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 5000}
+      ]
+    }
+  ]
+}
