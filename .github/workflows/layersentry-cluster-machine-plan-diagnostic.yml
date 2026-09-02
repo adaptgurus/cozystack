@@ -1,0 +1,85 @@
+name: LayerSentry Cluster Machine Plan Diagnostic
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/machine-plan-diagnostic-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cluster-machine-plan-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    name: Trace the sen2 machine plan to its Rancher role
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Select request and parse diagnostic module
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/machine-plan-diagnostic-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one machine-plan diagnostic request; found $($requests.Count)."
+          }
+          $requestPath = ([string]$requests[0]).Trim()
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+            throw "Diagnostic request is missing: $requestPath"
+          }
+
+          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/diagnose-cluster-machine-plans.ps1').ProviderPath
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $scriptPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Selected read-only machine-plan diagnostic: $requestPath"
+
+      - name: Collect sanitized Rancher machine and plan evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & 'hack/layersentry/diagnose-cluster-machine-plans.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'layersentry-cluster-machine-plan-diagnostic')
+
+      - name: Upload sanitized machine-plan diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-cluster-machine-plan-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cluster-machine-plan-diagnostic\**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
