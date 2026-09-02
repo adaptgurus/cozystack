@@ -1,0 +1,24 @@
+{
+  "requestId": "accept-timezone-or-proxy-20260902-01",
+  "delayAfterSeconds": 12,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 13}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 13}
+      ]
+    }
+  ]
+}
