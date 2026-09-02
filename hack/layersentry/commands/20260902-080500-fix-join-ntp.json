@@ -1,0 +1,24 @@
+{
+  "requestId": "fix-join-node-ntp-values-20260902-01",
+  "delayAfterSeconds": 20,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "repeatKey", "code": 8, "count": 100},
+        {"kind": "text", "value": "time.cloudflare.com,time.google.com"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 6000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "repeatKey", "code": 8, "count": 100},
+        {"kind": "text", "value": "time.cloudflare.com,time.google.com"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 6000}
+      ]
+    }
+  ]
+}
