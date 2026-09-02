@@ -1,28 +1,34 @@
 {
-  "requestId": "select-clean-create-and-join-paths-20260902-01",
-  "delayAfterSeconds": 7,
+  "requestId": "set-clean-node-passwords-20260902-01",
+  "delayAfterSeconds": 10,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
+        {"kind": "secret", "name": "nodePassword"},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 1500},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 40},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13},
         {"kind": "sleep", "milliseconds": 1500},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 40},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13},
         {"kind": "sleep", "milliseconds": 1500},
+        {"kind": "secret", "name": "nodePassword"},
         {"kind": "key", "code": 13}
       ]
     }
