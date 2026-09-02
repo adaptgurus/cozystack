@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "1.0",
+  "requestId": "reflect-sen2-recovery-server-url-guard-fix-07",
+  "operation": "REFLECT_SANITIZED_SEN2_RECOVERY_STATE",
+  "targetBranch": "ops/layersentry-hyperv-inventory",
+  "targetRecoveryWorkflow": ".github/workflows/layersentry-resume-sen2-service-continuation-06.yml",
+  "targetRecoveryRequest": "hack/layersentry/sen2-service-continuation-requests/20260902-continue-after-server-url-guard-fix-07.json",
+  "minimumExclusiveRecoveryRunId": 33648778779,
+  "readOnlyGitHubMetadataAndSanitizedArtifact": true,
+  "readProtectedCredentialFile": false,
+  "accessClusterNodes": false,
+  "modifyCluster": false,
+  "modifyVirtualMachines": false,
+  "acceptEula": false,
+  "publishPasswordTokenOrKubeconfig": false,
+  "productionReleaseApprovalImplied": false
+}
