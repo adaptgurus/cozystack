@@ -1,0 +1,16 @@
+{
+  "requestId": "fast-terminal-convergence-20260902-01",
+  "operation": "FAST_TERMINAL_CONVERGENCE",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "vmNames": ["sen1", "sen2", "sen3"],
+  "expectedNodeIPs": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "clusterUrl": "https://10.10.10.10",
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "acceptEula": false,
+  "productionReleaseApprovalImplied": false
+}
