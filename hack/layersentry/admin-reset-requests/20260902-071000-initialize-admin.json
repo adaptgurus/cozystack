@@ -1,0 +1,11 @@
+{
+  "requestId": "initialize-harvester-admin-20260902-resume-01",
+  "operation": "SECURELY_INITIALIZE_HARVESTER_ADMIN",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "nodeAddress": "10.10.10.11",
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "acceptEula": false,
+  "productionReleaseApprovalImplied": false
+}
