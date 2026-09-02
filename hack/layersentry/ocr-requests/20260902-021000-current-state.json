@@ -1,0 +1,5 @@
+{
+  "requestId": "current-installer-state-20260902-021000",
+  "virtualMachines": ["sen1", "sen2", "sen3"],
+  "purpose": "Classify the current installer screen without sending any keystrokes."
+}
