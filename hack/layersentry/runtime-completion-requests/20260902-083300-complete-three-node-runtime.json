@@ -1,0 +1,13 @@
+{
+  "requestId": "complete-three-node-runtime-20260902-01",
+  "operation": "COMPLETE_THREE_NODE_RUNTIME",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "primaryNode": "10.10.10.11",
+  "nodeAddresses": ["10.10.10.11", "10.10.10.12", "10.10.10.13"],
+  "maxWaitMinutes": 55,
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "acceptEula": false,
+  "productionReleaseApprovalImplied": false
+}
