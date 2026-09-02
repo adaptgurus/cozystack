@@ -1,13 +1,19 @@
 ﻿{
     "SchemaVersion":  "2.1",
-    "RequestId":  "advance-join-nodes-to-install-confirmation-20260902-01",
-    "ExecutedAtUtc":  "2026-09-02T02:09:48.4489216Z",
+    "RequestId":  "confirm-join-node-installations-20260902-01",
+    "ExecutedAtUtc":  "2026-09-02T02:11:36.3731928Z",
     "Host":  "TESTSER",
-    "CredentialPathUsed":  null,
+    "CredentialPathUsed":  "local-secure-store",
     "Results":  [
                     {
                         "VM":  "sen2",
                         "Actions":  [
+                                        {
+                                            "Kind":  "secret",
+                                            "Name":  "nodePassword",
+                                            "CharacterCount":  24,
+                                            "Status":  "success"
+                                        },
                                         {
                                             "Kind":  "key",
                                             "Code":  13,
@@ -19,6 +25,12 @@
                     {
                         "VM":  "sen3",
                         "Actions":  [
+                                        {
+                                            "Kind":  "secret",
+                                            "Name":  "nodePassword",
+                                            "CharacterCount":  24,
+                                            "Status":  "success"
+                                        },
                                         {
                                             "Kind":  "key",
                                             "Code":  13,
