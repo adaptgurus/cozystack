@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: layersentry-production-ui
+  namespace: layersentry-system
+  labels:
+    app.kubernetes.io/name: layersentry-production-ui
+    app.kubernetes.io/part-of: layersentry
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: layersentry-production-ui
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              layersentry.io/ui-ingress: "allowed"
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress: []
