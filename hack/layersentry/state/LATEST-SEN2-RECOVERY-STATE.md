@@ -1,0 +1,27 @@
+﻿# LayerSentry sen2 live recovery state
+
+- Reflected at UTC: $(System.Collections.Specialized.OrderedDictionary.reflectedAtUtc)
+- Branch head at probe: $branchHeadAtProbe
+- Branch head message at probe: ops(layersentry): request read-only sen2 recovery state reflection
+- Corrected recovery run found: **True**
+- Corrected recovery run: $(System.Collections.Specialized.OrderedDictionary.recoveryRunId)
+- Corrected recovery head SHA: $(System.Collections.Specialized.OrderedDictionary.recoveryHeadSha)
+- Corrected recovery status/conclusion: **completed / failure**
+- Recovery artifact: $(System.Collections.Specialized.OrderedDictionary.recoveryArtifactId)
+- Recovery artifact digest: $(System.Collections.Specialized.OrderedDictionary.recoveryArtifactDigest)
+- Sanitized terminal evidence found: **True**
+- Authoritative worker source passed: **True**
+- Read-only rancherd endpoint verification passed: **False**
+- Exact expected/observed rancherd URL match passed: **False**
+- Exit-code-64 regression guard passed: **False**
+- Configuration backup passed: **False**
+- sen2 service repair passed: **False**
+- sen2-only reboot passed: **False**
+- Consecutive sen2 stability samples: **0 / 24**
+- Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **False**
+- Cluster recovery gate: **FAIL**
+- First-run GUI EULA action remains manual: **True**
+- EULA automatically accepted: **false**
+- Production release approved: **false**
+- Terminal failure: Read-only authoritative plan verification through sen1 failed with SSH exit code 1.
+- Evidence-capture run: $(System.Collections.Specialized.OrderedDictionary.captureRunId) (**completed / success**)
