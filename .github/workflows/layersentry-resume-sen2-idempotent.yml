@@ -1,0 +1,320 @@
+name: LayerSentry Idempotent sen2 Recovery Resume
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/sen2-idempotent-resume-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-resume-sen2-worker-plan-repair
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    name: Resume sen2 recovery without repeating completed mutation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout exact idempotent resume request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request and idempotent recovery sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/sen2-idempotent-resume-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one idempotent sen2 resume request; found $($requests.Count)."
+          }
+
+          $requestPath = ([string]$requests[0]).Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'REPAIR_SEN2_AGENT_SERVICE_CONFLICT') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([string]$request.targetNode -ne 'sen2' -or [string]$request.targetAddress -ne '10.10.10.12') {
+            throw 'This workflow is restricted to sen2 at 10.10.10.12.'
+          }
+          if ([string]$request.primaryNode -ne '10.10.10.11') {
+            throw 'The primary verification node must be sen1 at 10.10.10.11.'
+          }
+          if ([string]$request.expectedRancherdRole -ne 'agent') {
+            throw 'The expected rancherd role must be agent.'
+          }
+          if ([string]$request.expectedRancherdServerUrl -ne 'https://10.10.10.11:443') {
+            throw 'The expected rancherd server URL must be the verified sen1 endpoint.'
+          }
+          if (-not [bool]$request.sourceCorrectionAlreadyPassed) {
+            throw 'The authoritative worker-role correction must already be evidenced as passed.'
+          }
+          if (-not [bool]$request.verifyAuthoritativeWorkerStateOnly) {
+            throw 'The authoritative source stage must remain read-only.'
+          }
+          if (-not [bool]$request.disableConflictingRke2Server) {
+            throw 'The request must authorize disabling only the conflicting rke2-server service when required.'
+          }
+          if ([string]$request.previousAuthoritativeRunId -ne '33634372658') {
+            throw 'The request is not bound to authoritative run 33634372658.'
+          }
+          if ([string]$request.expectedCorrectedPlanSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'The expected corrected plan SHA-256 is invalid.'
+          }
+          foreach ($forbidden in @(
+            'reinstallOrWipeDisks',
+            'deleteRke2Data',
+            'acceptEula',
+            'writeCredentialValuesToEvidence',
+            'productionReleaseApprovalImplied'
+          )) {
+            if ([bool]$request.$forbidden) {
+              throw "Forbidden request flag is true: $forbidden"
+            }
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/verify-sen2-post-source-resume.ps1',
+            'hack/layersentry/invoke-sen2-idempotent-recovery.ps1',
+            'hack/layersentry/validate-sen2-agent-stability.ps1',
+            'hack/layersentry/invoke-sen2-agent-service-repair-bound.ps1',
+            'hack/layersentry/repair-sen2-agent-service-conflict.ps1',
+            'hack/layersentry/complete-three-node-runtime.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+          $shellPath = (Resolve-Path -LiteralPath 'hack/layersentry/verify-sen2-resume-state.sh').ProviderPath
+          $shellBytes = [System.IO.File]::ReadAllBytes($shellPath)
+          if ($shellBytes.Length -lt 128) {
+            throw 'The remote read-only verification source is missing or unexpectedly short.'
+          }
+          if ($shellBytes.Length -ge 3 -and $shellBytes[0] -eq 0xEF -and $shellBytes[1] -eq 0xBB -and $shellBytes[2] -eq 0xBF) {
+            throw 'The remote read-only verification source must not contain a UTF-8 BOM.'
+          }
+          $shellText = [System.Text.Encoding]::UTF8.GetString($shellBytes)
+          foreach ($marker in @(
+            'EXPECTED_CORRECTED_PLAN_SHA256',
+            'EXPECTED_RANCHERD_SERVER_URL',
+            'LAYERSENTRY_SEN2_CORRECTED_WORKER_SOURCE:PASS',
+            'LAYERSENTRY_SEN2_LOCAL_WORKER_STATE:PASS'
+          )) {
+            if (-not $shellText.Contains($marker)) {
+              throw "The remote verification source is missing required marker: $marker"
+            }
+          }
+
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated idempotent sen2 resume request: $requestPath"
+
+      - name: Revalidate corrected authoritative source and local worker identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workerRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-worker-plan-correction'
+          & 'hack/layersentry/verify-sen2-post-source-resume.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $workerRoot `
+            -LocalWaitMinutes 5
+
+      - name: Select no-reboot validation or required single-node repair
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          & 'hack/layersentry/invoke-sen2-idempotent-recovery.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $repairRoot `
+            -InitialWaitMinutes 15 `
+            -StableSamples 24 `
+            -StableIntervalSeconds 30
+
+      - name: Complete authenticated Kubernetes, KubeVirt and Longhorn validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          & 'hack/layersentry/complete-three-node-runtime.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNode '10.10.10.11' `
+            -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -MaxWaitMinutes 20 `
+            -OutputDirectory (Join-Path $repairRoot 'runtime')
+
+      - name: Build sanitized terminal result
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workerRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-worker-plan-correction'
+          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          $terminalRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-idempotent-terminal'
+          New-Item -Path $terminalRoot -ItemType Directory -Force | Out-Null
+
+          $workerPath = Join-Path $workerRoot 'worker-plan-correction-result.json'
+          $repairPath = Join-Path $repairRoot 'repair-result.json'
+          $decisionPath = Join-Path $repairRoot 'recovery-decision.json'
+          $runtimePath = Join-Path $repairRoot 'runtime\runtime-completion.json'
+          $worker = if (Test-Path -LiteralPath $workerPath -PathType Leaf) {
+            Get-Content -LiteralPath $workerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else { $null }
+          $repair = if (Test-Path -LiteralPath $repairPath -PathType Leaf) {
+            Get-Content -LiteralPath $repairPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else { $null }
+          $decision = if (Test-Path -LiteralPath $decisionPath -PathType Leaf) {
+            Get-Content -LiteralPath $decisionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else { $null }
+          $runtime = if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
+            Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else { $null }
+
+          $workerPassed = $null -ne $worker -and [bool]$worker.passed
+          $sourcePassed = $null -ne $worker -and [bool]$worker.sourceCorrectionPassed
+          $sourceReadOnly = $null -ne $worker -and [bool]$worker.sourceVerificationReadOnly
+          $localIdentityPassed = $null -ne $worker -and [bool]$worker.localWorkerPlanConsumed
+          $repairPassed = $null -ne $repair -and [bool]$repair.passed
+          $decisionCompleted = $null -ne $decision -and [bool]$decision.completed
+          $runtimePassed = $null -ne $runtime -and [bool]$runtime.passed
+          $overall = $workerPassed -and $sourcePassed -and $sourceReadOnly -and $localIdentityPassed -and $repairPassed -and $decisionCompleted -and $runtimePassed
+
+          $failure = if (-not $workerPassed -and $null -ne $worker) {
+            [string]$worker.failure
+          } elseif (-not $decisionCompleted -and $null -ne $decision) {
+            [string]$decision.failure
+          } elseif (-not $repairPassed -and $null -ne $repair) {
+            [string]$repair.failure
+          } elseif (-not $runtimePassed -and $null -ne $runtime) {
+            [string]$runtime.failure
+          } elseif (-not $workerPassed) {
+            'Read-only source and local identity evidence was not generated.'
+          } elseif (-not $repairPassed) {
+            'Idempotent service recovery evidence was not generated.'
+          } elseif (-not $runtimePassed) {
+            'Authenticated runtime evidence was not generated.'
+          } else {
+            $null
+          }
+
+          $recoveryDecision = if ($null -ne $decision) { [string]$decision.decision } else { $null }
+          $rebootPathSelected = $null -ne $decision -and [bool]$decision.repairOrRebootPathSelected
+          $rebootIssued = if ($null -ne $repair -and $repair.PSObject.Properties.Name -contains 'rebootIssued') {
+            [bool]$repair.rebootIssued
+          } else {
+            $rebootPathSelected
+          }
+
+          [ordered]@{
+            schemaVersion = '1.2'
+            sourceCommit = $env:GITHUB_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            previousAuthoritativeRunId = '33634372658'
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            sen2AuthoritativeWorkerRoleCorrectionRetained = $sourcePassed
+            sen2AuthoritativeSourceReadOnlyRevalidationPassed = $sourceReadOnly
+            sen2LocalWorkerIdentityConfirmed = $localIdentityPassed
+            recoveryDecision = $recoveryDecision
+            repairOrRebootPathSelected = $rebootPathSelected
+            rebootIssuedByThisRun = $rebootIssued
+            sen2ServiceRecoveryPassed = $repairPassed
+            consecutiveSen2StabilitySamples = if ($null -ne $repair) { [int]$repair.consecutiveStableSamples } else { 0 }
+            authenticatedRuntimeValidationPassed = $runtimePassed
+            installationApiCompletion = $overall
+            rke2DataDeleted = $false
+            vmDiskWiped = $false
+            vmReinstalled = $false
+            credentialValuesWrittenToEvidence = $false
+            eulaAutomaticallyAccepted = $false
+            workloadQualified = $false
+            trueAirgapQualified = $false
+            haQualified = $false
+            upgradeQualified = $false
+            backupRestoreQualified = $false
+            productionReleaseApproved = $false
+            failure = $failure
+          } | ConvertTo-Json -Depth 12 |
+            Set-Content -LiteralPath (Join-Path $terminalRoot 'terminal-result.json') -Encoding UTF8
+
+          @"
+          # LayerSentry idempotent sen2 recovery result
+
+          - Authoritative worker-role correction retained: **$sourcePassed**
+          - Read-only source revalidation passed: **$sourceReadOnly**
+          - Local worker identity confirmed: **$localIdentityPassed**
+          - Recovery decision: **$recoveryDecision**
+          - Repair/reboot path selected: **$rebootPathSelected**
+          - Reboot issued by this run: **$rebootIssued**
+          - sen2 service recovery passed: **$repairPassed**
+          - Consecutive local stability samples: **$(if ($null -ne $repair) { [int]$repair.consecutiveStableSamples } else { 0 })**
+          - Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **$runtimePassed**
+          - Installation/API completion: **$overall**
+          - RKE2 data deleted: **false**
+          - VM reinstalled or disk wiped: **false**
+          - Production release approved: **false**
+          - Failure: $failure
+          "@ | Set-Content -LiteralPath (Join-Path $terminalRoot 'STATUS.md') -Encoding UTF8
+
+          $marker = if ($overall) { 'SUCCESS' } else { 'FAILURE' }
+          New-Item -Path (Join-Path $terminalRoot $marker) -ItemType File -Force | Out-Null
+          Get-Content -LiteralPath (Join-Path $terminalRoot 'STATUS.md')
+
+      - name: Upload sanitized idempotent recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-idempotent-resume-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}\layersentry-sen2-worker-plan-correction
+            ${{ runner.temp }}\layersentry-sen2-agent-service-repair
+            ${{ runner.temp }}\layersentry-sen2-idempotent-terminal
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce terminal completion
+        if: always()
+        shell: powershell
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-idempotent-terminal\terminal-result.json'
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'Terminal result is missing.'
+          }
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.installationApiCompletion) {
+            throw "LayerSentry idempotent sen2 recovery failed: $($result.failure)"
+          }
+          Write-Host 'LAYERSENTRY IDEMPOTENT SEN2 SERVICE RECOVERY AND RUNTIME VALIDATION: PASS'
