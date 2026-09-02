@@ -1,0 +1,120 @@
+name: LayerSentry Hyper-V Installer OCR Recovery
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/installer-orchestrator-recovery-request.txt
+      - .github/workflows/layersentry-installer-orchestrator-recovery.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    name: Ensure Windows OCR and continue three-node installer
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact recovery source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Ensure English Windows OCR capability
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $capabilityName = 'Language.OCR~~~en-US~0.0.1.0'
+          $capability = Get-WindowsCapability -Online -Name $capabilityName -ErrorAction SilentlyContinue
+          if ($null -eq $capability) {
+            Write-Warning "OCR capability $capabilityName is not advertised by this Windows image."
+          }
+          elseif ($capability.State -ne 'Installed') {
+            $result = Add-WindowsCapability -Online -Name $capabilityName
+            Write-Host "OCR capability state after installation: $($result.State)"
+            if ($result.RestartNeeded) {
+              throw 'Windows OCR capability installation requested a host restart; orchestration stopped safely.'
+            }
+          }
+          else {
+            Write-Host 'English Windows OCR capability is already installed.'
+          }
+
+      - name: Parse installer automation scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relative in @(
+            'hack/layersentry/capture-hyperv-console.ps1',
+            'hack/layersentry/invoke-hyperv-console-command.ps1',
+            'hack/layersentry/ocr-console-v2.ps1',
+            'hack/layersentry/continue-harvester-installer-v2.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}, line {1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message) }
+              exit 1
+            }
+          }
+
+      - name: Prove OCR against current sen1 console
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:RUNNER_TEMP 'layersentry-ocr-recovery-probe'
+          if (Test-Path -LiteralPath $probe) {
+            Remove-Item -LiteralPath $probe -Recurse -Force
+          }
+          New-Item -Path $probe -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @('sen1') -OutputDirectory $probe
+          & 'hack/layersentry/ocr-console-v2.ps1' -ImagePath (Join-Path $probe 'sen1-console.png') -OutputPath (Join-Path $probe 'sen1-ocr.json')
+          $ocr = Get-Content -LiteralPath (Join-Path $probe 'sen1-ocr.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]::IsNullOrWhiteSpace([string]$ocr.text)) {
+            throw 'Windows OCR returned empty text for the sen1 installer console.'
+          }
+          Write-Host "OCR line count: $($ocr.lineCount)"
+
+      - name: Continue installation with OCR-verified state transitions
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-installer-orchestrator-recovery'
+          & 'hack/layersentry/continue-harvester-installer-v2.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -EvidenceDirectory $evidence `
+            -MaximumMinutes 150 `
+            -PollSeconds 15 `
+            -ClusterVip '10.10.10.10' `
+            -NtpServers 'time.cloudflare.com,time.google.com'
+          "RECOVERY_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Recover evidence path
+        if: always()
+        shell: powershell
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-installer-orchestrator-recovery'
+          "RECOVERY_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-installer-orchestrator-recovery-${{ github.run_id }}
+          path: |
+            ${{ env.RECOVERY_EVIDENCE }}
+            ${{ runner.temp }}\layersentry-ocr-recovery-probe
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
