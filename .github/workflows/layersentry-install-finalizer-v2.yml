@@ -67,7 +67,7 @@ jobs:
             $content.Substring($nodeCountIndex + $oldNodeCount.Length)
 
           # PowerShell functions enumerate output. With one DVD attached,
-          # Get-DvdPaths therefore becomes a scalar string unless the caller
+          # Get-DvdPaths therefore becomes a scalar string unless every caller
           # explicitly wraps the invocation. StrictMode then rejects .Count.
           $oldDvdAssignment = '$dvdPaths = Get-DvdPaths -VmName $VmName'
           $newDvdAssignment = '$dvdPaths = @(Get-DvdPaths -VmName $VmName)'
@@ -75,8 +75,8 @@ jobs:
             $content,
             [regex]::Escape($oldDvdAssignment)
           ).Count
-          if ($dvdAssignmentCount -ne 2) {
-            throw "Expected exactly two scalar DVD path assignments; found $dvdAssignmentCount."
+          if ($dvdAssignmentCount -ne 3) {
+            throw "Expected exactly three scalar DVD path assignments; found $dvdAssignmentCount."
           }
           $content = $content.Replace($oldDvdAssignment, $newDvdAssignment)
 
