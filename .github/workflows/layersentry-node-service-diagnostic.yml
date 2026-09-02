@@ -6,7 +6,6 @@ on:
       - ops/layersentry-hyperv-inventory
     paths:
       - hack/layersentry/node-diagnostic-requests/*.json
-      - .github/workflows/layersentry-node-service-diagnostic.yml
 
 permissions:
   contents: read
@@ -72,13 +71,13 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($nodePassword)) {
             throw 'Protected node password is missing.'
           }
-          $secretValues = @(
+          [string[]]$secretValues = @(
             [string]$credentials.nodePassword,
             [string]$credentials.clusterToken,
             [string]$credentials.adminPassword
           ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-          $ssh = Get-Command -Name 'ssh.exe' -ErrorAction Stop
+          $ssh = Get-Command -Name 'ssh.exe' -ErrorAction Stop | Select-Object -First 1
           $outputRoot = Join-Path $env:RUNNER_TEMP 'layersentry-node-service-diagnostic'
           if (Test-Path -LiteralPath $outputRoot) {
             Remove-Item -LiteralPath $outputRoot -Recurse -Force
@@ -87,21 +86,10 @@ jobs:
 
           $secureRoot = Join-Path $env:RUNNER_TEMP ('layersentry-node-diagnostic-secure-' + [Guid]::NewGuid().ToString('N'))
           New-Item -Path $secureRoot -ItemType Directory -Force | Out-Null
+          $oldAskPass = [Environment]::GetEnvironmentVariable('SSH_ASKPASS')
+          $oldRequire = [Environment]::GetEnvironmentVariable('SSH_ASKPASS_REQUIRE')
+          $oldDisplay = [Environment]::GetEnvironmentVariable('DISPLAY')
           try {
-            $acl = New-Object System.Security.AccessControl.DirectorySecurity
-            $acl.SetAccessRuleProtection($true, $false)
-            $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-            $propagation = [System.Security.AccessControl.PropagationFlags]::None
-            $allow = [System.Security.AccessControl.AccessControlType]::Allow
-            $fullControl = [System.Security.AccessControl.FileSystemRights]::FullControl
-            foreach ($identity in @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')) {
-              $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $identity, $fullControl, $inheritance, $propagation, $allow
-              )
-              [void]$acl.AddAccessRule($rule)
-            }
-            Set-Acl -LiteralPath $secureRoot -AclObject $acl
-
             $passwordPath = Join-Path $secureRoot 'node-password.txt'
             $askPassPath = Join-Path $secureRoot 'askpass.cmd'
             [System.IO.File]::WriteAllText(
@@ -114,56 +102,36 @@ jobs:
               "@echo off`r`ntype `"$passwordPath`"`r`n",
               (New-Object System.Text.UTF8Encoding($false))
             )
-
-            $oldAskPass = $env:SSH_ASKPASS
-            $oldRequire = $env:SSH_ASKPASS_REQUIRE
-            $oldDisplay = $env:DISPLAY
             $env:SSH_ASKPASS = $askPassPath
             $env:SSH_ASKPASS_REQUIRE = 'force'
             $env:DISPLAY = 'LayerSentry'
 
+            $remoteCommand = @(
+              'set +e'
+              'echo ===identity==='
+              'hostname'
+              'date -u'
+              'uname -a'
+              'echo ===service-states==='
+              'for svc in rancherd rke2-server rke2-agent kubelet; do echo ---$svc---; systemctl is-enabled "$svc" 2>&1 || true; systemctl is-active "$svc" 2>&1 || true; systemctl show "$svc" --property=LoadState,ActiveState,SubState,Result,ExecMainStatus,NRestarts --no-pager 2>&1 || true; done'
+              'echo ===units==='
+              'systemctl list-units --type=service --all --no-pager 2>&1 | grep -Ei "rancher|rke2|kubelet|containerd" || true'
+              'echo ===listeners==='
+              'ss -lntp 2>/dev/null | grep -E ":(22|6443|9345|10250)[[:space:]]" || true'
+              'echo ===processes==='
+              'ps -ef | grep -E "[r]ancherd|[r]ke2|[k]ubelet|[c]ontainerd" || true'
+              'echo ===filesystem-metadata==='
+              'ls -ld /etc/rancher /etc/rancher/rke2 /var/lib/rancher /var/lib/rancher/rke2 2>&1 || true'
+              'find /etc/rancher/rke2 -maxdepth 1 -type f -printf "%M %u:%g %s %TY-%Tm-%TdT%TH:%TM:%TS %p\n" 2>/dev/null || true'
+              'echo ===recent-journal==='
+              'sudo -n journalctl -u rancherd -u rke2-server -u rke2-agent --since "-40 minutes" -n 400 --no-pager 2>&1 || journalctl -u rancherd -u rke2-server -u rke2-agent --since "-40 minutes" -n 160 --no-pager 2>&1 || true'
+            ) -join '; '
+
             $summary = @()
             foreach ($address in $addresses) {
-              $remotePath = Join-Path $secureRoot ($address.Replace('.', '-') + '.sh')
               $stdoutPath = Join-Path $secureRoot ($address.Replace('.', '-') + '.stdout.txt')
               $stderrPath = Join-Path $secureRoot ($address.Replace('.', '-') + '.stderr.txt')
-              $remoteScript = @'
-set +e
-printf '%s\n' '=== identity ==='
-hostname
-(date -u --iso-8601=seconds 2>/dev/null || date -u)
-uname -a
-printf '%s\n' '=== service states ==='
-for svc in rancherd rke2-server rke2-agent kubelet; do
-  printf '%s\n' "--- $svc ---"
-  systemctl is-enabled "$svc" 2>&1 || true
-  systemctl is-active "$svc" 2>&1 || true
-  systemctl show "$svc" --property=LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainCode,NRestarts --no-pager 2>&1 || true
-done
-printf '%s\n' '=== matching units ==='
-systemctl list-units --type=service --all --no-pager 2>&1 | grep -Ei 'rancher|rke2|kubelet|containerd' || true
-printf '%s\n' '=== listeners ==='
-ss -lntp 2>/dev/null | grep -E ':(22|6443|9345|10250)([[:space:]]|$)' || true
-printf '%s\n' '=== processes ==='
-ps -ef | grep -E '[r]ancherd|[r]ke2|[k]ubelet|[c]ontainerd' || true
-printf '%s\n' '=== filesystem metadata ==='
-ls -ld /etc/rancher /etc/rancher/rke2 /var/lib/rancher /var/lib/rancher/rke2 2>&1 || true
-find /etc/rancher/rke2 -maxdepth 1 -type f -printf '%M %u:%g %s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null || true
-printf '%s\n' '=== recent rancherd/rke2 journal ==='
-if sudo -n true >/dev/null 2>&1; then
-  sudo -n journalctl -u rancherd -u rke2-server -u rke2-agent --since '-35 minutes' -n 320 --no-pager 2>&1 || true
-else
-  journalctl -u rancherd -u rke2-server -u rke2-agent --since '-35 minutes' -n 120 --no-pager 2>&1 || true
-fi
-'@
-              $remoteScript = ($remoteScript -replace "`r`n", "`n").TrimStart([char]0xFEFF)
-              [System.IO.File]::WriteAllText(
-                $remotePath,
-                $remoteScript,
-                (New-Object System.Text.UTF8Encoding($false))
-              )
-
-              $arguments = @(
+              $sshArguments = @(
                 '-T',
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=NUL',
@@ -172,20 +140,13 @@ fi
                 '-o', 'NumberOfPasswordPrompts=1',
                 '-o', 'ConnectTimeout=15',
                 "rancher@$address",
-                'bash', '-s'
+                $remoteCommand
               )
-              $process = Start-Process `
-                -FilePath $ssh.Source `
-                -ArgumentList $arguments `
-                -NoNewWindow `
-                -Wait `
-                -PassThru `
-                -RedirectStandardInput $remotePath `
-                -RedirectStandardOutput $stdoutPath `
-                -RedirectStandardError $stderrPath
+              & $ssh.Source @sshArguments 1> $stdoutPath 2> $stderrPath
+              $sshExitCode = $LASTEXITCODE
 
               $combined = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue) +
-                "`n=== ssh stderr ===`n" +
+                "`n===ssh-stderr===`n" +
                 [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)
               foreach ($secret in $secretValues) {
                 $combined = $combined.Replace($secret, '[REDACTED]')
@@ -195,22 +156,17 @@ fi
                 '(?i)K10[a-z0-9]{20,}::server:[a-z0-9]{20,}',
                 '[REDACTED-RKE2-TOKEN]'
               )
-              $combined = [regex]::Replace(
-                $combined,
-                '(?im)^([[:space:]]*(token|password)[[:space:]]*[:=][[:space:]]*).+$',
-                '$1[REDACTED]'
-              )
               $safePath = Join-Path $outputRoot ($address.Replace('.', '-') + '.txt')
               Set-Content -LiteralPath $safePath -Value $combined -Encoding UTF8
 
               $summary += [ordered]@{
                 address = $address
-                sshExitCode = $process.ExitCode
-                tcp9345Mentioned = ($combined -match ':9345')
-                tcp10250Mentioned = ($combined -match ':10250')
-                rancherdActive = ($combined -match '(?ms)--- rancherd ---.*?\r?\nactive\r?\n')
-                rke2ServerActive = ($combined -match '(?ms)--- rke2-server ---.*?\r?\nactive\r?\n')
-                rke2AgentActive = ($combined -match '(?ms)--- rke2-agent ---.*?\r?\nactive\r?\n')
+                sshExitCode = $sshExitCode
+                rancherdActive = ($combined -match '(?ms)---rancherd---.*?\r?\nactive\r?\n')
+                rke2ServerActive = ($combined -match '(?ms)---rke2-server---.*?\r?\nactive\r?\n')
+                rke2AgentActive = ($combined -match '(?ms)---rke2-agent---.*?\r?\nactive\r?\n')
+                listener9345 = ($combined -match ':9345')
+                listener10250 = ($combined -match ':10250')
               }
             }
             $summary | ConvertTo-Json -Depth 8 |
@@ -218,9 +174,9 @@ fi
             $summary | Format-Table -AutoSize | Out-String -Width 240 | Write-Host
           }
           finally {
-            $env:SSH_ASKPASS = $oldAskPass
-            $env:SSH_ASKPASS_REQUIRE = $oldRequire
-            $env:DISPLAY = $oldDisplay
+            [Environment]::SetEnvironmentVariable('SSH_ASKPASS', $oldAskPass)
+            [Environment]::SetEnvironmentVariable('SSH_ASKPASS_REQUIRE', $oldRequire)
+            [Environment]::SetEnvironmentVariable('DISPLAY', $oldDisplay)
             if (Test-Path -LiteralPath $secureRoot) {
               Remove-Item -LiteralPath $secureRoot -Recurse -Force -ErrorAction SilentlyContinue
             }
