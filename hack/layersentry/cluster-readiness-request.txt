@@ -1,0 +1,3 @@
+request=2026-09-02T02:18:00Z
+waitFor=sen1,sen2,sen3,10.10.10.10
+criteria=node-ssh-and-vip-https
