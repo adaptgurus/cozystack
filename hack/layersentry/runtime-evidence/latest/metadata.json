@@ -1,8 +1,8 @@
 ﻿{
     "schemaVersion":  "1.0",
-    "sourceCommit":  "804b33549c213697ce6ce29628c5abd2d0b8081a",
-    "sourceRunId":  "33590511601",
-    "requestId":  "skip-proxy-on-sen1-20260902-01",
-    "capturedAtUtc":  "2026-09-02T04:22:13.2761825Z",
+    "sourceCommit":  "ee45f865ec30282a9f209027992c97272c52451d",
+    "sourceRunId":  "33590676173",
+    "requestId":  "skip-ssh-url-on-sen1-20260902-01",
+    "capturedAtUtc":  "2026-09-02T04:24:47.3519113Z",
     "containsCredentialValues":  false
 }
