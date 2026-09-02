@@ -1,0 +1,183 @@
+name: LayerSentry Hyper-V Installer Orchestrator
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/continue-harvester-installer-v2.ps1
+      - hack/layersentry/ocr-console-v2.ps1
+      - hack/layersentry/installer-orchestrator-request.txt
+      - .github/workflows/layersentry-installer-orchestrator.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Continue three-node LayerSentry installation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout exact orchestrator source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Parse all installer automation scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relative in @(
+            'hack/layersentry/capture-hyperv-console.ps1',
+            'hack/layersentry/invoke-hyperv-console-command.ps1',
+            'hack/layersentry/ocr-console-v2.ps1',
+            'hack/layersentry/continue-harvester-installer-v2.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+      - name: Validate host, credentials, VMs and network
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Installer orchestrator must run as an elevated local administrator.'
+          }
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Local secure credential file is missing: $credentialPath"
+          }
+          $credentials = Get-Content -LiteralPath $credentialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          foreach ($property in @('nodePassword', 'clusterToken')) {
+            if (-not $credentials.PSObject.Properties[$property] -or [string]::IsNullOrWhiteSpace([string]$credentials.$property)) {
+              throw "Credential property is missing: $property"
+            }
+          }
+          foreach ($vmName in @('sen1', 'sen2', 'sen3')) {
+            $vm = Get-VM -Name $vmName -ErrorAction Stop
+            if ($vm.State -ne 'Running') {
+              Start-VM -Name $vmName | Out-Null
+            }
+            $processor = Get-VMProcessor -VMName $vmName
+            if ($processor.Count -ne 10 -or -not $processor.ExposeVirtualizationExtensions) {
+              throw "$vmName processor configuration is not the approved 10-vCPU nested-virtualization profile."
+            }
+            $vm = Get-VM -Name $vmName
+            if ($vm.MemoryStartup -ne 32GB -or $vm.DynamicMemoryEnabled) {
+              throw "$vmName memory configuration is not 32 GiB static RAM."
+            }
+          }
+          if ($null -eq (Get-VMSwitch -Name 'Cozystack-NAT' -ErrorAction SilentlyContinue)) {
+            throw 'Required Cozystack-NAT virtual switch is missing.'
+          }
+
+      - name: Continue installation with OCR-verified state transitions
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-installer-orchestrator-v2'
+          & 'hack/layersentry/continue-harvester-installer-v2.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -EvidenceDirectory $evidence `
+            -MaximumMinutes 150 `
+            -PollSeconds 15 `
+            -ClusterVip '10.10.10.10' `
+            -NtpServers 'time.cloudflare.com,time.google.com'
+          "ORCHESTRATOR_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Recover evidence path after failure
+        if: always()
+        shell: powershell
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-installer-orchestrator-v2'
+          "ORCHESTRATOR_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Persist sanitized installer status
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = $env:ORCHESTRATOR_EVIDENCE
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/installer-latest'
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force
+          }
+          New-Item -Path $destination -ItemType Directory -Force | Out-Null
+
+          foreach ($name in @('summary.json', 'orchestrator-transcript.txt')) {
+            $path = Join-Path $source $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+              Copy-Item -LiteralPath $path -Destination (Join-Path $destination $name) -Force
+            }
+          }
+          $finalCapture = Join-Path $source 'final-capture'
+          if (Test-Path -LiteralPath $finalCapture -PathType Container) {
+            Copy-Item -Path (Join-Path $finalCapture '*') -Destination $destination -Force
+          }
+          $iterations = @(Get-ChildItem -LiteralPath $source -Directory -Filter 'iteration-*' -ErrorAction SilentlyContinue | Sort-Object Name)
+          if ($iterations.Count -gt 0) {
+            $last = $iterations[-1]
+            foreach ($name in @('state.json', 'sen1-ocr.json', 'sen2-ocr.json', 'sen3-ocr.json')) {
+              $path = Join-Path $last.FullName $name
+              if (Test-Path -LiteralPath $path -PathType Leaf) {
+                Copy-Item -LiteralPath $path -Destination (Join-Path $destination $name) -Force
+              }
+            }
+          }
+          [ordered]@{
+            schemaVersion = '2.0'
+            sourceCommit = '${{ github.sha }}'
+            sourceRunId = '${{ github.run_id }}'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            containsCredentialValues = $false
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination 'metadata.json') -Encoding UTF8
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/runtime-evidence/installer-latest'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'No installer status changes to commit.'
+            exit 0
+          }
+          git commit -m 'ops(evidence): refresh installer orchestration state [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed with exit code $LASTEXITCODE"
+          }
+          git push origin "HEAD:${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "git push failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload complete installer orchestration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-installer-orchestrator-${{ github.run_id }}
+          path: ${{ env.ORCHESTRATOR_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
