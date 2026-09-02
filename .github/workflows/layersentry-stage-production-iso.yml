@@ -1,0 +1,98 @@
+name: LayerSentry Stage Verified Production-Build ISO
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/production-iso-requests/*.json
+      - hack/layersentry/stage-production-iso.ps1
+      - .github/workflows/layersentry-stage-production-iso.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-production-iso-staging
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Download, verify and stage the successful full-offline ISO
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout exact staging source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate staging request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/production-iso-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one production ISO staging request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'STAGE_VERIFIED_PRODUCTION_BUILD_ISO') {
+            throw "Unsupported ISO staging operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the explicit user authorization marker.'
+          }
+          if ([bool]$request.attachToVirtualMachines -or [bool]$request.reinstallCurrentCluster) {
+            throw 'The staging request must not attach media or reinstall the current POC cluster.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Artifact staging must not imply runtime production release approval.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path -LiteralPath 'hack/layersentry/stage-production-iso.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $path,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          Write-Host "Validated non-destructive production ISO staging request: $requestPath"
+
+      - name: Download and verify the production-build ISO
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-production-iso-staging'
+          & 'hack/layersentry/stage-production-iso.ps1' `
+            -SourceRepository 'adaptgurus/harvester-installer' `
+            -SourceBranch 'layersentry-v1.0-dev' `
+            -WorkflowName 'LayerSentry v1.0 full-offline ISO (Harvester v1.8.2 embedded)' `
+            -DestinationRoot 'C:\ProgramData\LayerSentry\production-iso' `
+            -FriendlyDestinationDirectory 'C:\Users\opc\Downloads\final iso' `
+            -OutputDirectory $output
+
+      - name: Upload staging evidence without the ISO payload
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-production-iso-staging-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-production-iso-staging\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
