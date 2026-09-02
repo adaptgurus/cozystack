@@ -1,0 +1,110 @@
+﻿{
+    "credentialsRead":  false,
+    "overallStatus":  "waiting",
+    "requestPath":  "hack/layersentry/install-monitor-requests/20260902-three-node-install-01.json",
+    "vip":  {
+                "httpsStatusCode":  null,
+                "tcp443":  false,
+                "address":  "10.10.10.10",
+                "ping":  false,
+                "ready":  false,
+                "tcp6443":  false
+            },
+    "stablePollCount":  0,
+    "monitorStartedAtUtc":  "2026-09-02T02:19:51.9670087Z",
+    "publishedAtUtc":  "2026-09-02T02:26:17.4129780Z",
+    "nodes":  {
+                  "sen3":  {
+                               "expectedIPAddress":  "10.10.10.13",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  5467,
+                               "cpuUsagePercent":  0,
+                               "assignedMemoryGiB":  32,
+                               "installerRebootDetected":  false,
+                               "rebootDetectionReason":  null,
+                               "bootPrepared":  false,
+                               "bootPreparedAtUtc":  null,
+                               "dvdAttached":  true,
+                               "dvdPaths":  [
+                                                "C:\\Users\\opc\\Downloads\\final iso\\layersentry-v1.0-amd64.iso"
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen3\\Virtual Hard Disks\\sen3-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  0,
+                                              "vhdType":  "Dynamic"
+                                          },
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  false,
+                                               "tcp10250":  false
+                                           },
+                               "online":  false
+                           },
+                  "sen1":  {
+                               "expectedIPAddress":  "10.10.10.11",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  5488,
+                               "cpuUsagePercent":  0,
+                               "assignedMemoryGiB":  32,
+                               "installerRebootDetected":  false,
+                               "rebootDetectionReason":  null,
+                               "bootPrepared":  false,
+                               "bootPreparedAtUtc":  null,
+                               "dvdAttached":  true,
+                               "dvdPaths":  [
+                                                "C:\\Users\\opc\\Downloads\\final iso\\layersentry-v1.0-amd64.iso"
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen1\\Virtual Hard Disks\\sen1-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  0,
+                                              "vhdType":  "Dynamic"
+                                          },
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  false,
+                                               "tcp10250":  false
+                                           },
+                               "online":  false
+                           },
+                  "sen2":  {
+                               "expectedIPAddress":  "10.10.10.12",
+                               "vmState":  "Running",
+                               "uptimeSeconds":  5477,
+                               "cpuUsagePercent":  0,
+                               "assignedMemoryGiB":  32,
+                               "installerRebootDetected":  false,
+                               "rebootDetectionReason":  null,
+                               "bootPrepared":  false,
+                               "bootPreparedAtUtc":  null,
+                               "dvdAttached":  true,
+                               "dvdPaths":  [
+                                                "C:\\Users\\opc\\Downloads\\final iso\\layersentry-v1.0-amd64.iso"
+                                            ],
+                               "osDisk":  {
+                                              "path":  "C:\\Hyper-V\\LayerSentry\\sen2\\Virtual Hard Disks\\sen2-os.vhdx",
+                                              "virtualSizeGiB":  250,
+                                              "fileSizeGiB":  0,
+                                              "vhdType":  "Dynamic"
+                                          },
+                               "network":  {
+                                               "ping":  true,
+                                               "tcp22":  true,
+                                               "tcp9345":  false,
+                                               "tcp10250":  false
+                                           },
+                               "online":  false
+                           }
+              },
+    "elapsedMinutes":  6.42,
+    "sourceCommit":  "ddb08762578963a100c8349e69221ee706cd0d9f",
+    "schemaVersion":  "1.0",
+    "containsCredentialValues":  false,
+    "requiredStablePolls":  3,
+    "message":  "Waiting for installed nodes and cluster services; stablePollCount=0/3.",
+    "maxWaitMinutes":  75,
+    "requestId":  "layersentry-three-node-install-monitor-20260902-01"
+}
