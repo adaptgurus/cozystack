@@ -1,0 +1,166 @@
+name: LayerSentry Controlled Node Failure Recovery
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/failure-recovery-requests/*.json
+      - hack/layersentry/test-hyperv-node-failure-recovery.ps1
+      - hack/layersentry/capture-hyperv-console.ps1
+      - .github/workflows/layersentry-node-failure-recovery.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-runtime-destructive-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Stop one guest node, prove failover, then recover all three nodes
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 100
+
+    steps:
+      - name: Checkout exact failure-recovery source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate explicit authorization and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/failure-recovery-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one failure-recovery request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'VALIDATE_CONTROLLED_NODE_FAILURE_AND_GUEST_RECOVERY') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the explicit user authorization marker.'
+          }
+          if (-not [bool]$request.allowForcedHyperVPowerOff -or -not [bool]$request.requireAutomaticRestartInFinally) {
+            throw 'The request does not authorize controlled power-off and mandatory recovery.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Nested-POC failure recovery must not imply production release approval.'
+          }
+          $expected = @('sen1','sen2','sen3')
+          $actual = @($request.allowedHyperVVirtualMachines | ForEach-Object { [string]$_ } | Sort-Object)
+          if (($actual -join ',') -ne (($expected | Sort-Object) -join ',')) {
+            throw 'The request is not restricted to sen1, sen2, and sen3.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/test-hyperv-node-failure-recovery.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated controlled failure-recovery request: $requestPath"
+
+      - name: Execute controlled node failure and full recovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-node-failure-recovery'
+          & 'hack/layersentry/test-hyperv-node-failure-recovery.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -Namespace 'layersentry-validation' `
+            -VmName 'layersentry-smoke-vm' `
+            -StoragePvcName 'layersentry-storage-vm-disk' `
+            -OutputDirectory $output `
+            -FailoverTimeoutMinutes 35 `
+            -RecoveryTimeoutMinutes 35
+
+      - name: Capture final consoles and Hyper-V recovery state
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-node-failure-recovery'
+          $final = Join-Path $output 'final-state'
+          New-Item -Path $final -ItemType Directory -Force | Out-Null
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1','sen2','sen3') `
+            -OutputDirectory (Join-Path $final 'consoles')
+
+          $records = foreach ($name in @('sen1','sen2','sen3')) {
+            $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+            if ($null -eq $vm) {
+              [ordered]@{ name = $name; exists = $false }
+              continue
+            }
+            $processor = Get-VMProcessor -VMName $name
+            $adapter = Get-VMNetworkAdapter -VMName $name | Select-Object -First 1
+            $disks = @(Get-VMHardDiskDrive -VMName $name |
+              Sort-Object ControllerNumber, ControllerLocation |
+              ForEach-Object {
+                $vhd = Get-VHD -Path $_.Path
+                [ordered]@{
+                  path = $_.Path
+                  maximumBytes = [int64]$vhd.Size
+                  currentFileBytes = [int64]$vhd.FileSize
+                }
+              })
+            [ordered]@{
+              name = $name
+              state = $vm.State.ToString()
+              uptimeSeconds = [int64]$vm.Uptime.TotalSeconds
+              processorCount = $processor.Count
+              exposeVirtualizationExtensions = [bool]$processor.ExposeVirtualizationExtensions
+              startupMemoryBytes = [int64]$vm.MemoryStartup
+              dynamicMemoryEnabled = [bool]$vm.DynamicMemoryEnabled
+              switchName = $adapter.SwitchName
+              macAddressSpoofing = $adapter.MacAddressSpoofing.ToString()
+              reportedAddresses = @($adapter.IPAddresses)
+              disks = $disks
+              dvdMedia = @((Get-VMDvdDrive -VMName $name).Path)
+            }
+          }
+          [ordered]@{
+            schemaVersion = '1.0'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            virtualMachines = @($records)
+            allHyperVNodesRunning = @($records | Where-Object { $_.state -eq 'Running' }).Count -eq 3
+            nestedPocEvidenceOnly = $true
+            productionReleaseApproved = $false
+          } | ConvertTo-Json -Depth 15 |
+            Set-Content -LiteralPath (Join-Path $final 'hyperv-recovery-state.json') -Encoding UTF8
+
+      - name: Upload controlled failure-recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-node-failure-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-node-failure-recovery\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
