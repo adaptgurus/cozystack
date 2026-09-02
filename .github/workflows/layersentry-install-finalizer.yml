@@ -1,0 +1,96 @@
+name: LayerSentry Hyper-V Installation Finalizer
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/install-finalizer-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Recover boot transition and prove three-node online readiness
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 115
+
+    steps:
+      - name: Checkout exact finalizer request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Resolve immutable finalizer request
+        id: request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestPaths = @(
+            git show --pretty='' --name-only $env:GITHUB_SHA |
+              Where-Object { $_ -match '^hack/layersentry/install-finalizer-requests/[^/]+\.json$' }
+          )
+          if ($requestPaths.Count -ne 1) {
+            throw "Expected exactly one installation-finalizer request in commit $env:GITHUB_SHA; found $($requestPaths.Count)."
+          }
+          $requestPath = [string]$requestPaths[0]
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+            throw "Resolved finalizer request does not exist: $requestPath"
+          }
+          "request_path=$requestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved finalizer request: $requestPath"
+
+      - name: Parse finalizer and console-capture scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relativePath in @(
+            'hack/layersentry/finalize-harvester-install.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relativePath).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $relativePath, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+      - name: Recover and finalize installed cluster
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDirectory = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/install-finalizer'
+
+          & 'hack/layersentry/finalize-harvester-install.ps1' `
+            -RequestPath '${{ steps.request.outputs.request_path }}' `
+            -OutputDirectory $outputDirectory `
+            -PublishBranch 'ops/layersentry-finalize-status' `
+            -RepositoryRoot $env:GITHUB_WORKSPACE
+
+      - name: Upload finalization evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-install-finalizer-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/install-finalizer
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
