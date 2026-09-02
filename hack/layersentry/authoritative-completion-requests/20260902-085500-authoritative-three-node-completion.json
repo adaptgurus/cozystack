@@ -1,0 +1,18 @@
+{
+  "requestId": "authoritative-three-node-completion-20260902-01",
+  "operation": "AUTHORITATIVE_THREE_NODE_COMPLETION",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "vmNames": ["sen1", "sen2", "sen3"],
+  "expectedNodeIPs": {
+    "sen1": "10.10.10.11",
+    "sen2": "10.10.10.12",
+    "sen3": "10.10.10.13"
+  },
+  "clusterUrl": "https://10.10.10.10",
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "minimumCompletedDiskGiB": 20.0,
+  "requiredStableSeconds": 120,
+  "writeCredentialValuesToEvidence": false,
+  "acceptEula": false,
+  "productionReleaseApprovalImplied": false
+}
