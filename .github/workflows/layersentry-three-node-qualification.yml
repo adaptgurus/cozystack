@@ -1,0 +1,98 @@
+name: LayerSentry Three-Node Installation Qualification
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/qualification-requests/*.json
+      - hack/layersentry/test-layersentry-three-node-installation.ps1
+      - hack/layersentry/capture-hyperv-console.ps1
+      - .github/workflows/layersentry-three-node-qualification.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-three-node-installer-autopilot
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Verify nodes, VIP, UI, boot order and ISO detachment
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout exact qualification source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate qualification request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requests = @(
+            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/qualification-requests/*.json'
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one qualification request; found $($requests.Count)."
+          }
+          $requestPath = $requests[0].Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'QUALIFY_THREE_NODE_LAYERSENTRY_INSTALLATION') {
+            throw "Unsupported qualification operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The qualification request is missing the user authorization marker.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Installation qualification must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/test-layersentry-three-node-installation.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated non-release installation qualification request: $requestPath"
+
+      - name: Wait for and qualify the installed three-node cluster
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-three-node-qualification'
+          & 'hack/layersentry/test-layersentry-three-node-installation.ps1' `
+            -OutputDirectory $output `
+            -WaitMinutes 90 `
+            -PollSeconds 15
+
+      - name: Upload installation qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-three-node-qualification-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-three-node-qualification\**
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
