@@ -1,0 +1,11 @@
+{
+  "requestId": "inspect-production-iso-boot-20260902-073000",
+  "operation": "INSPECT_EXACT_PRODUCTION_ISO_BOOT_CONFIG",
+  "isoPath": "C:\\Users\\opc\\Downloads\\final iso\\layersentry-v1.0-harvester-v1.8.2-production-build.iso",
+  "requireSha256": true,
+  "requireSha512": true,
+  "requireExactByteCount": true,
+  "allowIsoModification": false,
+  "deriveInMemoryGrubEditPlan": true,
+  "productionReleaseApprovalImplied": false
+}
