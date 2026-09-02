@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   repair:
-    name: Disable stale sen2 server loop and prove sustained three-node health
+    name: Correct sen2 worker plan and prove sustained three-node health
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 55
+    timeout-minutes: 75
 
     steps:
       - name: Checkout exact repair source
@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Select request and validate PowerShell sources
+      - name: Select request and validate repair sources
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -49,6 +49,7 @@ jobs:
           }
 
           foreach ($relative in @(
+            'hack/layersentry/correct-sen2-worker-plan.ps1',
             'hack/layersentry/repair-sen2-agent-service-conflict.ps1',
             'hack/layersentry/complete-three-node-runtime.ps1'
           )) {
@@ -68,8 +69,50 @@ jobs:
             }
           }
 
+          $bash = Get-Command -Name 'bash.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $bash) {
+            $bash = Get-Command -Name 'bash' -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($null -eq $bash) {
+            throw 'bash is required to validate the remote Linux repair source.'
+          }
+          foreach ($relative in @(
+            'hack/layersentry/correct-sen2-worker-plan.sh'
+          )) {
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            & $bash.Source -n $path
+            if ($LASTEXITCODE -ne 0) {
+              throw "bash syntax validation failed for $relative with exit code $LASTEXITCODE"
+            }
+          }
+
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'REPAIR_SEN2_AGENT_SERVICE_CONFLICT') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if (-not [bool]$request.correctErroneousRancherRoles) {
+            throw 'The request must explicitly authorize the UID-guarded Rancher role correction.'
+          }
+          if (-not [bool]$request.disableConflictingRke2Server) {
+            throw 'The request must explicitly authorize disabling the conflicting rke2-server unit.'
+          }
+
           "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Selected authorized sen2 service-repair request: $requestPath"
+          Write-Host "Selected authorized sen2 worker-plan and service-repair request: $requestPath"
+
+      - name: Correct authoritative sen2 worker roles and wait for local worker plan
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
+          & 'hack/layersentry/correct-sen2-worker-plan.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $root `
+            -LocalPlanWaitMinutes 10
 
       - name: Repair sen2 service role and enforce twelve-minute local stability
         shell: powershell
@@ -104,27 +147,49 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-repair'
           New-Item -Path $root -ItemType Directory -Force | Out-Null
+          $correctionPath = Join-Path $root 'worker-plan-correction-result.json'
           $repairPath = Join-Path $root 'repair-result.json'
           $runtimePath = Join-Path $root 'runtime\runtime-completion.json'
+          $correction = $null
           $repair = $null
           $runtime = $null
+          if (Test-Path -LiteralPath $correctionPath -PathType Leaf) {
+            $correction = Get-Content -LiteralPath $correctionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          }
           if (Test-Path -LiteralPath $repairPath -PathType Leaf) {
             $repair = Get-Content -LiteralPath $repairPath -Raw -Encoding UTF8 | ConvertFrom-Json
           }
           if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
             $runtime = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
           }
+
+          $correctionPassed = $null -ne $correction -and [bool]$correction.passed
+          $sourceRoleCorrectionPassed = $null -ne $correction -and [bool]$correction.sourceCorrectionPassed
+          $localWorkerPlanConsumed = $null -ne $correction -and [bool]$correction.localWorkerPlanConsumed
           $repairPassed = $null -ne $repair -and [bool]$repair.passed
           $runtimePassed = $null -ne $runtime -and [bool]$runtime.passed
-          $overall = $repairPassed -and $runtimePassed
-          $failure = if (-not $repairPassed -and $null -ne $repair) {
+          $overall = (
+            $correctionPassed -and
+            $sourceRoleCorrectionPassed -and
+            $localWorkerPlanConsumed -and
+            $repairPassed -and
+            $runtimePassed
+          )
+
+          $failure = if (-not $correctionPassed -and $null -ne $correction) {
+            [string]$correction.failure
+          }
+          elseif (-not $repairPassed -and $null -ne $repair) {
             [string]$repair.failure
           }
           elseif (-not $runtimePassed -and $null -ne $runtime) {
             [string]$runtime.failure
           }
+          elseif (-not $correctionPassed) {
+            'The sen2 worker-plan correction evidence was not generated.'
+          }
           elseif (-not $repairPassed) {
-            'sen2 repair evidence was not generated.'
+            'The sen2 service-repair evidence was not generated.'
           }
           elseif (-not $runtimePassed) {
             'Authenticated runtime evidence was not generated.'
@@ -134,10 +199,14 @@ jobs:
           }
 
           [ordered]@{
-            schemaVersion = '1.0'
+            schemaVersion = '2.0'
             sourceCommit = $env:GITHUB_SHA
             workflowRunId = $env:GITHUB_RUN_ID
             completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            sen2AuthoritativeWorkerRoleCorrectionPassed = $sourceRoleCorrectionPassed
+            sen2LocalWorkerPlanConsumed = $localWorkerPlanConsumed
+            sen2WorkerPlanCorrectionPassed = $correctionPassed
+            sen2RancherSystemAgentRestarted = if ($null -ne $correction) { [bool]$correction.rancherSystemAgentRestarted } else { $false }
             sen2ServiceConflictRepairPassed = $repairPassed
             consecutiveSen2StabilitySamples = if ($null -ne $repair) { [int]$repair.consecutiveStableSamples } else { 0 }
             authenticatedRuntimeValidationPassed = $runtimePassed
@@ -154,14 +223,16 @@ jobs:
             backupRestoreQualified = $false
             productionReleaseApproved = $false
             failure = $failure
-          } | ConvertTo-Json -Depth 10 |
+          } | ConvertTo-Json -Depth 15 |
             Set-Content -LiteralPath (Join-Path $root 'terminal-result.json') -Encoding UTF8
 
           $marker = if ($overall) { 'SUCCESS' } else { 'FAILURE' }
           New-Item -Path (Join-Path $root $marker) -ItemType File -Force | Out-Null
           @"
-          # LayerSentry sen2 service-conflict terminal result
+          # LayerSentry sen2 worker-plan and service-conflict terminal result
 
+          - Authoritative sen2 worker-role correction passed: **$sourceRoleCorrectionPassed**
+          - Corrected worker plan consumed locally by sen2: **$localWorkerPlanConsumed**
           - sen2 service-role repair passed: **$repairPassed**
           - Consecutive sen2 local stability samples: **$(if ($null -ne $repair) { [int]$repair.consecutiveStableSamples } else { 0 })**
           - Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **$runtimePassed**
@@ -173,7 +244,7 @@ jobs:
           "@ | Set-Content -LiteralPath (Join-Path $root 'TERMINAL-STATUS.md') -Encoding UTF8
           Get-Content -LiteralPath (Join-Path $root 'TERMINAL-STATUS.md')
 
-      - name: Upload sanitized repair and runtime evidence
+      - name: Upload sanitized correction, repair and runtime evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -192,6 +263,6 @@ jobs:
           }
           $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
           if (-not [bool]$result.installationApiCompletion) {
-            throw "LayerSentry sen2 service-conflict repair failed: $($result.failure)"
+            throw "LayerSentry sen2 worker-plan/service-conflict repair failed: $($result.failure)"
           }
-          Write-Host 'LAYERSENTRY SEN2 SERVICE-CONFLICT REPAIR AND RUNTIME VALIDATION: PASS'
+          Write-Host 'LAYERSENTRY SEN2 WORKER PLAN, SERVICE-CONFLICT REPAIR AND RUNTIME VALIDATION: PASS'
