@@ -1,6 +1,6 @@
 {
-  "requestId": "reset-join-password-forms-and-reopen-sen1-20260902-01",
-  "delayAfterSeconds": 6,
+  "requestId": "proceed-clean-poc-hardware-checks-20260902-01",
+  "delayAfterSeconds": 8,
   "targets": [
     {
       "vm": "sen1",
@@ -11,13 +11,13 @@
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 27}
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 27}
+        {"kind": "key", "code": 13}
       ]
     }
   ]
