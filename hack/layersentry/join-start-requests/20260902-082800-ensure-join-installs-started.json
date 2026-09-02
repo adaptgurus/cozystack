@@ -1,0 +1,9 @@
+{
+  "requestId": "ensure-join-installs-started-20260902-01",
+  "operation": "ENSURE_JOIN_INSTALLS_STARTED",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "vmNames": ["sen2", "sen3"],
+  "minimumStartedDiskGiB": 1.0,
+  "observationSeconds": 180,
+  "productionReleaseApprovalImplied": false
+}
