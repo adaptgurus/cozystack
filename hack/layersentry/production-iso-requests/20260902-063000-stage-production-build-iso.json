@@ -1,0 +1,20 @@
+{
+  "requestId": "stage-production-build-iso-20260902-063000",
+  "operation": "STAGE_VERIFIED_PRODUCTION_BUILD_ISO",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "sourceRepository": "adaptgurus/harvester-installer",
+  "sourceBranch": "layersentry-v1.0-dev",
+  "sourceWorkflow": "LayerSentry v1.0 full-offline ISO (Harvester v1.8.2 embedded)",
+  "requireSuccessfulWorkflow": true,
+  "requireSha256": true,
+  "requireSha512": true,
+  "requireExactByteCount": true,
+  "requireCompleteDependencyLock": true,
+  "requireZeroUnresolvedDependencies": true,
+  "minimumIsoBytes": 8589934592,
+  "destinationRoot": "C:\\ProgramData\\LayerSentry\\production-iso",
+  "friendlyDestinationDirectory": "C:\\Users\\opc\\Downloads\\final iso",
+  "attachToVirtualMachines": false,
+  "reinstallCurrentCluster": false,
+  "productionReleaseApprovalImplied": false
+}
