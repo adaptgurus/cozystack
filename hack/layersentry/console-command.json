@@ -1,26 +1,23 @@
 {
-  "requestId": "set-sen1-node-password-and-select-join-roles-20260902-01",
-  "delayAfterSeconds": 10,
+  "requestId": "populate-focused-node-password-fields-20260902-01",
+  "delayAfterSeconds": 5,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 9},
-        {"kind": "secret", "name": "nodePassword"},
-        {"kind": "key", "code": 13}
+        {"kind": "secret", "name": "nodePassword"}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 13}
+        {"kind": "secret", "name": "nodePassword"}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 13}
+        {"kind": "secret", "name": "nodePassword"}
       ]
     }
   ]
