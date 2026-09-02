@@ -1,0 +1,210 @@
+name: LayerSentry Production UI v3 Release Qualification
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/ui-production-v2/**
+      - hack/layersentry/ui-production-v3/**
+      - .github/workflows/layersentry-ui-production-v3.yml
+  pull_request:
+    paths:
+      - hack/layersentry/ui-production-v2/**
+      - hack/layersentry/ui-production-v3/**
+      - .github/workflows/layersentry-ui-production-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-production-ui-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Validate, test and package canonical air-gap UI release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: hack/layersentry/ui-production-v3
+
+    steps:
+      - name: Checkout exact source commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Enforce dependency-free supported Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+          if [[ ! "$major" =~ ^[0-9]+$ ]] || (( major < 20 )); then
+            echo "Node.js 20 or newer is required; observed $(node --version)." >&2
+            exit 1
+          fi
+          if [[ -d node_modules ]]; then
+            echo 'node_modules must not be committed or restored for this dependency-free build.' >&2
+            exit 1
+          fi
+          node -e '
+            const p = require("./package.json");
+            if (Object.keys(p.dependencies || {}).length || Object.keys(p.devDependencies || {}).length) {
+              throw new Error("npm dependencies are forbidden");
+            }
+          '
+
+      - name: Derive reproducible source epoch
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+            echo 'Unable to derive a numeric source epoch.' >&2
+            exit 1
+          fi
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+
+      - name: Validate source security accessibility branding and server policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run validate
+
+      - name: Execute canonical release contract tests
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          LAYERSENTRY_BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Assemble canonical release candidate
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+          LAYERSENTRY_BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          npm run build
+          npm run verify-dist
+
+      - name: Independently verify SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check SHA256SUMS
+
+      - name: Validate release metadata manifest and SPDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e --arg sha "$GITHUB_SHA" '
+            .schemaVersion == "1.0" and
+            .product == "LayerSentry" and
+            .component == "production-ui" and
+            .canonicalAssembler == "ui-production-v3" and
+            .commit == ($sha | ascii_downcase) and
+            .externalRuntimeDependencies == 0 and
+            .browserCredentialStorage == "none" and
+            .apiSessionMode == "same-origin-cookie" and
+            (.liveClusterDeploymentPerformed | not) and
+            (.productionReleaseApprovalImplied | not)
+          ' release/release-metadata.json >/dev/null
+          jq -e '
+            .schemaVersion == "1.0" and
+            .product == "LayerSentry" and
+            (.files | has("www/index.html")) and
+            (.files | has("www/assets/layersentry.css")) and
+            (.files | has("www/assets/layersentry.js")) and
+            (.files | has("deploy/nginx.conf")) and
+            ([.files[].sha256 | test("^[a-f0-9]{64}$")] | all) and
+            ([.files[].integrity | test("^sha384-[A-Za-z0-9+/]+={0,2}$")] | all)
+          ' release/asset-manifest.json >/dev/null
+          jq -e '
+            .spdxVersion == "SPDX-2.3" and
+            .dataLicense == "CC0-1.0" and
+            (.packages | length == 1) and
+            (.files | length >= 7) and
+            (.relationships | length == (.files | length))
+          ' release/sbom.spdx.json >/dev/null
+
+      - name: Scan release for secret external-network and unsafe-code indicators
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE --exclude='*.svg' 'https?://|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|Bearer[[:space:]]+[A-Za-z0-9._~-]+' release/www release/deploy; then
+            echo 'Release contains a forbidden external URL or secret indicator.' >&2
+            exit 1
+          fi
+          if grep -RInE '(password|passwd|secret|token)[[:space:]]*[:=][[:space:]]*["'"'][^"'"']{4,}["'"']' release/www release/deploy; then
+            echo 'Release appears to contain a hard-coded credential.' >&2
+            exit 1
+          fi
+          if grep -RInE '\.innerHTML[[:space:]]*=|insertAdjacentHTML|document\.write|(^|[^[:alnum:]_])eval[[:space:]]*\(' release/www; then
+            echo 'Release contains an unsafe browser-code primitive.' >&2
+            exit 1
+          fi
+          if find release -type f \( -name '*.map' -o -name '*.pem' -o -name '*.key' -o -name 'kubeconfig*' \) -print -quit | grep -q .; then
+            echo 'Source maps, private keys or kubeconfigs are forbidden in the UI release.' >&2
+            exit 1
+          fi
+
+      - name: Create deterministic release archive
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          rm -f layersentry-production-ui-v3.tar.gz layersentry-production-ui-v3.tar.gz.sha256
+          tar \
+            --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf layersentry-production-ui-v3.tar.gz \
+            release
+          sha256sum layersentry-production-ui-v3.tar.gz > layersentry-production-ui-v3.tar.gz.sha256
+
+      - name: Publish qualification summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## LayerSentry Production UI v3'
+            echo
+            echo '- Canonical responsive layout: **qualified by tests**'
+            echo '- LayerSentry-only shell branding: **enforced**'
+            echo '- External browser assets: **none**'
+            echo '- Browser credential or kubeconfig storage: **none**'
+            echo '- Same-origin authenticated API session: **required**'
+            echo '- SHA-256 and SHA-384 integrity manifest: **generated**'
+            echo '- SPDX 2.3 SBOM: **generated**'
+            echo '- Live cluster deployment performed: **no**'
+            echo '- Production release approval implied: **no**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload qualified release candidate
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-production-ui-v3-${{ github.run_id }}
+          path: |
+            hack/layersentry/ui-production-v3/release
+            hack/layersentry/ui-production-v3/layersentry-production-ui-v3.tar.gz
+            hack/layersentry/ui-production-v3/layersentry-production-ui-v3.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
