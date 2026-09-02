@@ -1,0 +1,125 @@
+name: LayerSentry Hyper-V Installation Finalizer V2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/install-finalizer-v2-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    name: Authoritative boot recovery and three-node readiness proof
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 115
+
+    steps:
+      - name: Checkout exact V2 finalizer request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Resolve immutable V2 finalizer request
+        id: request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestPaths = @(
+            git show --pretty='' --name-only $env:GITHUB_SHA |
+              Where-Object { $_ -match '^hack/layersentry/install-finalizer-v2-requests/[^/]+\.json$' }
+          )
+          if ($requestPaths.Count -ne 1) {
+            throw "Expected exactly one V2 finalizer request in commit $env:GITHUB_SHA; found $($requestPaths.Count)."
+          }
+          $requestPath = [string]$requestPaths[0]
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+            throw "Resolved V2 finalizer request does not exist: $requestPath"
+          }
+          "request_path=$requestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved V2 finalizer request: $requestPath"
+
+      - name: Prepare corrected finalizer implementation
+        id: implementation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sourcePath = (Resolve-Path -LiteralPath 'hack/layersentry/finalize-harvester-install.ps1').ProviderPath
+          $destinationPath = Join-Path $env:RUNNER_TEMP 'finalize-harvester-install-v2.ps1'
+          $content = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+
+          $oldNodeCount = '$serviceCount = @($tcp22, $tcp9345, $tcp10250 | Where-Object { $_ }).Count'
+          $newNodeCount = '$serviceCount = @(@($tcp22, $tcp9345, $tcp10250) | Where-Object { [bool]$_ }).Count'
+          $nodeCountIndex = $content.IndexOf($oldNodeCount, [System.StringComparison]::Ordinal)
+          if ($nodeCountIndex -lt 0) {
+            throw 'The expected node service-count expression was not found.'
+          }
+          $content = $content.Substring(0, $nodeCountIndex) +
+            $newNodeCount +
+            $content.Substring($nodeCountIndex + $oldNodeCount.Length)
+
+          $installCountPattern = '(?ms)^\s*\$installedServiceCount = @\(\s*\(Test-TcpAddress -Address \$address -Port 22\),\s*\(Test-TcpAddress -Address \$address -Port 9345\),\s*\(Test-TcpAddress -Address \$address -Port 10250\) \|\s*Where-Object \{ \$_ \}\s*\)\.Count'
+          $match = [regex]::Match($content, $installCountPattern)
+          if (-not $match.Success) {
+            throw 'The expected installation service-count block was not found.'
+          }
+          $newInstallCount = '                    $installedServiceCount = @(@((Test-TcpAddress -Address $address -Port 22), (Test-TcpAddress -Address $address -Port 9345), (Test-TcpAddress -Address $address -Port 10250)) | Where-Object { [bool]$_ }).Count'
+          $content = $content.Substring(0, $match.Index) +
+            $newInstallCount +
+            $content.Substring($match.Index + $match.Length)
+
+          Set-Content -LiteralPath $destinationPath -Value $content -Encoding UTF8
+
+          foreach ($path in @(
+            $destinationPath,
+            (Resolve-Path -LiteralPath 'hack/layersentry/capture-hyperv-console.ps1').ProviderPath
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+          "script_path=$destinationPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Prepared and parsed corrected finalizer: $destinationPath"
+
+      - name: Execute authoritative installation finalization
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDirectory = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/install-finalizer-v2'
+
+          & '${{ steps.implementation.outputs.script_path }}' `
+            -RequestPath '${{ steps.request.outputs.request_path }}' `
+            -OutputDirectory $outputDirectory `
+            -PublishBranch 'ops/layersentry-finalize-status-v2' `
+            -RepositoryRoot $env:GITHUB_WORKSPACE
+
+      - name: Upload V2 finalization evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-install-finalizer-v2-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/install-finalizer-v2
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
