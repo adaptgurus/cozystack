@@ -1,0 +1,196 @@
+name: LayerSentry Verify Harvester Join Endpoint From Persisted VIP
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/harvester-join-endpoint-verification-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-harvester-join-endpoint-verification
+  cancel-in-progress: false
+
+jobs:
+  verify-join-endpoint:
+    name: Verify sen1 VIP, sen2/sen3 persisted join URLs, and exact worker plan read only
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact verification request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request, runner, and read-only source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:RUNNER_NAME -cne 'TESTSER' -or $env:COMPUTERNAME -cne 'TESTSER') {
+            throw "This verification is restricted to TESTSER; runner=$env:RUNNER_NAME host=$env:COMPUTERNAME."
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          if ($identity -ne 'NT AUTHORITY\SYSTEM') {
+            throw "This verification must run as NT AUTHORITY\SYSTEM; observed $identity."
+          }
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Protected credential file is missing: $credentialPath"
+          }
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/harvester-join-endpoint-verification-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one newly committed join-endpoint verification request; found $($requests.Count)."
+          }
+          $requestPath = ([string]$requests[0]).Trim()
+          $expectedRequestPath = 'hack/layersentry/harvester-join-endpoint-verification-requests/20260902-verify-harvester-join-endpoint-from-vip-09.json'
+          if ($requestPath -cne $expectedRequestPath) {
+            throw "Unexpected join-endpoint verification request: $requestPath"
+          }
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.requestId -cne 'verify-harvester-join-endpoint-from-vip-20260902-09') {
+            throw 'The requestId is not the unique persisted-VIP verification identifier.'
+          }
+          if ([string]$request.previousDiscoveryRunId -cne '33657138632') {
+            throw 'The request is not bound to read-only discovery run 33657138632.'
+          }
+          if ([string]$request.previousDiscoveryArtifactId -cne '9857183141') {
+            throw 'The request is not bound to sanitized discovery artifact 9857183141.'
+          }
+          if ([string]$request.previousDiscoveryArtifactSha256 -cne 'e9afcec9b570336a70a6775af18287d8ae39188adb4ffa0817e656e2e9d361bb') {
+            throw 'The request has an unexpected discovery artifact SHA-256.'
+          }
+          foreach ($forbidden in @(
+            'mutateAuthoritativeSource',
+            'changeNodeConfiguration',
+            'changeServices',
+            'rebootNode',
+            'reinstallOrWipeDisks',
+            'deleteRke2Data',
+            'acceptEula',
+            'writeCredentialValuesToEvidence',
+            'publishKubeconfig',
+            'productionReleaseApprovalImplied'
+          )) {
+            if ([bool]$request.$forbidden) {
+              throw "Forbidden request flag is true: $forbidden"
+            }
+          }
+
+          $scriptPath = 'hack/layersentry/verify-harvester-join-endpoint-continuation-09.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path -LiteralPath $scriptPath).ProviderPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $scriptPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+          foreach ($requiredMarker in @(
+            'VERIFY_HARVESTER_JOIN_ENDPOINT_FROM_CLUSTER_VIP_READ_ONLY',
+            '.install.vip // ""',
+            '.server_url // ""',
+            'sen1-authoritative-worker-plan-readonly',
+            'authoritativeJoinServerUrl',
+            'nodeConfigurationModified = $false',
+            'servicesModified = $false',
+            'nodeRebooted = $false',
+            'planPayloadPublished = $false'
+          )) {
+            if (-not $scriptText.Contains($requiredMarker)) {
+              throw "Read-only join-endpoint source is missing required marker: $requiredMarker"
+            }
+          }
+          foreach ($forbiddenText in @(
+            'systemctl disable',
+            'systemctl enable ',
+            'systemctl stop',
+            'systemctl start',
+            'systemctl restart',
+            'systemctl reboot',
+            'shutdown',
+            'sed -i',
+            'rm -rf /var/lib/rancher/rke2',
+            'wipefs',
+            'Clear-Disk',
+            'Initialize-Disk',
+            'accept-eula'
+          )) {
+            if ($scriptText.IndexOf($forbiddenText, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              throw "Forbidden mutation text found in read-only verification source: $forbiddenText"
+            }
+          }
+
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated unique read-only Harvester join-endpoint request: $requestPath"
+
+      - name: Verify persisted cluster VIP and worker join endpoints without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputRoot = Join-Path $env:RUNNER_TEMP 'layersentry-harvester-join-endpoint-verification-09'
+          & 'hack/layersentry/verify-harvester-join-endpoint-continuation-09.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $outputRoot
+
+      - name: Upload sanitized join-endpoint verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-harvester-join-endpoint-verification-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-harvester-join-endpoint-verification-09
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce read-only verification completion
+        if: always()
+        shell: powershell
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP 'layersentry-harvester-join-endpoint-verification-09\join-endpoint-verification-result.json'
+          if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'Join-endpoint verification result is missing.'
+          }
+          $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.verificationPassed) {
+            throw "Harvester join-endpoint verification failed: $($result.failure)"
+          }
+          foreach ($mustRemainFalse in @(
+            'authoritativeSourceModified',
+            'nodeConfigurationModified',
+            'servicesModified',
+            'nodeRebooted',
+            'planPayloadPublished',
+            'credentialValuesWrittenToEvidence',
+            'kubeconfigWrittenToEvidence',
+            'eulaAutomaticallyAccepted',
+            'productionReleaseApproved'
+          )) {
+            if ([bool]$result.$mustRemainFalse) {
+              throw "Read-only invariant violated: $mustRemainFalse"
+            }
+          }
+          Write-Host "LAYERSENTRY HARVESTER AUTHORITATIVE JOIN ENDPOINT: $($result.authoritativeJoinServerUrl)"
+          Write-Host "LAYERSENTRY HARVESTER JOIN ENDPOINT CLASSIFICATION: $($result.endpointClassification)"
