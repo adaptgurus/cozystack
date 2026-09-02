@@ -1,12 +1,34 @@
 ﻿{
     "SchemaVersion":  "2.1",
-    "RequestId":  "refresh-after-all-install-submissions-20260902-02",
-    "ExecutedAtUtc":  "2026-09-02T02:18:05.3951724Z",
+    "RequestId":  "capture-installer-state-after-monitor-cancellation-20260902-01",
+    "ExecutedAtUtc":  "2026-09-02T04:08:14.7787294Z",
     "Host":  "TESTSER",
     "CredentialPathUsed":  null,
     "Results":  [
                     {
                         "VM":  "sen1",
+                        "Actions":  [
+                                        {
+                                            "Kind":  "sleep",
+                                            "Milliseconds":  100,
+                                            "Status":  "success"
+                                        }
+                                    ],
+                        "StateAfter":  "Running"
+                    },
+                    {
+                        "VM":  "sen2",
+                        "Actions":  [
+                                        {
+                                            "Kind":  "sleep",
+                                            "Milliseconds":  100,
+                                            "Status":  "success"
+                                        }
+                                    ],
+                        "StateAfter":  "Running"
+                    },
+                    {
+                        "VM":  "sen3",
                         "Actions":  [
                                         {
                                             "Kind":  "sleep",

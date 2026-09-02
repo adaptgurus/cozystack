@@ -1,11 +1,13 @@
 ﻿LayerSentry Hyper-V console command
-Request ID: refresh-after-all-install-submissions-20260902-02
-Executed UTC: 2026-09-02T02:18:05.3951724Z
+Request ID: capture-installer-state-after-monitor-cancellation-20260902-01
+Executed UTC: 2026-09-02T04:08:14.7787294Z
 Fatal error: 
 
 VM   StateAfter
 --   ----------
 sen1 Running   
+sen2 Running   
+sen3 Running   
 
 
 
