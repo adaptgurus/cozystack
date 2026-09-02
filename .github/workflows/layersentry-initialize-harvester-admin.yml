@@ -6,7 +6,7 @@ on:
       - ops/layersentry-hyperv-inventory
     paths:
       - hack/layersentry/admin-reset-requests/*.json
-      - hack/layersentry/initialize-harvester-admin.ps1
+      - hack/layersentry/initialize-harvester-admin-v2.ps1
       - .github/workflows/layersentry-initialize-harvester-admin.yml
   workflow_dispatch:
 
@@ -31,7 +31,7 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Validate authorization request and script
+      - name: Validate authorization request and PowerShell source
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -80,32 +80,9 @@ jobs:
             throw "Unexpected reset node: $($request.nodeAddress)"
           }
 
-          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/initialize-harvester-admin.ps1').ProviderPath
-          $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
-          $scriptText = $scriptText.Replace(
-            '[Parameter(Mandatory = $true)][string]$Value',
-            '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value'
-          )
-          $inputEncodingNeedle = '    $startInfo.RedirectStandardError = $true'
-          $inputEncodingReplacement = @(
-            '    $startInfo.RedirectStandardError = $true'
-            '    $startInfo.StandardInputEncoding = New-Object System.Text.UTF8Encoding($false)'
-          ) -join "`n"
-          $scriptText = $scriptText.Replace($inputEncodingNeedle, $inputEncodingReplacement)
-          $standardInputNeedle = '    $process.StandardInput.Write($remoteScript)'
-          $standardInputReplacement = @(
-            '    $remoteScript = ($remoteScript -replace "`r`n", "`n").TrimStart([char]0xFEFF)'
-            '    $process.StandardInput.Write($remoteScript)'
-          ) -join "`n"
-          $scriptText = $scriptText.Replace($standardInputNeedle, $standardInputReplacement)
-          [System.IO.File]::WriteAllText(
-            $scriptPath,
-            $scriptText,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
-
           $tokens = $null
           $errors = $null
+          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/initialize-harvester-admin-v2.ps1').ProviderPath
           [void][System.Management.Automation.Language.Parser]::ParseFile(
             $scriptPath,
             [ref]$tokens,
@@ -124,7 +101,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $output = Join-Path $env:RUNNER_TEMP 'layersentry-admin-initialization'
-          & 'hack/layersentry/initialize-harvester-admin.ps1' `
+          & 'hack/layersentry/initialize-harvester-admin-v2.ps1' `
             -ClusterUrl 'https://10.10.10.10' `
             -NodeAddress '10.10.10.11' `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
