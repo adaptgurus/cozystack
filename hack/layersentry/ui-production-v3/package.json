@@ -1,0 +1,18 @@
+{
+  "name": "@layersentry/production-ui",
+  "version": "1.0.0-rc.1",
+  "private": true,
+  "type": "module",
+  "description": "Production-qualified, air-gap-safe LayerSentry management interface.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "ci": "npm run validate && npm test && npm run build && npm run verify-dist",
+    "verify-dist": "node scripts/verify-dist.mjs"
+  },
+  "license": "UNLICENSED"
+}
