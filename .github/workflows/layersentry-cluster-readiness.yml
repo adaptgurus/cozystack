@@ -1,0 +1,175 @@
+name: LayerSentry Hyper-V Cluster Readiness
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cluster-readiness-request.txt
+      - .github/workflows/layersentry-cluster-readiness.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    name: Wait for the installed three-node cluster
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 130
+    steps:
+      - name: Checkout exact readiness probe
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Wait for node and VIP readiness
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cluster-readiness'
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          function Test-Port {
+            param([string]$Address, [int]$Port, [int]$TimeoutMilliseconds = 1500)
+            $client = New-Object Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+                return $false
+              }
+              $client.EndConnect($async)
+              return $true
+            }
+            catch {
+              return $false
+            }
+            finally {
+              $client.Dispose()
+            }
+          }
+
+          $nodes = [ordered]@{
+            sen1 = '10.10.10.11'
+            sen2 = '10.10.10.12'
+            sen3 = '10.10.10.13'
+          }
+          $vip = '10.10.10.10'
+          $deadline = (Get-Date).AddMinutes(120)
+          $history = New-Object System.Collections.Generic.List[object]
+          $ready = $false
+
+          while ((Get-Date) -lt $deadline) {
+            $nodeStatus = New-Object System.Collections.Generic.List[object]
+            foreach ($entry in $nodes.GetEnumerator()) {
+              $vm = Get-VM -Name $entry.Key -ErrorAction Stop
+              $nodeStatus.Add([ordered]@{
+                name = $entry.Key
+                address = $entry.Value
+                vmState = $vm.State.ToString()
+                uptimeSeconds = [int64]$vm.Uptime.TotalSeconds
+                ping = Test-Connection -ComputerName $entry.Value -Count 1 -Quiet -ErrorAction SilentlyContinue
+                ssh22 = Test-Port -Address $entry.Value -Port 22
+                api6443 = Test-Port -Address $entry.Value -Port 6443
+                supervisor9345 = Test-Port -Address $entry.Value -Port 9345
+                https443 = Test-Port -Address $entry.Value -Port 443
+              })
+            }
+            $snapshot = [ordered]@{
+              capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+              vip = [ordered]@{
+                address = $vip
+                ping = Test-Connection -ComputerName $vip -Count 1 -Quiet -ErrorAction SilentlyContinue
+                https443 = Test-Port -Address $vip -Port 443
+                api6443 = Test-Port -Address $vip -Port 6443
+              }
+              nodes = @($nodeStatus)
+            }
+            $history.Add($snapshot)
+            $snapshot | ConvertTo-Json -Depth 12 | Add-Content -LiteralPath (Join-Path $evidence 'readiness-history.jsonl') -Encoding UTF8
+
+            $allSsh = @($nodeStatus | Where-Object { $_.ssh22 }).Count -eq 3
+            if ($snapshot.vip.https443 -and $allSsh) {
+              $ready = $true
+              break
+            }
+            Start-Sleep -Seconds 30
+          }
+
+          $final = if ($history.Count -gt 0) { $history[$history.Count - 1] } else { $null }
+          [ordered]@{
+            schemaVersion = '1.0'
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            sourceCommit = '${{ github.sha }}'
+            sourceRunId = '${{ github.run_id }}'
+            ready = $ready
+            sampleCount = $history.Count
+            final = $final
+            installationQualified = $false
+            runtimeQualified = $false
+            releaseApproved = $false
+          } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $evidence 'summary.json') -Encoding UTF8
+
+          & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @('sen1', 'sen2', 'sen3') -OutputDirectory (Join-Path $evidence 'final-capture')
+          "READINESS_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (-not $ready) {
+            throw 'Three-node SSH and cluster VIP TCP/443 readiness did not complete within 120 minutes.'
+          }
+
+      - name: Recover evidence path
+        if: always()
+        shell: powershell
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cluster-readiness'
+          "READINESS_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Persist readiness summary
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = $env:READINESS_EVIDENCE
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/readiness-latest'
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force
+          }
+          New-Item -Path $destination -ItemType Directory -Force | Out-Null
+          foreach ($name in @('summary.json', 'readiness-history.jsonl')) {
+            $path = Join-Path $source $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+              Copy-Item -LiteralPath $path -Destination (Join-Path $destination $name) -Force
+            }
+          }
+          $capture = Join-Path $source 'final-capture'
+          if (Test-Path -LiteralPath $capture -PathType Container) {
+            Copy-Item -Path (Join-Path $capture '*') -Destination $destination -Force
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/runtime-evidence/readiness-latest'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'ops(evidence): refresh cluster readiness [skip ci]'
+            if ($LASTEXITCODE -ne 0) { throw 'git commit failed' }
+            git push origin "HEAD:${{ github.ref_name }}"
+            if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
+          }
+
+      - name: Upload readiness evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-cluster-readiness-${{ github.run_id }}
+          path: ${{ env.READINESS_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
