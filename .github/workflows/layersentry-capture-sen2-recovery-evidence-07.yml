@@ -1,0 +1,302 @@
+name: LayerSentry Capture sen2 Recovery Evidence 07
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/evidence-capture-requests/*.json
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: layersentry-capture-sen2-recovery-evidence
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    name: Capture sanitized terminal evidence and handoff
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout evidence-capture request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Validate read-only capture request and runner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:RUNNER_NAME -cne 'TESTSER' -or $env:COMPUTERNAME -cne 'TESTSER') {
+            throw 'The evidence capture is restricted to TESTSER.'
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          if ($identity -ne 'NT AUTHORITY\SYSTEM') {
+            throw "Evidence capture must run as NT AUTHORITY\SYSTEM; observed $identity."
+          }
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/evidence-capture-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $requests.Count -ne 1) {
+            throw "Expected one evidence-capture request; found $($requests.Count)."
+          }
+          $requestPath = ([string]$requests[0]).Trim()
+          if ([System.IO.Path]::GetFileName($requestPath) -cne '20260902-capture-server-url-guard-fix-07.json') {
+            throw "Unexpected evidence-capture request: $requestPath"
+          }
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.requestId -cne 'capture-sen2-recovery-server-url-guard-fix-07') {
+            throw 'Unexpected evidence-capture requestId.'
+          }
+          if ([string]$request.operation -ne 'CAPTURE_SANITIZED_SEN2_RECOVERY_EVIDENCE') {
+            throw 'Unexpected evidence-capture operation.'
+          }
+          if ([string]$request.targetWorkflowPath -cne '.github/workflows/layersentry-resume-sen2-service-continuation-06.yml') {
+            throw 'Unexpected target workflow path.'
+          }
+          if ([string]$request.targetRequestFile -cne '20260902-continue-after-server-url-guard-fix-07.json') {
+            throw 'Unexpected target continuation request.'
+          }
+          if ([long]$request.minimumExclusiveRunId -ne 33648778779) {
+            throw 'Unexpected prior run boundary.'
+          }
+          if (-not [bool]$request.sanitizedEvidenceOnly -or [bool]$request.readProtectedCredentialFile) {
+            throw 'The capture request violates the sanitized/read-only boundary.'
+          }
+          "CAPTURE_REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Wait for corrected recovery run and download sanitized artifact
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $workflowFile = 'layersentry-resume-sen2-service-continuation-06.yml'
+          $branch = 'ops/layersentry-hyperv-inventory'
+          $deadline = (Get-Date).ToUniversalTime().AddMinutes(20)
+          $targetRun = $null
+
+          do {
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/$workflowFile/runs?branch=$([uri]::EscapeDataString($branch))&event=push&per_page=30"
+            $runs = Invoke-RestMethod -Method Get -Headers $headers -Uri $uri
+            $targetRun = @($runs.workflow_runs |
+              Where-Object {
+                [long]$_.id -gt 33648778779 -and
+                [string]$_.head_branch -ceq $branch -and
+                [string]$_.display_title -ceq 'ops(resume): continue sen2 after exact rancherd server URL guard fix'
+              } |
+              Sort-Object -Property id -Descending |
+              Select-Object -First 1)
+            if ($targetRun.Count -eq 0 -or [string]$targetRun[0].status -ne 'completed') {
+              Start-Sleep -Seconds 20
+            }
+          } while (($targetRun.Count -eq 0 -or [string]$targetRun[0].status -ne 'completed') -and (Get-Date).ToUniversalTime() -lt $deadline)
+
+          if ($targetRun.Count -eq 0) {
+            throw 'No corrected sen2 recovery workflow run was found after run 33648778779.'
+          }
+          $targetRun = $targetRun[0]
+          if ([string]$targetRun.status -ne 'completed') {
+            throw "Corrected sen2 recovery run $($targetRun.id) did not become terminal within the capture window."
+          }
+
+          $artifactUri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$($targetRun.id)/artifacts?per_page=100"
+          $artifactResponse = Invoke-RestMethod -Method Get -Headers $headers -Uri $artifactUri
+          $expectedArtifactName = "layersentry-sen2-service-continuation-$($targetRun.id)"
+          $artifact = @($artifactResponse.artifacts |
+            Where-Object { [string]$_.name -ceq $expectedArtifactName -and -not [bool]$_.expired } |
+            Select-Object -First 1)
+          if ($artifact.Count -ne 1) {
+            throw "Expected sanitized artifact $expectedArtifactName was not found for run $($targetRun.id)."
+          }
+          $artifact = $artifact[0]
+
+          $captureRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-recovery-evidence-capture-07'
+          $zipPath = Join-Path $captureRoot 'artifact.zip'
+          $extractRoot = Join-Path $captureRoot 'extracted'
+          if (Test-Path -LiteralPath $captureRoot) {
+            Remove-Item -LiteralPath $captureRoot -Recurse -Force
+          }
+          New-Item -Path $extractRoot -ItemType Directory -Force | Out-Null
+          Invoke-WebRequest -Method Get -Headers $headers -Uri $artifact.archive_download_url -OutFile $zipPath
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+          Remove-Item -LiteralPath $zipPath -Force
+
+          "TARGET_RUN_ID=$($targetRun.id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TARGET_RUN_HEAD_SHA=$($targetRun.head_sha)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TARGET_RUN_CONCLUSION=$($targetRun.conclusion)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TARGET_ARTIFACT_ID=$($artifact.id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TARGET_ARTIFACT_NAME=$($artifact.name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TARGET_ARTIFACT_DIGEST=$($artifact.digest)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CAPTURE_EXTRACT_ROOT=$extractRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Commit allowlisted sanitized evidence and latest handoff
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $extractRoot = $env:CAPTURE_EXTRACT_ROOT
+          $runRoot = Join-Path $env:GITHUB_WORKSPACE "hack\layersentry\evidence\sen2-recovery-run-$env:TARGET_RUN_ID"
+          $handoffRoot = Join-Path $env:GITHUB_WORKSPACE 'hack\layersentry\handoffs'
+          New-Item -Path $runRoot -ItemType Directory -Force | Out-Null
+          New-Item -Path $handoffRoot -ItemType Directory -Force | Out-Null
+
+          function Copy-UniqueEvidence {
+            param(
+              [Parameter(Mandatory = $true)][string]$Filter,
+              [Parameter(Mandatory = $true)][string]$DestinationName,
+              [string]$ExcludePathFragment = $null,
+              [string]$IncludePathFragment = $null
+            )
+            $matches = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter $Filter)
+            if (-not [string]::IsNullOrWhiteSpace($ExcludePathFragment)) {
+              $matches = @($matches | Where-Object { $_.FullName -notlike "*$ExcludePathFragment*" })
+            }
+            if (-not [string]::IsNullOrWhiteSpace($IncludePathFragment)) {
+              $matches = @($matches | Where-Object { $_.FullName -like "*$IncludePathFragment*" })
+            }
+            if ($matches.Count -gt 1) {
+              throw "Evidence file $Filter is ambiguous after path filtering."
+            }
+            if ($matches.Count -eq 1) {
+              Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $runRoot $DestinationName) -Force
+              return $true
+            }
+            return $false
+          }
+
+          $copied = [ordered]@{}
+          $copied.source = Copy-UniqueEvidence -Filter 'source-verification-result.json' -DestinationName 'source-verification-result.json'
+          $copied.endpoint = Copy-UniqueEvidence -Filter 'endpoint-verification-result.json' -DestinationName 'endpoint-verification-result.json'
+          $copied.repair = Copy-UniqueEvidence -Filter 'repair-result.json' -DestinationName 'repair-result.json'
+          $copied.stability = Copy-UniqueEvidence -Filter 'stability-history.jsonl' -DestinationName 'stability-history.jsonl'
+          $copied.runtime = Copy-UniqueEvidence -Filter 'runtime-completion.json' -DestinationName 'runtime-completion.json' -ExcludePathFragment '\base-runtime\'
+          $copied.baseRuntime = Copy-UniqueEvidence -Filter 'runtime-completion.json' -DestinationName 'base-runtime-completion.json' -IncludePathFragment '\base-runtime\'
+          $copied.authenticatedHistory = Copy-UniqueEvidence -Filter 'authenticated-resource-history.jsonl' -DestinationName 'authenticated-resource-history.jsonl'
+          $copied.terminal = Copy-UniqueEvidence -Filter 'terminal-result.json' -DestinationName 'terminal-result.json'
+
+          if (-not $copied.terminal) {
+            throw 'The sanitized terminal-result.json file is required for Git evidence capture.'
+          }
+
+          $forbiddenPatterns = @(
+            '(?i)Authorization\s*:\s*Bearer\s+\S+',
+            '(?i)"(?:adminPassword|password|token|kubeconfig)"\s*:\s*"[^"\r\n]+"',
+            '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+            '(?i)client-key-data\s*:',
+            '(?i)bootstrap-credentials\.json\s*[=:]\s*\{'
+          )
+          foreach ($file in @(Get-ChildItem -LiteralPath $runRoot -Recurse -File)) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+            foreach ($pattern in $forbiddenPatterns) {
+              if ($text -match $pattern) {
+                throw "Sanitization guard rejected $($file.Name)."
+              }
+            }
+          }
+
+          $terminal = Get-Content -LiteralPath (Join-Path $runRoot 'terminal-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          [ordered]@{
+            schemaVersion = '1.0'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            workflowRunId = $env:TARGET_RUN_ID
+            workflowHeadSha = $env:TARGET_RUN_HEAD_SHA
+            workflowConclusion = $env:TARGET_RUN_CONCLUSION
+            artifactId = $env:TARGET_ARTIFACT_ID
+            artifactName = $env:TARGET_ARTIFACT_NAME
+            artifactDigest = $env:TARGET_ARTIFACT_DIGEST
+            requestPath = [string]$terminal.requestPath
+            clusterRecoveryGatePassed = [bool]$terminal.clusterRecoveryGatePassed
+            currentAuthoritativeWorkerSourcePassed = [bool]$terminal.currentAuthoritativeWorkerSourcePassed
+            rancherdEndpointVerificationPassed = [bool]$terminal.rancherdEndpointVerificationPassed
+            exactExpectedObservedRancherdUrlMatch = [bool]$terminal.exactExpectedObservedRancherdUrlMatch
+            exit64RegressionGuardPassed = [bool]$terminal.exit64RegressionGuardPassed
+            consecutiveSen2StabilitySamples = [int]$terminal.consecutiveSen2StabilitySamples
+            authenticatedKubernetesKubeVirtLonghornValidationPassed = [bool]$terminal.authenticatedKubernetesKubeVirtLonghornValidationPassed
+            firstRunGuiEulaAcceptancePendingManualAction = [bool]$terminal.firstRunGuiEulaAcceptancePendingManualAction
+            eulaAutomaticallyAccepted = [bool]$terminal.eulaAutomaticallyAccepted
+            productionReleaseApproved = [bool]$terminal.productionReleaseApproved
+            failure = [string]$terminal.failure
+            copiedEvidence = $copied
+            credentialValuesWrittenToEvidence = $false
+            kubeconfigWrittenToEvidence = $false
+          } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runRoot 'capture-manifest.json') -Encoding UTF8
+
+          $handoff = @"
+          # LayerSentry / Harvester sen2 recovery handoff
+
+          - Evidence captured at UTC: $((Get-Date).ToUniversalTime().ToString('o'))
+          - Branch: `ops/layersentry-hyperv-inventory`
+          - Recovery workflow run: `$env:TARGET_RUN_ID`
+          - Recovery head SHA: `$env:TARGET_RUN_HEAD_SHA`
+          - Workflow conclusion: **$env:TARGET_RUN_CONCLUSION**
+          - Evidence artifact: `$env:TARGET_ARTIFACT_ID`
+          - Artifact digest: `$env:TARGET_ARTIFACT_DIGEST`
+          - Authoritative worker source verification passed: **$([bool]$terminal.currentAuthoritativeWorkerSourcePassed)**
+          - Read-only endpoint verification passed: **$([bool]$terminal.rancherdEndpointVerificationPassed)**
+          - Exact expected/observed rancherd URL match passed: **$([bool]$terminal.exactExpectedObservedRancherdUrlMatch)**
+          - Exit-code-64 regression guard passed: **$([bool]$terminal.exit64RegressionGuardPassed)**
+          - sen2 consecutive stability samples: **$([int]$terminal.consecutiveSen2StabilitySamples) / 24**
+          - Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **$([bool]$terminal.authenticatedKubernetesKubeVirtLonghornValidationPassed)**
+          - Cluster recovery gate passed: **$([bool]$terminal.clusterRecoveryGatePassed)**
+          - First-run GUI password/EULA action remains manual: **$([bool]$terminal.firstRunGuiEulaAcceptancePendingManualAction)**
+          - EULA automatically accepted: **$([bool]$terminal.eulaAutomaticallyAccepted)**
+          - Production release approved: **$([bool]$terminal.productionReleaseApproved)**
+          - Failure: $([string]$terminal.failure)
+
+          Sanitized evidence is stored under `hack/layersentry/evidence/sen2-recovery-run-$env:TARGET_RUN_ID/`.
+          No password, token, kubeconfig, protected credential-file contents, or raw secret payload was committed.
+          "@
+          $handoff | Set-Content -LiteralPath (Join-Path $runRoot 'HANDOFF.md') -Encoding UTF8
+          $handoff | Set-Content -LiteralPath (Join-Path $handoffRoot 'LATEST-SEN2-RECOVERY.md') -Encoding UTF8
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/evidence' 'hack/layersentry/handoffs/LATEST-SEN2-RECOVERY.md'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'Sanitized evidence already matches Git; no commit required.'
+            exit 0
+          }
+          git commit -m "ops(layersentry): capture sanitized sen2 recovery run $env:TARGET_RUN_ID"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to commit sanitized recovery evidence.'
+          }
+          git pull --rebase origin 'ops/layersentry-hyperv-inventory'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to rebase sanitized evidence commit onto the current branch.'
+          }
+          git push origin 'HEAD:ops/layersentry-hyperv-inventory'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to push sanitized recovery evidence.'
+          }
+
+      - name: Upload evidence-capture working set
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-evidence-capture-${{ github.run_id }}
+          path: |
+            ${{ github.workspace }}\hack\layersentry\evidence
+            ${{ github.workspace }}\hack\layersentry\handoffs\LATEST-SEN2-RECOVERY.md
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
