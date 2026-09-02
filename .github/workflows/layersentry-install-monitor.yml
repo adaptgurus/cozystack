@@ -1,0 +1,96 @@
+name: LayerSentry Hyper-V Installation Monitor
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/install-monitor-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Monitor install, switch to OS disks, and validate cluster services
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 100
+
+    steps:
+      - name: Checkout exact monitor request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Resolve immutable monitor request
+        id: request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $requestPaths = @(
+            git show --pretty='' --name-only $env:GITHUB_SHA |
+              Where-Object { $_ -match '^hack/layersentry/install-monitor-requests/[^/]+\.json$' }
+          )
+          if ($requestPaths.Count -ne 1) {
+            throw "Expected exactly one installation-monitor request in commit $env:GITHUB_SHA; found $($requestPaths.Count)."
+          }
+          $requestPath = [string]$requestPaths[0]
+          if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+            throw "Resolved monitor request does not exist: $requestPath"
+          }
+          "request_path=$requestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved monitor request: $requestPath"
+
+      - name: Parse monitor and console-capture scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relativePath in @(
+            'hack/layersentry/monitor-harvester-install.ps1',
+            'hack/layersentry/capture-hyperv-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relativePath).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $relativePath, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+      - name: Monitor installation and validate online state
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDirectory = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/install-monitor'
+
+          & 'hack/layersentry/monitor-harvester-install.ps1' `
+            -RequestPath '${{ steps.request.outputs.request_path }}' `
+            -OutputDirectory $outputDirectory `
+            -PublishBranch 'ops/layersentry-install-status' `
+            -RepositoryRoot $env:GITHUB_WORKSPACE
+
+      - name: Upload installation-monitor evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-install-monitor-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/install-monitor
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
