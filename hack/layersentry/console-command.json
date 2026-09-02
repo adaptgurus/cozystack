@@ -1,6 +1,6 @@
 {
-  "requestId": "leave-management-vlan-untagged-20260902-01",
-  "delayAfterSeconds": 6,
+  "requestId": "accept-default-single-nic-bond-mode-20260902-01",
+  "delayAfterSeconds": 7,
   "targets": [
     {
       "vm": "sen1",
