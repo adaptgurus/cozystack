@@ -1,0 +1,56 @@
+name: LayerSentry Preempt Passive Finalizer
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/preempt-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-hyperv-console-command
+  cancel-in-progress: true
+
+jobs:
+  preempt:
+    name: Stop passive readiness wait and release the Windows runner
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout exact preemption request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate authorized diagnostic preemption
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$paths = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/preempt-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($paths.Count -ne 1) {
+            throw "Expected exactly one preemption request; found $($paths.Count)."
+          }
+          $request = Get-Content -LiteralPath $paths[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'PREEMPT_PASSIVE_FINALIZER_FOR_DIAGNOSTIC') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The authorization marker is missing.'
+          }
+          if ([bool]$request.changeVirtualMachineState) {
+            throw 'This preemption request must not change virtual-machine state.'
+          }
+          Write-Host 'Passive finalizer preempted; releasing the runner for protected join diagnostics.'
