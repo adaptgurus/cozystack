@@ -1,0 +1,143 @@
+name: LayerSentry Hyper-V Console OCR
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/ocr-console.ps1
+      - hack/layersentry/ocr-request.txt
+      - .github/workflows/layersentry-console-ocr.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-hyperv-console-ocr
+  cancel-in-progress: true
+
+jobs:
+  ocr:
+    name: Capture and OCR the current installer consoles
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact OCR request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($relative in @(
+            'hack/layersentry/capture-hyperv-console.ps1',
+            'hack/layersentry/ocr-console.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}, line {1}: {2}" -f $relative, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+
+      - name: Capture and OCR consoles
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $capture = Join-Path $env:RUNNER_TEMP 'layersentry-console-ocr-capture'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-console-ocr-output'
+          foreach ($directory in @($capture, $output)) {
+            if (Test-Path -LiteralPath $directory) {
+              Remove-Item -LiteralPath $directory -Recurse -Force
+            }
+            New-Item -Path $directory -ItemType Directory -Force | Out-Null
+          }
+
+          & 'hack/layersentry/capture-hyperv-console.ps1' `
+            -VmNames @('sen1', 'sen2', 'sen3') `
+            -OutputDirectory $capture
+
+          $failures = New-Object System.Collections.Generic.List[string]
+          foreach ($vm in @('sen1', 'sen2', 'sen3')) {
+            $image = Join-Path $capture "$vm-console.png"
+            $json = Join-Path $output "$vm-ocr.json"
+            try {
+              & 'hack/layersentry/ocr-console.ps1' `
+                -ImagePath $image `
+                -OutputPath $json
+            }
+            catch {
+              $failures.Add("$vm: $($_.Exception.Message)")
+              [ordered]@{
+                schemaVersion = '1.0'
+                sourceImage = "$vm-console.png"
+                error = $_.Exception.Message
+                text = ''
+              } | ConvertTo-Json -Depth 5 |
+                Set-Content -LiteralPath $json -Encoding UTF8
+            }
+          }
+
+          Copy-Item -Path (Join-Path $capture '*') -Destination $output -Force
+          [ordered]@{
+            schemaVersion = '1.0'
+            sourceCommit = '${{ github.sha }}'
+            sourceRunId = '${{ github.run_id }}'
+            capturedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            failures = @($failures)
+          } | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $output 'metadata.json') -Encoding UTF8
+          "OCR_OUTPUT=$output" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Persist current OCR evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'hack/layersentry/runtime-evidence/ocr-latest'
+          if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $destination -Recurse -Force
+          }
+          New-Item -Path $destination -ItemType Directory -Force | Out-Null
+          Copy-Item -Path (Join-Path $env:OCR_OUTPUT '*') -Destination $destination -Force
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- 'hack/layersentry/runtime-evidence/ocr-latest'
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'No OCR evidence changes to commit.'
+            exit 0
+          }
+          git commit -m 'ops(evidence): refresh console OCR [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw "git commit failed with exit code $LASTEXITCODE"
+          }
+          git push origin "HEAD:${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "git push failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload OCR evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-console-ocr-${{ github.run_id }}
+          path: ${{ env.OCR_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
