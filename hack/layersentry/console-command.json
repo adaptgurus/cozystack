@@ -1,25 +1,22 @@
 {
-  "requestId": "select-eth0-management-nic-20260902-01",
-  "delayAfterSeconds": 8,
+  "requestId": "leave-management-vlan-untagged-20260902-01",
+  "delayAfterSeconds": 6,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 32},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 32},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 32},
         {"kind": "key", "code": 13}
       ]
     }
