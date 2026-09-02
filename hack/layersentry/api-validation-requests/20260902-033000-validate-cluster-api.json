@@ -1,0 +1,10 @@
+{
+  "requestId": "validate-harvester-cluster-api-20260902-033000",
+  "operation": "VALIDATE_HARVESTER_CLUSTER_API",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "expectedNodes": ["sen1", "sen2", "sen3"],
+  "credentialSource": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
