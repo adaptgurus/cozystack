@@ -1,0 +1,12 @@
+{
+  "requestId": "capture-after-join-ntp-repair-20260902-01",
+  "delayAfterSeconds": 3,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    }
+  ]
+}
