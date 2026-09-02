@@ -1,28 +1,25 @@
 {
-  "requestId": "set-node-hostnames-20260902-01",
+  "requestId": "set-poc-dns-servers-20260902-01",
   "delayAfterSeconds": 10,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "text", "value": "sen1"},
-        {"kind": "sleep", "milliseconds": 500},
+        {"kind": "text", "value": "8.8.8.8,1.1.1.1"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "text", "value": "sen2"},
-        {"kind": "sleep", "milliseconds": 500},
+        {"kind": "text", "value": "8.8.8.8,1.1.1.1"},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "text", "value": "sen3"},
-        {"kind": "sleep", "milliseconds": 500},
+        {"kind": "text", "value": "8.8.8.8,1.1.1.1"},
         {"kind": "key", "code": 13}
       ]
     }
