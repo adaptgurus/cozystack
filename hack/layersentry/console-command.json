@@ -1,25 +1,11 @@
 {
-  "requestId": "set-cluster-vip-and-management-address-20260902-01",
+  "requestId": "set-sen1-cluster-token-20260902-01",
   "delayAfterSeconds": 10,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "text", "value": "10.10.10.10"},
-        {"kind": "key", "code": 13}
-      ]
-    },
-    {
-      "vm": "sen2",
-      "actions": [
-        {"kind": "text", "value": "10.10.10.10"},
-        {"kind": "key", "code": 13}
-      ]
-    },
-    {
-      "vm": "sen3",
-      "actions": [
-        {"kind": "text", "value": "10.10.10.10"},
+        {"kind": "secret", "name": "clusterToken"},
         {"kind": "key", "code": 13}
       ]
     }
