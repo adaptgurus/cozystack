@@ -1,0 +1,20 @@
+{
+  "requestId": "skip-join-node-proxy-20260902-01",
+  "delayAfterSeconds": 20,
+  "targets": [
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 8000}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 8000}
+      ]
+    }
+  ]
+}
