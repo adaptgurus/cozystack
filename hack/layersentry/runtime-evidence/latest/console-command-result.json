@@ -1,39 +1,16 @@
 ﻿{
     "SchemaVersion":  "2.1",
-    "RequestId":  "confirm-join-node-installations-20260902-01",
-    "ExecutedAtUtc":  "2026-09-02T02:11:36.3731928Z",
+    "RequestId":  "refresh-after-all-install-submissions-20260902-02",
+    "ExecutedAtUtc":  "2026-09-02T02:18:05.3951724Z",
     "Host":  "TESTSER",
-    "CredentialPathUsed":  "local-secure-store",
+    "CredentialPathUsed":  null,
     "Results":  [
                     {
-                        "VM":  "sen2",
+                        "VM":  "sen1",
                         "Actions":  [
                                         {
-                                            "Kind":  "secret",
-                                            "Name":  "nodePassword",
-                                            "CharacterCount":  24,
-                                            "Status":  "success"
-                                        },
-                                        {
-                                            "Kind":  "key",
-                                            "Code":  13,
-                                            "Status":  "success"
-                                        }
-                                    ],
-                        "StateAfter":  "Running"
-                    },
-                    {
-                        "VM":  "sen3",
-                        "Actions":  [
-                                        {
-                                            "Kind":  "secret",
-                                            "Name":  "nodePassword",
-                                            "CharacterCount":  24,
-                                            "Status":  "success"
-                                        },
-                                        {
-                                            "Kind":  "key",
-                                            "Code":  13,
+                                            "Kind":  "sleep",
+                                            "Milliseconds":  100,
                                             "Status":  "success"
                                         }
                                     ],
