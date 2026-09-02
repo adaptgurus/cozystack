@@ -1,0 +1,14 @@
+@media (max-width: 860px) {
+  .app-shell {
+    grid-template:
+      "topbar" auto
+      "sidebar" auto
+      "main" minmax(0, 1fr)
+      "footer" auto /
+      minmax(0, 1fr);
+  }
+
+  .sidebar {
+    grid-area: sidebar;
+  }
+}
