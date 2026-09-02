@@ -1,0 +1,19 @@
+{
+  "requestId": "controlled-node-failure-recovery-20260902-060000",
+  "operation": "VALIDATE_CONTROLLED_NODE_FAILURE_AND_GUEST_RECOVERY",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "allowedHyperVVirtualMachines": ["sen1", "sen2", "sen3"],
+  "selectFailureNodeFromRetainedGuestPlacement": true,
+  "retainedVirtualMachine": "layersentry-validation/layersentry-smoke-vm",
+  "retainedStoragePvc": "layersentry-validation/layersentry-storage-vm-disk",
+  "allowForcedHyperVPowerOff": true,
+  "requireVipSurvival": true,
+  "requireAtLeastTwoReadyNodesDuringFailure": true,
+  "requireGuestRecoveryOnDifferentNode": true,
+  "requireLonghornVolumeNotFaulted": true,
+  "requireAutomaticRestartInFinally": true,
+  "requireThreeReadyNodesAfterRecovery": true,
+  "testClassification": "NESTED_POC_NOT_PHYSICAL_HOST_CERTIFICATION",
+  "productionReleaseApprovalImplied": false
+}
