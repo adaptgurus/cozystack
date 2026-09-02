@@ -32,16 +32,18 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $paths = @(
-            git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/commands/*.json'
-          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          [string[]]$paths = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/commands/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
           if ($LASTEXITCODE -ne 0) {
             throw "git diff-tree failed with exit code $LASTEXITCODE"
           }
           if ($paths.Count -ne 1) {
             throw "Expected exactly one queued command file in this commit; found $($paths.Count): $($paths -join ', ')"
           }
-          $requestPath = $paths[0].Trim()
+          $requestPath = ([string]$paths[0]).Trim()
           if (-not (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
             throw "Queued command file does not exist: $requestPath"
           }
@@ -61,7 +63,9 @@ jobs:
             [ref]$errors
           )
           if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message) }
+            $errors | ForEach-Object {
+              Write-Error ("Line {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message)
+            }
             exit 1
           }
 
@@ -91,6 +95,6 @@ jobs:
           path: |
             ${{ runner.temp }}\layersentry-console-command
             ${{ runner.temp }}\layersentry-console-after-command
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
           compression-level: 6
