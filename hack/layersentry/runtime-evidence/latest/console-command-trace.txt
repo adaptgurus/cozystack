@@ -1,4 +1,7 @@
-﻿start 2026-09-02T09:38:07.5784993+05:30
+﻿start 2026-09-02T09:43:39.2912947+05:30
 target=sen1
+sent-text-as-keys vm=sen1 chars=15
 target=sen2
+sent-text-as-keys vm=sen2 chars=11
 target=sen3
+sent-text-as-keys vm=sen3 chars=11

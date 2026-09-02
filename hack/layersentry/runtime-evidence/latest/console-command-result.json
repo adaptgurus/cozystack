@@ -1,7 +1,7 @@
 ﻿{
     "SchemaVersion":  "2.1",
-    "RequestId":  "capture-installer-state-after-monitor-cancellation-20260902-01",
-    "ExecutedAtUtc":  "2026-09-02T04:08:14.7787294Z",
+    "RequestId":  "correct-ntp-and-management-addresses-20260902-01",
+    "ExecutedAtUtc":  "2026-09-02T04:14:40.9693126Z",
     "Host":  "TESTSER",
     "CredentialPathUsed":  null,
     "Results":  [
@@ -9,8 +9,168 @@
                         "VM":  "sen1",
                         "Actions":  [
                                         {
-                                            "Kind":  "sleep",
-                                            "Milliseconds":  100,
+                                            "Kind":  "key",
+                                            "Code":  36,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "text",
+                                            "CharacterCount":  15,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  13,
                                             "Status":  "success"
                                         }
                                     ],
@@ -20,8 +180,288 @@
                         "VM":  "sen2",
                         "Actions":  [
                                         {
-                                            "Kind":  "sleep",
-                                            "Milliseconds":  100,
+                                            "Kind":  "key",
+                                            "Code":  36,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "text",
+                                            "CharacterCount":  11,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  13,
                                             "Status":  "success"
                                         }
                                     ],
@@ -31,8 +471,288 @@
                         "VM":  "sen3",
                         "Actions":  [
                                         {
-                                            "Kind":  "sleep",
-                                            "Milliseconds":  100,
+                                            "Kind":  "key",
+                                            "Code":  36,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  46,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "text",
+                                            "CharacterCount":  11,
+                                            "Status":  "success"
+                                        },
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  13,
                                             "Status":  "success"
                                         }
                                     ],
