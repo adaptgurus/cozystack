@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0",
+  "requestId": "qualify-layersentry-ui-production-20260903-01",
+  "operation": "QUALIFY_LAYERSENTRY_UI_RELEASE_CANDIDATE",
+  "authorization": "REPOSITORY_BUILD_AND_TEST_ONLY",
+  "sourcePackage": "hack/layersentry/ui-production-v3",
+  "expectedProduct": "LayerSentry",
+  "expectedReleaseChannel": "release-candidate",
+  "requireDependencyFreeBuild": true,
+  "requireResponsiveCorrection": true,
+  "requireSecurityHeaderInheritanceProof": true,
+  "requireReproducibleAssembly": true,
+  "requireIntegrityManifest": true,
+  "requireSpdxSbom": true,
+  "requireHardenedDeploymentTemplate": true,
+  "liveClusterDeploymentAuthorized": false,
+  "readBootstrapCredentialFile": false,
+  "writeCredentialValuesToEvidence": false,
+  "publishKubeconfig": false,
+  "productionReleaseApprovalImplied": false
+}
