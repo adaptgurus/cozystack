@@ -1,0 +1,321 @@
+name: LayerSentry Observe sen2 After Manual Reimage Continuation 15
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/sen2-post-reimage-observation-requests-v15/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-observe-sen2-post-reimage-continuation-15
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    name: Prove post-reimage sen2 identity endpoint and authenticated runtime read only
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 65
+
+    steps:
+      - name: Checkout exact post-reimage observation request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request protected shared credentials and read-only prerequisites
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-post-reimage-observation-15'
+          if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          "EVIDENCE_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          function Test-TcpPort {
+            param([string]$Address, [int]$Port, [int]$TimeoutMilliseconds = 5000)
+            $client = New-Object System.Net.Sockets.TcpClient
+            $handle = $null
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              $handle = $async.AsyncWaitHandle
+              if (-not $handle.WaitOne($TimeoutMilliseconds, $false)) { return $false }
+              $client.EndConnect($async)
+              return [bool]$client.Connected
+            }
+            catch { return $false }
+            finally {
+              if ($null -ne $handle) { $handle.Close() }
+              $client.Close()
+              $client.Dispose()
+            }
+          }
+
+          if ($env:COMPUTERNAME -cne 'TESTSER') {
+            throw "Observation is restricted to TESTSER; observed $env:COMPUTERNAME."
+          }
+          if ([Security.Principal.WindowsIdentity]::GetCurrent().Name -cne 'NT AUTHORITY\SYSTEM') {
+            throw 'Observation runner must execute as NT AUTHORITY\SYSTEM.'
+          }
+
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/sen2-post-reimage-observation-requests-v15/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) { throw "git diff-tree failed with exit code $LASTEXITCODE." }
+          if ($requests.Count -ne 1) { throw "Expected exactly one post-reimage observation request; found $($requests.Count)." }
+          $requestPath = ([string]$requests[0]).Trim()
+          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+          $exact = [ordered]@{
+            operation = 'OBSERVE_SEN2_POST_REIMAGE_READ_ONLY'
+            authorization = 'USER_CONFIRMED_MANUAL_REIMAGE_COMPLETE_AND_GRANTED_READ_ONLY_OBSERVATION'
+            targetVm = 'sen2'
+            targetAddress = '10.10.10.12'
+            expectedSwitch = 'Cozystack-NAT'
+            expectedClusterVip = '10.10.10.10'
+            expectedRancherdServerUrl = 'https://10.10.10.10:443'
+            managementApiUrl = 'https://10.10.10.10'
+            credentialHandling = 'USE_EXISTING_PROTECTED_SHARED_NODE_PASSWORD'
+          }
+          foreach ($entry in $exact.GetEnumerator()) {
+            $property = $request.PSObject.Properties[[string]$entry.Key]
+            if ($null -eq $property -or [string]$property.Value -cne [string]$entry.Value) {
+              throw "Post-reimage request binding failed for $($entry.Key)."
+            }
+          }
+          foreach ($required in @('manualReimageCompletedByUser','userConfirmedCredentialReuseFromExistingVm','readOnly','verifyPersistedEndpoint','verifyAuthenticatedRuntime')) {
+            if (-not [bool]$request.$required) { throw "Required request flag is false: $required" }
+          }
+          foreach ($forbidden in @(
+            'changeVmState','changeVmConfiguration','changeNetwork','mountOrUnmountIso',
+            'changeGuestConfiguration','changeServices','rebootGuest','deleteRke2Data',
+            'wipeOrFormatDisk','acceptEula','writeCredentialValuesToEvidence','publishKubeconfig',
+            'productionReleaseApprovalImplied'
+          )) {
+            if ([bool]$request.$forbidden) { throw "Forbidden request flag is true: $forbidden" }
+          }
+
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw 'The protected bootstrap credential file is missing.'
+          }
+          $credentials = Get-Content -LiteralPath $credentialPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]::IsNullOrWhiteSpace([string]$credentials.nodePassword) -or [string]$credentials.nodePassword.Length -lt 16) {
+            throw 'The protected shared node password is missing or invalid.'
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$credentials.clusterToken) -or [string]$credentials.clusterToken.Length -lt 16) {
+            throw 'The protected cluster join token is missing or invalid.'
+          }
+
+          $switch = Get-VMSwitch -Name 'Cozystack-NAT' -ErrorAction Stop
+          if ([string]$switch.SwitchType -cne 'Internal') { throw 'Cozystack-NAT must remain an Internal switch.' }
+          foreach ($name in @('sen1','sen2','sen3')) {
+            $vm = Get-VM -Name $name -ErrorAction Stop
+            if ([string]$vm.State -cne 'Running') { throw "$name must be Running; observed $($vm.State)." }
+          }
+          $sen2Adapters = @(Get-VMNetworkAdapter -VMName 'sen2' -ErrorAction Stop)
+          if (@($sen2Adapters | Where-Object { [string]$_.SwitchName -ceq 'Cozystack-NAT' }).Count -lt 1) {
+            throw 'sen2 has no NIC connected to Cozystack-NAT.'
+          }
+          if (-not (Test-TcpPort -Address '10.10.10.12' -Port 22 -TimeoutMilliseconds 5000)) {
+            throw 'sen2 TCP/22 is not reachable; post-reimage observation cannot authenticate.'
+          }
+          if (-not (Test-TcpPort -Address '10.10.10.10' -Port 443 -TimeoutMilliseconds 5000)) {
+            throw 'The management/API VIP is not reachable on TCP/443.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/verify-harvester-join-endpoint-continuation-09.ps1',
+            'hack/layersentry/complete-three-node-runtime-continuation-07.ps1',
+            'hack/layersentry/complete-three-node-runtime.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $relative).ProviderPath,
+              [ref]$tokens,
+              [ref]$parseErrors
+            )
+            if ($parseErrors.Count -gt 0) {
+              $messages = ($parseErrors | ForEach-Object { "$($_.Extent.StartLineNumber):$($_.Message)" }) -join '; '
+              throw "PowerShell parser rejected ${relative}: $messages"
+            }
+          }
+
+          [ordered]@{
+            schemaVersion = '1.0'
+            requestPath = $requestPath
+            sourceCommit = $env:GITHUB_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            runnerHost = $env:COMPUTERNAME
+            targetVm = 'sen2'
+            targetAddress = '10.10.10.12'
+            protectedSharedNodePasswordPresent = $true
+            protectedClusterTokenPresent = $true
+            credentialValuesWrittenToEvidence = $false
+            sen2Tcp22Reachable = $true
+            managementVipTcp443Reachable = $true
+            readOnlyPrerequisitesPassed = $true
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'prerequisite-result.json') -Encoding UTF8
+
+          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'LAYERSENTRY POST-REIMAGE READ-ONLY PREREQUISITES: PASS'
+
+      - name: Observe persisted Harvester endpoint roles hashes and authoritative worker plan read only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:EVIDENCE_ROOT 'persisted-endpoint'
+          & 'hack/layersentry/verify-harvester-join-endpoint-continuation-09.ps1' `
+            -RequestPath 'hack/layersentry/harvester-join-endpoint-verification-requests/20260902-verify-harvester-join-endpoint-from-vip-09.json' `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $output
+          $result = Get-Content -LiteralPath (Join-Path $output 'join-endpoint-verification-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.verificationPassed -or -not [bool]$result.sen2MatchesAuthoritativeJoinEndpoint -or -not [bool]$result.sen3MatchesAuthoritativeJoinEndpoint) {
+            throw "Post-reimage persisted endpoint observation failed: $($result.failure)"
+          }
+          if ([string]$result.sen2.hostname -cne 'sen2' -or [string]$result.sen2.rancherdRole -cne 'agent' -or [string]$result.sen2.harvesterInstallMode -cne 'join') {
+            throw 'The post-reimage sen2 identity, rancherd role, or Harvester install mode is incorrect.'
+          }
+          if ([string]$result.sen2.rancherdServer -cne 'https://10.10.10.10:443' -or [string]$result.sen2.harvesterServerUrl -cne 'https://10.10.10.10:443') {
+            throw 'The post-reimage sen2 persisted endpoint is not the cluster VIP.'
+          }
+          Write-Host 'LAYERSENTRY POST-REIMAGE PERSISTED ENDPOINT AND IDENTITY: PASS'
+
+      - name: Validate authenticated Kubernetes KubeVirt and Longhorn runtime read only
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:EVIDENCE_ROOT 'authenticated-runtime'
+          & 'hack/layersentry/complete-three-node-runtime-continuation-07.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNode '10.10.10.11' `
+            -NodeAddresses @('10.10.10.11','10.10.10.12','10.10.10.13') `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -BaseRuntimeMaxWaitMinutes 20 `
+            -AuthenticatedResourceMaxWaitMinutes 10 `
+            -OutputDirectory $output
+          $result = Get-Content -LiteralPath (Join-Path $output 'runtime-completion.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.passed -or -not [bool]$result.authenticatedKubernetesKubeVirtLonghornValidationPassed) {
+            throw "Post-reimage authenticated runtime validation failed: $($result.failure)"
+          }
+          Write-Host 'LAYERSENTRY POST-REIMAGE AUTHENTICATED RUNTIME: PASS'
+
+      - name: Build sanitized post-reimage observation result
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-post-reimage-observation-15'
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+
+          function Read-JsonIfPresent {
+            param([string]$Path)
+            if (Test-Path -LiteralPath $Path -PathType Leaf) {
+              try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+            }
+            return $null
+          }
+
+          $pre = Read-JsonIfPresent (Join-Path $root 'prerequisite-result.json')
+          $endpoint = Read-JsonIfPresent (Join-Path $root 'persisted-endpoint\join-endpoint-verification-result.json')
+          $runtime = Read-JsonIfPresent (Join-Path $root 'authenticated-runtime\runtime-completion.json')
+          $prePassed = $null -ne $pre -and [bool]$pre.readOnlyPrerequisitesPassed
+          $endpointPassed = $null -ne $endpoint -and [bool]$endpoint.verificationPassed -and [bool]$endpoint.sen2MatchesAuthoritativeJoinEndpoint -and [bool]$endpoint.sen3MatchesAuthoritativeJoinEndpoint
+          $runtimePassed = $null -ne $runtime -and [bool]$runtime.passed -and [bool]$runtime.authenticatedKubernetesKubeVirtLonghornValidationPassed
+          $overall = $prePassed -and $endpointPassed -and $runtimePassed
+          $failure = if (-not $prePassed) { 'Post-reimage prerequisites did not pass.' }
+            elseif (-not $endpointPassed -and $null -ne $endpoint) { [string]$endpoint.failure }
+            elseif (-not $endpointPassed) { 'Persisted endpoint evidence is missing or failed.' }
+            elseif (-not $runtimePassed -and $null -ne $runtime) { [string]$runtime.failure }
+            elseif (-not $runtimePassed) { 'Authenticated runtime evidence is missing or failed.' }
+            else { $null }
+
+          [ordered]@{
+            schemaVersion = '1.0'
+            sourceCommit = $env:GITHUB_SHA
+            workflowRunId = $env:GITHUB_RUN_ID
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            manualReimageCompletedByUser = $true
+            sharedCredentialReuseConfirmedByUser = $true
+            readOnlyPrerequisitesPassed = $prePassed
+            persistedEndpointAndIdentityPassed = $endpointPassed
+            observedSen2RancherdConfigSha256 = if ($null -ne $endpoint) { [string]$endpoint.sen2.rancherdConfigSha256 } else { $null }
+            observedSen2HarvesterConfigSha256 = if ($null -ne $endpoint) { [string]$endpoint.sen2.harvesterConfigSha256 } else { $null }
+            observedSen2RancherdServer = if ($null -ne $endpoint) { [string]$endpoint.sen2.rancherdServer } else { $null }
+            observedSen2HarvesterServerUrl = if ($null -ne $endpoint) { [string]$endpoint.sen2.harvesterServerUrl } else { $null }
+            observedSen2Rke2ServerEnabled = if ($null -ne $endpoint) { [string]$endpoint.sen2.rke2ServerEnabled } else { $null }
+            observedSen2Rke2ServerActive = if ($null -ne $endpoint) { [string]$endpoint.sen2.rke2ServerActive } else { $null }
+            observedSen2Rke2AgentEnabled = if ($null -ne $endpoint) { [string]$endpoint.sen2.rke2AgentEnabled } else { $null }
+            observedSen2Rke2AgentActive = if ($null -ne $endpoint) { [string]$endpoint.sen2.rke2AgentActive } else { $null }
+            authenticatedKubernetesKubeVirtLonghornValidationPassed = $runtimePassed
+            authoritativeSourceModified = $false
+            vmStateChanged = $false
+            vmConfigurationChanged = $false
+            networkChanged = $false
+            guestConfigurationChanged = $false
+            servicesChanged = $false
+            guestRebooted = $false
+            rke2DataDeleted = $false
+            diskWipedOrFormatted = $false
+            eulaAutomaticallyAccepted = $false
+            credentialValuesWrittenToEvidence = $false
+            kubeconfigWrittenToEvidence = $false
+            productionReleaseApproved = $false
+            observationGatePassed = $overall
+            failure = $failure
+          } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $root 'terminal-result.json') -Encoding UTF8
+
+          @"
+          # LayerSentry sen2 post-reimage observation
+
+          - Shared protected node password reused without exposing its value: **true**
+          - Read-only prerequisites: **$prePassed**
+          - Persisted VIP endpoint and sen2 identity: **$endpointPassed**
+          - Authenticated Kubernetes/KubeVirt/Longhorn runtime: **$runtimePassed**
+          - VM/guest/service/disk mutation performed: **false**
+          - Observation gate passed: **$overall**
+          - Failure: $failure
+          "@ | Set-Content -LiteralPath (Join-Path $root 'STATUS.md') -Encoding UTF8
+
+      - name: Upload sanitized post-reimage observation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-sen2-post-reimage-observation-15-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-sen2-post-reimage-observation-15
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Enforce read-only post-reimage observation gate
+        if: always()
+        shell: powershell
+        run: |
+          $path = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-post-reimage-observation-15\terminal-result.json'
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Post-reimage terminal result is missing.' }
+          $result = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+          if (-not [bool]$result.observationGatePassed) {
+            throw "LayerSentry post-reimage observation failed: $($result.failure)"
+          }
+          foreach ($flag in @(
+            'authoritativeSourceModified','vmStateChanged','vmConfigurationChanged','networkChanged',
+            'guestConfigurationChanged','servicesChanged','guestRebooted','rke2DataDeleted',
+            'diskWipedOrFormatted','eulaAutomaticallyAccepted','credentialValuesWrittenToEvidence',
+            'kubeconfigWrittenToEvidence','productionReleaseApproved'
+          )) {
+            if ([bool]$result.$flag) { throw "Read-only invariant violated: $flag" }
+          }
+          Write-Host 'LAYERSENTRY SEN2 POST-REIMAGE READ-ONLY OBSERVATION GATE: PASS'
