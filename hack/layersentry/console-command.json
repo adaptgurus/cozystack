@@ -1,6 +1,6 @@
 {
-  "requestId": "proceed-clean-poc-hardware-checks-20260902-01",
-  "delayAfterSeconds": 8,
+  "requestId": "select-clean-create-and-join-paths-20260902-01",
+  "delayAfterSeconds": 7,
   "targets": [
     {
       "vm": "sen1",
@@ -11,12 +11,18 @@
     {
       "vm": "sen2",
       "actions": [
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 1500},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13},
+        {"kind": "sleep", "milliseconds": 1500},
         {"kind": "key", "code": 13}
       ]
     }
