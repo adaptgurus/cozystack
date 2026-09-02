@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "requestId": "capture-sen2-recovery-server-url-guard-fix-07",
+  "operation": "CAPTURE_SANITIZED_SEN2_RECOVERY_EVIDENCE",
+  "targetWorkflowPath": ".github/workflows/layersentry-resume-sen2-service-continuation-06.yml",
+  "targetRequestFile": "20260902-continue-after-server-url-guard-fix-07.json",
+  "minimumExclusiveRunId": 33648778779,
+  "targetBranch": "ops/layersentry-hyperv-inventory",
+  "sanitizedEvidenceOnly": true,
+  "readProtectedCredentialFile": false,
+  "modifyVirtualMachines": false,
+  "modifyCluster": false,
+  "acceptEula": false,
+  "publishPasswordTokenOrKubeconfig": false
+}
