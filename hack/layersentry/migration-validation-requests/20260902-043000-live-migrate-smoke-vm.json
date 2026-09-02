@@ -1,0 +1,13 @@
+{
+  "requestId": "live-migrate-layersentry-smoke-vm-20260902-043000",
+  "operation": "LIVE_MIGRATE_RETAINED_KUBEVIRT_VM",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "namespace": "layersentry-validation",
+  "virtualMachine": "layersentry-smoke-vm",
+  "requireNodeChange": true,
+  "requireGuestSshContinuity": true,
+  "retainVmAfterTest": true,
+  "testClassification": "NESTED_POC_NOT_PHYSICAL_HOST_CERTIFICATION",
+  "productionReleaseApprovalImplied": false
+}
