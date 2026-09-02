@@ -86,6 +86,18 @@ jobs:
             '[Parameter(Mandatory = $true)][string]$Value',
             '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value'
           )
+          $inputEncodingNeedle = '    $startInfo.RedirectStandardError = $true'
+          $inputEncodingReplacement = @(
+            '    $startInfo.RedirectStandardError = $true'
+            '    $startInfo.StandardInputEncoding = New-Object System.Text.UTF8Encoding($false)'
+          ) -join "`n"
+          $scriptText = $scriptText.Replace($inputEncodingNeedle, $inputEncodingReplacement)
+          $standardInputNeedle = '    $process.StandardInput.Write($remoteScript)'
+          $standardInputReplacement = @(
+            '    $remoteScript = ($remoteScript -replace "`r`n", "`n").TrimStart([char]0xFEFF)'
+            '    $process.StandardInput.Write($remoteScript)'
+          ) -join "`n"
+          $scriptText = $scriptText.Replace($standardInputNeedle, $standardInputReplacement)
           [System.IO.File]::WriteAllText(
             $scriptPath,
             $scriptText,
