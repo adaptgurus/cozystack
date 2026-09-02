@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:layersentry:ui:overview:v1",
+  "title": "LayerSentry production UI overview response",
+  "description": "Minimum read-only aggregate status returned to the LayerSentry management shell. Secrets, credentials, kubeconfigs and raw Kubernetes objects are not permitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "health",
+    "environment",
+    "version",
+    "observedAt",
+    "nodes",
+    "virtualMachines",
+    "storage",
+    "alerts",
+    "events"
+  ],
+  "properties": {
+    "health": {
+      "type": "string",
+      "enum": ["healthy", "degraded", "critical", "unknown"]
+    },
+    "environment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "total", "items"],
+      "properties": {
+        "ready": { "$ref": "#/$defs/count" },
+        "total": { "$ref": "#/$defs/count" },
+        "items": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    },
+    "virtualMachines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["running", "total"],
+      "properties": {
+        "running": { "$ref": "#/$defs/count" },
+        "total": { "$ref": "#/$defs/count" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usedBytes", "totalBytes", "healthyVolumes", "totalVolumes"],
+      "properties": {
+        "usedBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "totalBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "healthyVolumes": { "$ref": "#/$defs/count" },
+        "totalVolumes": { "$ref": "#/$defs/count" }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "warning", "total"],
+      "properties": {
+        "critical": { "$ref": "#/$defs/count" },
+        "warning": { "$ref": "#/$defs/count" },
+        "total": { "$ref": "#/$defs/count" }
+      }
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "nonNegativeNumber": {
+      "type": "number",
+      "minimum": 0
+    },
+    "percentage": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "address", "role", "state", "cpuPercent", "memoryPercent"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "state": {
+          "type": "string",
+          "enum": ["ready", "warning", "not-ready", "unknown"]
+        },
+        "cpuPercent": {
+          "anyOf": [
+            { "$ref": "#/$defs/percentage" },
+            { "type": "null" }
+          ]
+        },
+        "memoryPercent": {
+          "anyOf": [
+            { "$ref": "#/$defs/percentage" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "resource", "message", "timestamp"],
+      "properties": {
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "critical"]
+        },
+        "resource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 64
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}
