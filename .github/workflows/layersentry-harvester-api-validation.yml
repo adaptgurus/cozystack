@@ -77,6 +77,12 @@ jobs:
             '$Method $Uri: $statusText',
             '$Method ${Uri}: $statusText'
           )
+          $stderrNeedle = '        $stderrText = (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim()'
+          $stderrReplacement = @(
+            '        $stderrText = [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue)'
+            '        $stderrText = $stderrText.Trim()'
+          ) -join "`n"
+          $correctedText = $correctedText.Replace($stderrNeedle, $stderrReplacement)
           [System.IO.File]::WriteAllText(
             $validatorPath,
             $correctedText,
