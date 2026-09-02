@@ -1,4 +1,4 @@
-name: LayerSentry Continue sen2 Service Repair After Source Pass
+name: LayerSentry Continue sen2 Service Repair After Exact Endpoint Verification
 
 on:
   push:
@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   continue-repair:
-    name: Continue sen2 service repair, stability, and authenticated runtime validation
+    name: Verify endpoints, repair sen2, prove stability, and validate authenticated runtime
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 85
+    timeout-minutes: 100
 
     steps:
       - name: Checkout exact service-continuation request
@@ -28,10 +28,26 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Validate continuation request and execution sources
+      - name: Validate continuation request, runner, and execution sources
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:RUNNER_NAME -cne 'TESTSER') {
+            throw "This continuation is restricted to runner TESTSER; observed $env:RUNNER_NAME."
+          }
+          if ($env:COMPUTERNAME -cne 'TESTSER') {
+            throw "This continuation is restricted to Hyper-V host TESTSER; observed $env:COMPUTERNAME."
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          if ($identity -ne 'NT AUTHORITY\SYSTEM') {
+            throw "This continuation must run as NT AUTHORITY\SYSTEM; observed $identity."
+          }
+          $credentialPath = 'C:\ProgramData\LayerSentry\bootstrap-credentials.json'
+          if (-not (Test-Path -LiteralPath $credentialPath -PathType Leaf)) {
+            throw "Protected credential file is missing: $credentialPath"
+          }
 
           [string[]]$requests = @(
             @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/sen2-service-continuation-requests/*.json') |
@@ -42,49 +58,117 @@ jobs:
             throw "git diff-tree failed with exit code $LASTEXITCODE"
           }
           if ($requests.Count -ne 1) {
-            throw "Expected exactly one sen2 service-continuation request; found $($requests.Count)."
+            throw "Expected exactly one newly committed sen2 continuation request; found $($requests.Count)."
           }
 
           $requestPath = ([string]$requests[0]).Trim()
+          if ($requestPath -eq 'hack/layersentry/sen2-service-continuation-requests/20260902-continue-after-verifier-false-negative-06.json') {
+            throw 'Run 33648778779 must not be re-run with its unchanged continuation request.'
+          }
+          if ([System.IO.Path]::GetFileName($requestPath) -cne '20260902-continue-after-server-url-guard-fix-07.json') {
+            throw "Unexpected continuation request name: $requestPath"
+          }
+
           $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.requestId -cne 'repair-sen2-agent-service-20260902-server-url-guard-fix-07') {
+            throw 'The requestId is not the unique server-URL-guard-fix continuation identifier.'
+          }
           if ([string]$request.operation -ne 'REPAIR_SEN2_AGENT_SERVICE_CONFLICT') {
             throw "Unsupported operation: $($request.operation)"
           }
           if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
             throw 'The request is missing the user authorization marker.'
           }
-          if ([string]$request.targetNode -ne 'sen2' -or [string]$request.targetAddress -ne '10.10.10.12') {
+          if ([string]$request.targetNode -cne 'sen2' -or [string]$request.targetAddress -cne '10.10.10.12') {
             throw 'This continuation is restricted to sen2 at 10.10.10.12.'
           }
-          if ([string]$request.primaryNode -ne '10.10.10.11') {
-            throw 'The primary node must be sen1 at 10.10.10.11.'
+          if ([string]$request.peerNode -cne 'sen3' -or [string]$request.peerAddress -cne '10.10.10.13') {
+            throw 'The read-only comparison peer must be sen3 at 10.10.10.13.'
           }
-          if ([string]$request.expectedRancherdRole -ne 'agent') {
+          if ([string]$request.primaryNode -cne '10.10.10.11') {
+            throw 'The authoritative plan must be verified through sen1 at 10.10.10.11.'
+          }
+          if ([string]$request.expectedRancherdRole -cne 'agent') {
             throw 'The expected rancherd role must be agent.'
+          }
+          if ([string]$request.expectedRancherdServerUrl -cne 'https://10.10.10.11:443') {
+            throw 'The exact expected rancherd bootstrap/join endpoint must be https://10.10.10.11:443.'
+          }
+          if ([string]$request.managementApiUrl -cne 'https://10.10.10.10') {
+            throw 'The management/API VIP must be https://10.10.10.10.'
+          }
+          if ([string]$request.expectedTargetMachineName -cne 'fleet-local/custom-81a2c5e94b13') {
+            throw 'The request is not bound to the authoritative sen2 Rancher machine.'
+          }
+          if ([string]$request.expectedCapiMachineUid -cne 'fbc63284-6a86-4827-b2df-477ece763cad') {
+            throw 'Unexpected CAPI Machine UID.'
+          }
+          if ([string]$request.expectedRkeBootstrapUid -cne '7d1481a5-cff7-4903-bbc0-874b8d764c04') {
+            throw 'Unexpected RKEBootstrap UID.'
+          }
+          if ([string]$request.expectedCustomMachineUid -cne '54e8ea49-b617-475a-b422-4e1222fa768c') {
+            throw 'Unexpected CustomMachine UID.'
+          }
+          if ([string]$request.expectedPlanSecretUid -cne '73fb994b-8b32-4d9b-9599-a621ef934629') {
+            throw 'Unexpected plan Secret UID.'
+          }
+          if ([string]$request.expectedOldPlanSha256 -cne 'b24c9bdb896734ac1cde0846f32d702b7e78de1c7ec2f9733b5a99bc9bad2b7f') {
+            throw 'Unexpected failing server-plan SHA-256.'
+          }
+          if ([string]$request.expectedCorrectedPlanSha256 -cne '1ecfe7272c42cb9453d277c0620e421986dd8ebbc97183b8209ea6384012798a') {
+            throw 'Unexpected corrected worker-plan SHA-256.'
+          }
+          if ([string]$request.previousCorrectedPlanSha256 -cne [string]$request.expectedCorrectedPlanSha256) {
+            throw 'The prior and expected corrected plan SHA-256 values must exactly match.'
+          }
+          if ([string]$request.previousAuthoritativeRunId -cne '33634372658') {
+            throw 'The request is not bound to authoritative correction run 33634372658.'
+          }
+          if ([string]$request.previousVerifierRunId -cne '33637662758') {
+            throw 'The request is not bound to stopped verifier run 33637662758.'
+          }
+          if ([string]$request.previousFailedServiceContinuationRunId -cne '33648778779') {
+            throw 'The request is not bound to failed service-continuation run 33648778779.'
+          }
+          if ([string]$request.previousFailedServiceContinuationArtifactId -cne '9853867668') {
+            throw 'The request is not bound to evidence artifact 9853867668.'
           }
           if (-not [bool]$request.sourceCorrectionAlreadyPassed) {
             throw 'The authoritative source correction must already have passed.'
           }
           if (-not [bool]$request.verifyAuthoritativeWorkerStateOnly) {
-            throw 'The continuation must perform a read-only current source verification.'
+            throw 'The continuation must perform read-only current source verification.'
           }
           if ([bool]$request.mutateAuthoritativeSource) {
             throw 'The continuation must not mutate authoritative Rancher objects.'
           }
+          if (-not [bool]$request.compareRancherdServerUrlsReadOnly) {
+            throw 'Read-only sen2/sen3 rancherd server comparison is required.'
+          }
           if (-not [bool]$request.disableConflictingRke2Server) {
             throw 'The request must authorize disabling only the conflicting rke2-server service.'
           }
-          if ([string]$request.previousAuthoritativeRunId -ne '33634372658') {
-            throw 'The request is not bound to authoritative correction run 33634372658.'
+          if (-not [bool]$request.backupConfigurationBeforeRepair) {
+            throw 'Configuration backup must be required before service changes.'
           }
-          if ([string]$request.previousVerifierRunId -ne '33637662758') {
-            throw 'The request is not bound to stopped verifier run 33637662758.'
+          if (-not [bool]$request.rebootOnlySen2) {
+            throw 'Only sen2 may be rebooted.'
+          }
+          if (-not [bool]$request.runAuthenticatedRuntimeValidation) {
+            throw 'Authenticated Kubernetes, KubeVirt, and Longhorn validation is required.'
+          }
+          if ([int]$request.requiredStableSamples -ne 24 -or [int]$request.stableIntervalSeconds -ne 30) {
+            throw 'The request must require 24 consecutive samples at 30-second intervals.'
+          }
+          if (-not [bool]$request.firstRunGuiSetupRequiresManualEulaAcceptance) {
+            throw 'First-run GUI setup must preserve the manual EULA acceptance gate.'
           }
           foreach ($forbidden in @(
             'reinstallOrWipeDisks',
             'deleteRke2Data',
             'acceptEula',
             'writeCredentialValuesToEvidence',
+            'publishKubeconfig',
             'productionReleaseApprovalImplied'
           )) {
             if ([bool]$request.$forbidden) {
@@ -92,11 +176,14 @@ jobs:
             }
           }
 
-          foreach ($relative in @(
+          $powerShellSources = @(
             'hack/layersentry/verify-sen2-worker-source-continuation-06.ps1',
+            'hack/layersentry/verify-rancherd-server-endpoints-continuation-07.ps1',
             'hack/layersentry/repair-sen2-agent-service-conflict.ps1',
-            'hack/layersentry/complete-three-node-runtime.ps1'
-          )) {
+            'hack/layersentry/complete-three-node-runtime.ps1',
+            'hack/layersentry/complete-three-node-runtime-continuation-07.ps1'
+          )
+          foreach ($relative in $powerShellSources) {
             $tokens = $null
             $errors = $null
             $path = (Resolve-Path -LiteralPath $relative).ProviderPath
@@ -110,6 +197,67 @@ jobs:
                 Write-Error ("{0}:{1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
               }
               exit 1
+            }
+          }
+
+          $repairText = Get-Content -LiteralPath 'hack/layersentry/repair-sen2-agent-service-conflict.ps1' -Raw -Encoding UTF8
+          if ($repairText.Contains('https://10.10.10.10:443')) {
+            throw 'Regression: repair script still contains the management VIP as a hard-coded rancherd join URL.'
+          }
+          foreach ($marker in @(
+            'ExpectedRancherdServerUrl',
+            'LAYERSENTRY_PREFLIGHT_READONLY:PASS',
+            'if [ "$server_url" != "$expected_server" ]; then exit 64; fi',
+            'exit64RegressionGuardPassed',
+            'LAYERSENTRY_BACKUP_CREATED',
+            'systemctl disable --now rke2-server.service',
+            'systemctl enable rke2-agent.service',
+            'consecutiveStableSamples'
+          )) {
+            if (-not $repairText.Contains($marker)) {
+              throw "The repair script is missing required regression/safety marker: $marker"
+            }
+          }
+
+          $endpointText = Get-Content -LiteralPath 'hack/layersentry/verify-rancherd-server-endpoints-continuation-07.ps1' -Raw -Encoding UTF8
+          foreach ($marker in @(
+            'sen2-rancherd-config-readonly',
+            'sen3-rancherd-config-readonly',
+            'sen1-authoritative-plan-endpoint-readonly',
+            'expectedRancherdServerUrlOccurrences',
+            'managementVipTcp443Reachable',
+            'nodeConfigurationModified = $false'
+          )) {
+            if (-not $endpointText.Contains($marker)) {
+              throw "The read-only endpoint verifier is missing required marker: $marker"
+            }
+          }
+
+          $runtimeText = Get-Content -LiteralPath 'hack/layersentry/complete-three-node-runtime-continuation-07.ps1' -Raw -Encoding UTF8
+          foreach ($marker in @(
+            '/apis/kubevirt.io/v1/namespaces/harvester-system/kubevirts',
+            '/apis/longhorn.io/v1beta2/namespaces/longhorn-system/nodes',
+            'authenticatedKubernetesKubeVirtLonghornValidationPassed',
+            'kubeconfigWrittenToEvidence = $false',
+            'eulaAutomaticallyAccepted = $false'
+          )) {
+            if (-not $runtimeText.Contains($marker)) {
+              throw "The authenticated runtime wrapper is missing required marker: $marker"
+            }
+          }
+
+          foreach ($sourceText in @($repairText, $endpointText, $runtimeText)) {
+            foreach ($forbiddenText in @(
+              'rm -rf /var/lib/rancher/rke2',
+              'wipefs',
+              'Clear-Disk',
+              'Initialize-Disk',
+              'mkfs.ext',
+              'accept-eula'
+            )) {
+              if ($sourceText.IndexOf($forbiddenText, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                throw "Forbidden destructive or EULA automation text found: $forbiddenText"
+              }
             }
           }
 
@@ -140,106 +288,170 @@ jobs:
           }
 
           "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Validated sen2 service-continuation request: $requestPath"
+          "EXPECTED_RANCHERD_SERVER_URL=$([string]$request.expectedRancherdServerUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MANAGEMENT_API_URL=$([string]$request.managementApiUrl)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Validated unique sen2 continuation request: $requestPath"
 
       - name: Revalidate current authoritative worker-only source without mutation
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $sourceRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-source-continuation-06'
+          $sourceRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-source-continuation-07'
           & 'hack/layersentry/verify-sen2-worker-source-continuation-06.ps1' `
             -RequestPath $env:REQUEST_PATH `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
             -OutputDirectory $sourceRoot
 
-      - name: Repair sen2 service role and require twelve minutes of local stability
+      - name: Compare sen2 and sen3 rancherd endpoints and authoritative plan read-only
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-continuation-06'
+          $endpointRoot = Join-Path $env:RUNNER_TEMP 'layersentry-rancherd-endpoint-verification-07'
+          & 'hack/layersentry/verify-rancherd-server-endpoints-continuation-07.ps1' `
+            -RequestPath $env:REQUEST_PATH `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -OutputDirectory $endpointRoot
+
+      - name: Back up sen2, repair service role, reboot sen2, and require 24 stability samples
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-continuation-07'
           & 'hack/layersentry/repair-sen2-agent-service-conflict.ps1' `
             -RequestPath $env:REQUEST_PATH `
+            -ExpectedRancherdServerUrl $env:EXPECTED_RANCHERD_SERVER_URL `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
             -OutputDirectory $repairRoot `
             -InitialWaitMinutes 15 `
             -StableSamples 24 `
             -StableIntervalSeconds 30
 
-      - name: Complete authenticated Kubernetes, KubeVirt and Longhorn validation
+      - name: Validate authenticated Kubernetes, KubeVirt, and Longhorn through management VIP
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-continuation-06'
-          & 'hack/layersentry/complete-three-node-runtime.ps1' `
-            -ClusterUrl 'https://10.10.10.10' `
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'layersentry-three-node-runtime-continuation-07'
+          & 'hack/layersentry/complete-three-node-runtime-continuation-07.ps1' `
+            -ClusterUrl $env:MANAGEMENT_API_URL `
             -PrimaryNode '10.10.10.11' `
             -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
             -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
-            -MaxWaitMinutes 20 `
-            -OutputDirectory (Join-Path $repairRoot 'runtime')
+            -BaseRuntimeMaxWaitMinutes 20 `
+            -AuthenticatedResourceMaxWaitMinutes 10 `
+            -OutputDirectory $runtimeRoot
 
-      - name: Build sanitized continuation result
+      - name: Build sanitized recovery-gate result
         if: always()
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $sourceRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-source-continuation-06'
-          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-continuation-06'
-          $terminalRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-service-continuation-terminal-06'
+          $sourceRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-source-continuation-07'
+          $endpointRoot = Join-Path $env:RUNNER_TEMP 'layersentry-rancherd-endpoint-verification-07'
+          $repairRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-agent-service-continuation-07'
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'layersentry-three-node-runtime-continuation-07'
+          $terminalRoot = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-service-continuation-terminal-07'
           New-Item -Path $terminalRoot -ItemType Directory -Force | Out-Null
 
-          $sourcePath = Join-Path $sourceRoot 'source-verification-result.json'
-          $repairPath = Join-Path $repairRoot 'repair-result.json'
-          $runtimePath = Join-Path $repairRoot 'runtime\runtime-completion.json'
-          $source = if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
-            Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
-          } else { $null }
-          $repair = if (Test-Path -LiteralPath $repairPath -PathType Leaf) {
-            Get-Content -LiteralPath $repairPath -Raw -Encoding UTF8 | ConvertFrom-Json
-          } else { $null }
-          $runtime = if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
-            Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 | ConvertFrom-Json
-          } else { $null }
+          function Read-JsonIfPresent {
+            param([Parameter(Mandatory = $true)][string]$Path)
+            if (Test-Path -LiteralPath $Path -PathType Leaf) {
+              return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            return $null
+          }
+
+          $source = Read-JsonIfPresent -Path (Join-Path $sourceRoot 'source-verification-result.json')
+          $endpoint = Read-JsonIfPresent -Path (Join-Path $endpointRoot 'endpoint-verification-result.json')
+          $repair = Read-JsonIfPresent -Path (Join-Path $repairRoot 'repair-result.json')
+          $runtime = Read-JsonIfPresent -Path (Join-Path $runtimeRoot 'runtime-completion.json')
 
           $sourcePassed = $null -ne $source -and [bool]$source.passed
+          $endpointPassed = $null -ne $endpoint -and [bool]$endpoint.passed
           $repairPassed = $null -ne $repair -and [bool]$repair.passed
           $runtimePassed = $null -ne $runtime -and [bool]$runtime.passed
-          $overall = $sourcePassed -and $repairPassed -and $runtimePassed
           $stableSamples = if ($null -ne $repair) { [int]$repair.consecutiveStableSamples } else { 0 }
+          $exit64GuardPassed = $null -ne $repair -and [bool]$repair.exit64RegressionGuardPassed
+          $exactUrlMatch = (
+            $null -ne $endpoint -and
+            [string]$endpoint.expectedRancherdServerUrl -ceq 'https://10.10.10.11:443' -and
+            [string]$endpoint.sen2.server -ceq 'https://10.10.10.11:443' -and
+            [string]$endpoint.sen3.server -ceq 'https://10.10.10.11:443'
+          )
+          $serviceGatePassed = (
+            $null -ne $repair -and
+            [bool]$repair.backupCreated -and
+            [bool]$repair.rke2ServerDisabled -and
+            [bool]$repair.rke2AgentEnabled -and
+            [bool]$repair.rebootIssued -and
+            [string]$repair.rebootedNode -ceq 'sen2'
+          )
+          $overall = (
+            $sourcePassed -and
+            $endpointPassed -and
+            $exactUrlMatch -and
+            $repairPassed -and
+            $exit64GuardPassed -and
+            $serviceGatePassed -and
+            $stableSamples -eq 24 -and
+            $runtimePassed
+          )
 
           $failure = if (-not $sourcePassed -and $null -ne $source) {
             [string]$source.failure
+          } elseif (-not $endpointPassed -and $null -ne $endpoint) {
+            [string]$endpoint.failure
           } elseif (-not $repairPassed -and $null -ne $repair) {
             [string]$repair.failure
           } elseif (-not $runtimePassed -and $null -ne $runtime) {
             [string]$runtime.failure
           } elseif (-not $sourcePassed) {
             'Current authoritative source-verification evidence was not generated.'
+          } elseif (-not $endpointPassed) {
+            'Read-only endpoint-verification evidence was not generated.'
           } elseif (-not $repairPassed) {
             'sen2 service-repair evidence was not generated.'
           } elseif (-not $runtimePassed) {
             'Authenticated runtime-validation evidence was not generated.'
+          } elseif (-not $overall) {
+            'One or more terminal recovery invariants were not satisfied.'
           } else {
             $null
           }
 
           [ordered]@{
-            schemaVersion = '1.0'
+            schemaVersion = '2.0'
             sourceCommit = $env:GITHUB_SHA
             workflowRunId = $env:GITHUB_RUN_ID
+            requestPath = $env:REQUEST_PATH
             previousAuthoritativeRunId = '33634372658'
             previousStoppedVerifierRunId = '33637662758'
+            previousFailedServiceContinuationRunId = '33648778779'
+            previousFailedServiceContinuationArtifactId = '9853867668'
             completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            expectedRancherdServerUrl = 'https://10.10.10.11:443'
+            managementApiUrl = 'https://10.10.10.10'
             currentAuthoritativeWorkerSourcePassed = $sourcePassed
             authoritativeSourceVerificationReadOnly = $true
+            rancherdEndpointVerificationPassed = $endpointPassed
+            rancherdEndpointVerificationReadOnly = $true
+            exactExpectedObservedRancherdUrlMatch = $exactUrlMatch
+            exit64RegressionGuardPassed = $exit64GuardPassed
+            configurationBackupPassed = if ($null -ne $repair) { [bool]$repair.backupCreated } else { $false }
             sen2ServiceConflictRepairPassed = $repairPassed
+            sen2OnlyRebootPassed = if ($null -ne $repair) { [string]$repair.rebootedNode -ceq 'sen2' } else { $false }
             consecutiveSen2StabilitySamples = $stableSamples
-            authenticatedRuntimeValidationPassed = $runtimePassed
+            authenticatedKubernetesKubeVirtLonghornValidationPassed = $runtimePassed
+            clusterRecoveryGatePassed = $overall
             installationApiCompletion = $overall
+            firstRunGuiSetupCompleted = $false
+            firstRunGuiEulaAcceptancePendingManualAction = $true
+            rancherdConfigurationChanged = $false
+            authoritativeSourceModified = $false
             rke2DataDeleted = $false
             vmDiskWiped = $false
             vmReinstalled = $false
             credentialValuesWrittenToEvidence = $false
+            kubeconfigWrittenToEvidence = $false
             eulaAutomaticallyAccepted = $false
             workloadQualified = $false
             trueAirgapQualified = $false
@@ -252,14 +464,18 @@ jobs:
             Set-Content -LiteralPath (Join-Path $terminalRoot 'terminal-result.json') -Encoding UTF8
 
           @"
-          # LayerSentry sen2 service-continuation result
+          # LayerSentry sen2 recovery-gate result
 
-          - Current authoritative worker-only source verified: **$sourcePassed**
-          - Source verification was read-only: **true**
-          - sen2 service-conflict repair passed: **$repairPassed**
-          - Consecutive local stability samples: **$stableSamples / 24**
+          - Authoritative worker-only source verified read-only: **$sourcePassed**
+          - sen2/sen3/plan endpoint verification passed read-only: **$endpointPassed**
+          - Exact join endpoint established as https://10.10.10.11:443: **$exactUrlMatch**
+          - Management/API VIP: **https://10.10.10.10**
+          - Exit-code-64 regression guard passed: **$exit64GuardPassed**
+          - Restricted backup/service/reboot gate passed: **$serviceGatePassed**
+          - Consecutive sen2 stability samples: **$stableSamples / 24**
           - Authenticated Kubernetes/KubeVirt/Longhorn validation passed: **$runtimePassed**
-          - Installation/API completion: **$overall**
+          - Cluster recovery gate passed: **$overall**
+          - First-run GUI EULA action remains manual: **true**
           - RKE2 data deleted: **false**
           - VM reinstalled or disk wiped: **false**
           - Production release approved: **false**
@@ -276,23 +492,25 @@ jobs:
         with:
           name: layersentry-sen2-service-continuation-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}\layersentry-sen2-source-continuation-06
-            ${{ runner.temp }}\layersentry-sen2-agent-service-continuation-06
-            ${{ runner.temp }}\layersentry-sen2-service-continuation-terminal-06
+            ${{ runner.temp }}\layersentry-sen2-source-continuation-07
+            ${{ runner.temp }}\layersentry-rancherd-endpoint-verification-07
+            ${{ runner.temp }}\layersentry-sen2-agent-service-continuation-07
+            ${{ runner.temp }}\layersentry-three-node-runtime-continuation-07
+            ${{ runner.temp }}\layersentry-sen2-service-continuation-terminal-07
           if-no-files-found: error
           retention-days: 90
           compression-level: 6
 
-      - name: Enforce terminal continuation completion
+      - name: Enforce terminal recovery-gate completion
         if: always()
         shell: powershell
         run: |
-          $resultPath = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-service-continuation-terminal-06\terminal-result.json'
+          $resultPath = Join-Path $env:RUNNER_TEMP 'layersentry-sen2-service-continuation-terminal-07\terminal-result.json'
           if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
             throw 'Continuation terminal result is missing.'
           }
           $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
-          if (-not [bool]$result.installationApiCompletion) {
-            throw "LayerSentry sen2 service continuation failed: $($result.failure)"
+          if (-not [bool]$result.clusterRecoveryGatePassed) {
+            throw "LayerSentry sen2 recovery gate failed: $($result.failure)"
           }
-          Write-Host 'LAYERSENTRY SEN2 SERVICE REPAIR, STABILITY, AND AUTHENTICATED RUNTIME VALIDATION: PASS'
+          Write-Host 'LAYERSENTRY SEN2 ENDPOINT, SERVICE, STABILITY, AND AUTHENTICATED RUNTIME RECOVERY GATE: PASS'
