@@ -35,7 +35,7 @@ try {
             Where-Object { $_.Path -eq $expectedOsDisk } |
             Select-Object -First 1
         if ($null -eq $drive) {
-            throw "Expected OS disk is not attached to $name: $expectedOsDisk"
+            throw "Expected OS disk is not attached to ${name}: $expectedOsDisk"
         }
         $vhd = Get-VHD -Path $expectedOsDisk -ErrorAction Stop
         $before += [pscustomobject]@{
