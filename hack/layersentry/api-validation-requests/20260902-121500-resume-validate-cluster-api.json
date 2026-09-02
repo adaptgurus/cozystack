@@ -1,0 +1,9 @@
+{
+  "operation": "VALIDATE_HARVESTER_CLUSTER_API",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "credentialPath": "C:\\ProgramData\\LayerSentry\\bootstrap-credentials.json",
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false,
+  "requestedPurpose": "Resume LayerSentry three-node installation validation from the first-login and cluster-readiness checkpoint."
+}
