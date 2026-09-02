@@ -1,0 +1,20 @@
+{
+  "requestId": "diagnose-sen2-persistent-readiness-20260902-resume-01",
+  "operation": "READ_ONLY_JOIN_NODE_DIAGNOSTIC",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "addresses": [
+    "10.10.10.12",
+    "10.10.10.13"
+  ],
+  "diagnosticPurpose": "Compare the persistently non-Ready sen2 node with healthy sen3 without changing either VM, disk, network or service state.",
+  "collect": [
+    "systemd service enablement, active state, restart count and exit status",
+    "rke2, rancher-system-agent, kubelet and containerd processes",
+    "ports 22, 6443, 9345 and 10250",
+    "recent rancherd, rke2-server and rke2-agent journal",
+    "recent boot errors, filesystem metadata and capacity"
+  ],
+  "readOnly": true,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
