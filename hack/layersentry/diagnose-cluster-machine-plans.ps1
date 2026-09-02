@@ -67,8 +67,11 @@ if ([bool]$request.productionReleaseApprovalImplied) {
 }
 
 $shellPath = Join-Path $PSScriptRoot 'diagnose-cluster-machine-plan-details.sh'
-if (-not (Test-Path -LiteralPath $shellPath -PathType Leaf)) {
-    throw "The detailed role-source collector is missing: $shellPath"
+$ownerShellPath = Join-Path $PSScriptRoot 'diagnose-cluster-machine-role-owner.sh'
+foreach ($requiredPath in @($shellPath, $ownerShellPath)) {
+    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+        throw "A required role-source collector is missing: $requiredPath"
+    }
 }
 if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) {
     throw "Protected credential file is missing: $CredentialPath"
@@ -126,8 +129,13 @@ $stdoutPath = Join-Path $temporaryDirectory 'machine-plan-details.stdout.raw'
 $stderrPath = Join-Path $temporaryDirectory 'machine-plan-details.stderr.raw'
 Write-Utf8NoBom -Path $passwordPath -Value ($nodePassword + "`r`n")
 Write-Utf8NoBom -Path $askPassPath -Value ("@echo off`r`ntype `"$passwordPath`"`r`n")
-$shellText = Get-Content -LiteralPath $shellPath -Raw -Encoding UTF8
-$remoteText = "export LAYERSENTRY_NODE_PASSWORD_B64='$nodePasswordB64'`n" + $shellText
+$primaryShellText = Get-Content -LiteralPath $shellPath -Raw -Encoding UTF8
+$ownerShellText = Get-Content -LiteralPath $ownerShellPath -Raw -Encoding UTF8
+$remoteText = @(
+    "export LAYERSENTRY_NODE_PASSWORD_B64='$nodePasswordB64'"
+    $primaryShellText
+    $ownerShellText
+) -join "`n"
 Write-Utf8NoBom -Path $scriptPath -Value (($remoteText -replace "`r`n", "`n").TrimStart([char]0xFEFF))
 
 $oldAskPass = [Environment]::GetEnvironmentVariable('SSH_ASKPASS')
@@ -172,11 +180,13 @@ try {
         -Path (Join-Path $OutputDirectory 'cluster-machine-plan-details.txt') `
         -Value $safeOutput
 
-    $completed = ($exitCode -eq 0 -and $stdout -match '(?m)^===DIAGNOSTIC-COMPLETE===\s*$')
+    $primaryCompleted = ($stdout -match '(?m)^===DIAGNOSTIC-COMPLETE===\s*$')
+    $ownerCompleted = ($stdout -match '(?m)^===OWNER-DIAGNOSTIC-COMPLETE===\s*$')
+    $completed = ($exitCode -eq 0 -and $primaryCompleted -and $ownerCompleted)
     if (-not $completed) {
-        throw "Detailed machine-plan diagnostic failed with SSH exit code $exitCode."
+        throw "Detailed machine-plan diagnostic failed with SSH exit code $exitCode; primary=$primaryCompleted owner=$ownerCompleted."
     }
-    Write-Host 'LAYERSENTRY DETAILED MACHINE PLAN ROLE-SOURCE DIAGNOSTIC: PASS'
+    Write-Host 'LAYERSENTRY DETAILED MACHINE PLAN AND OWNER ROLE-SOURCE DIAGNOSTIC: PASS'
 }
 catch {
     $failure = [string]$_.Exception.Message
@@ -185,7 +195,7 @@ catch {
 finally {
     $finishedAt = (Get-Date).ToUniversalTime()
     [ordered]@{
-        schemaVersion = '2.0'
+        schemaVersion = '2.1'
         requestId = [string]$request.requestId
         sourceCommit = $env:GITHUB_SHA
         workflowRunId = $env:GITHUB_RUN_ID
@@ -195,6 +205,7 @@ finally {
         primaryNodeAddress = '10.10.10.11'
         targetMachine = 'fleet-local/custom-81a2c5e94b13'
         comparisonMachine = 'fleet-local/custom-a5a2c67354be'
+        transientOwnerSecret = 'local/custom-81a2c5e94b13'
         sshExitCode = $exitCode
         diagnosticCompleted = $completed
         clusterStateModified = $false
