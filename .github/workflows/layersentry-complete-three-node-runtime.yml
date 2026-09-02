@@ -1,0 +1,148 @@
+name: LayerSentry Complete Three-Node Runtime
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/runtime-completion-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-three-node-runtime-completion
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    name: Validate three nodes, initialize administrator and verify API
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 65
+
+    steps:
+      - name: Checkout exact runtime completion request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Validate authorization request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/runtime-completion-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one runtime-completion request; found $($requests.Count)."
+          }
+          $request = Get-Content -LiteralPath $requests[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'COMPLETE_THREE_NODE_RUNTIME') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([bool]$request.acceptEula) {
+            throw 'This workflow must not accept the EULA on behalf of the user.'
+          }
+          if ([bool]$request.writeCredentialValuesToEvidence) {
+            throw 'Credential values must never be written to evidence.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'Runtime completion must not imply production release approval.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/complete-three-node-runtime.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $scriptPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          Write-Host "Validated runtime-completion request: $($requests[0])"
+
+      - name: Complete and validate the three-node runtime
+        id: runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/three-node-runtime'
+          & 'hack/layersentry/complete-three-node-runtime.ps1' `
+            -ClusterUrl 'https://10.10.10.10' `
+            -PrimaryNode '10.10.10.11' `
+            -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+            -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+            -MaxWaitMinutes 55 `
+            -OutputDirectory $output
+
+      - name: Persist sanitized runtime evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $relative = 'hack/layersentry/runtime-evidence/three-node-runtime'
+          if (-not (Test-Path -LiteralPath $relative)) {
+            New-Item -Path $relative -ItemType Directory -Force | Out-Null
+            @"
+          # LayerSentry three-node runtime completion
+
+          - Evidence generation failed before the output directory was created.
+          - Credential values written to evidence: **false**
+          - Production release approved: **false**
+          "@ | Set-Content -LiteralPath (Join-Path $relative 'STATUS.md') -Encoding UTF8
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C layersentry-runtime-status-work $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to create the runtime-status work branch.'
+          }
+          git add -- $relative
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to stage runtime evidence.'
+          }
+          git commit -m 'ops(status): publish LayerSentry three-node runtime evidence [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to commit runtime evidence.'
+          }
+          git push --force origin 'HEAD:ops/layersentry-runtime-status'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to publish the runtime-status branch.'
+          }
+
+      - name: Show sanitized status
+        if: always()
+        shell: powershell
+        run: |
+          $status = 'hack/layersentry/runtime-evidence/three-node-runtime/STATUS.md'
+          if (Test-Path -LiteralPath $status -PathType Leaf) {
+            Get-Content -LiteralPath $status
+          }
+
+      - name: Upload sanitized runtime evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-three-node-runtime-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/three-node-runtime
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
