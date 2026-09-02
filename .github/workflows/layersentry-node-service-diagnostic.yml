@@ -135,6 +135,7 @@ jobs:
                 '-T',
                 '-o', 'StrictHostKeyChecking=no',
                 '-o', 'UserKnownHostsFile=NUL',
+                '-o', 'LogLevel=ERROR',
                 '-o', 'PreferredAuthentications=password,keyboard-interactive',
                 '-o', 'PubkeyAuthentication=no',
                 '-o', 'NumberOfPasswordPrompts=1',
@@ -142,8 +143,15 @@ jobs:
                 "rancher@$address",
                 $remoteCommand
               )
-              & $ssh.Source @sshArguments 1> $stdoutPath 2> $stderrPath
-              $sshExitCode = $LASTEXITCODE
+              $savedErrorActionPreference = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
+              try {
+                & $ssh.Source @sshArguments 1> $stdoutPath 2> $stderrPath
+                $sshExitCode = $LASTEXITCODE
+              }
+              finally {
+                $ErrorActionPreference = $savedErrorActionPreference
+              }
 
               $combined = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue) +
                 "`n===ssh-stderr===`n" +
