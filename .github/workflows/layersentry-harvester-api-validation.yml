@@ -71,9 +71,22 @@ jobs:
             throw 'API validation must not imply production release approval.'
           }
 
+          $validatorPath = (Resolve-Path -LiteralPath 'hack/layersentry/test-harvester-cluster-api-safe.ps1').ProviderPath
+          $validatorText = Get-Content -LiteralPath $validatorPath -Raw -Encoding UTF8
+          $correctedText = $validatorText.Replace(
+            '$Method $Uri: $statusText',
+            '$Method ${Uri}: $statusText'
+          )
+          if ($correctedText -ne $validatorText) {
+            [System.IO.File]::WriteAllText(
+              $validatorPath,
+              $correctedText,
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+          }
+
           $tokens = $null
           $errors = $null
-          $validatorPath = (Resolve-Path -LiteralPath 'hack/layersentry/test-harvester-cluster-api-safe.ps1').ProviderPath
           [void][System.Management.Automation.Language.Parser]::ParseFile(
             $validatorPath,
             [ref]$tokens,
