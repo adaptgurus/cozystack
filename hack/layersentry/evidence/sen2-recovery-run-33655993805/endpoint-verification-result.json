@@ -1,0 +1,30 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "requestId":  "repair-sen2-agent-service-20260902-server-url-guard-fix-07",
+    "startedAtUtc":  "2026-09-02T16:37:15.3274733Z",
+    "finishedAtUtc":  "2026-09-02T16:37:19.3473154Z",
+    "durationSeconds":  4.02,
+    "verificationMode":  "read-only-rancherd-endpoint-and-authoritative-plan",
+    "expectedRancherdServerUrl":  "https://10.10.10.11:443",
+    "managementApiUrl":  "https://10.10.10.10",
+    "sen2":  {
+                 "hostname":  "sen2",
+                 "role":  "agent",
+                 "server":  "https://10.10.10.11:443",
+                 "installMode":  "join"
+             },
+    "sen3":  {
+                 "hostname":  "sen3",
+                 "role":  "agent",
+                 "server":  "https://10.10.10.10:443",
+                 "installMode":  "join"
+             },
+    "sen2AndSen3ServerUrlsMatch":  false,
+    "authoritativePlan":  null,
+    "managementVipTcp443Reachable":  false,
+    "authoritativeSourceModified":  false,
+    "nodeConfigurationModified":  false,
+    "credentialValuesWrittenToEvidence":  false,
+    "passed":  false,
+    "failure":  "Read-only authoritative plan verification through sen1 failed with SSH exit code 1."
+}
