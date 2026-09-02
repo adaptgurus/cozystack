@@ -1,23 +1,26 @@
 {
-  "requestId": "expose-data-disk-options-20260902-01",
-  "delayAfterSeconds": 5,
+  "requestId": "assign-sdb-300g-data-disk-20260902-01",
+  "delayAfterSeconds": 10,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 9}
+        {"kind": "key", "code": 40},
+        {"kind": "key", "code": 13}
       ]
     }
   ]
