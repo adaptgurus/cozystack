@@ -1,34 +1,28 @@
 {
-  "requestId": "retain-default-cluster-network-cidrs-20260902-01",
+  "requestId": "set-node-hostnames-20260902-01",
   "delayAfterSeconds": 10,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
+        {"kind": "text", "value": "sen1"},
+        {"kind": "sleep", "milliseconds": 500},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen2",
       "actions": [
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
+        {"kind": "text", "value": "sen2"},
+        {"kind": "sleep", "milliseconds": 500},
         {"kind": "key", "code": 13}
       ]
     },
     {
       "vm": "sen3",
       "actions": [
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
-        {"kind": "key", "code": 13},
-        {"kind": "sleep", "milliseconds": 700},
+        {"kind": "text", "value": "sen3"},
+        {"kind": "sleep", "milliseconds": 500},
         {"kind": "key", "code": 13}
       ]
     }
