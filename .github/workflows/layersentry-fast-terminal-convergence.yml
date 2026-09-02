@@ -1,0 +1,308 @@
+name: LayerSentry Fast Terminal Convergence
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/fast-convergence-requests/*.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: layersentry-authoritative-completion
+  cancel-in-progress: true
+
+jobs:
+  converge:
+    name: Reuse success or repair only the remaining three-node gate
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout exact convergence request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Validate request and source scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/fast-convergence-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one fast-convergence request; found $($requests.Count)."
+          }
+          $request = Get-Content -LiteralPath $requests[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'FAST_TERMINAL_CONVERGENCE') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          if ([bool]$request.acceptEula) {
+            throw 'This workflow must not accept the EULA on behalf of the user.'
+          }
+          if ([bool]$request.writeCredentialValuesToEvidence) {
+            throw 'Credential values must never be written to evidence.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'This workflow must not imply production release approval.'
+          }
+
+          foreach ($relative in @(
+            'hack/layersentry/finalize-join-node-disks.ps1',
+            'hack/layersentry/complete-three-node-runtime.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            $path = (Resolve-Path -LiteralPath $relative).ProviderPath
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object {
+                Write-Error ("{0}:{1}: {2}" -f $path, $_.Extent.StartLineNumber, $_.Message)
+              }
+              exit 1
+            }
+          }
+          Write-Host "Validated fast-convergence request: $($requests[0])"
+
+      - name: Reuse previous success or converge the remaining gates
+        id: converge
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $root = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'hack/layersentry/runtime-evidence/fast-terminal-convergence'
+          if (Test-Path -LiteralPath $root) {
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }
+          New-Item -Path $root -ItemType Directory -Force | Out-Null
+          $previousSuccess = $false
+
+          git fetch origin `
+            'refs/heads/ops/layersentry-authoritative-status:refs/remotes/origin/ops/layersentry-authoritative-status' `
+            --force --no-tags
+          if ($LASTEXITCODE -eq 0) {
+            git cat-file -e `
+              'refs/remotes/origin/ops/layersentry-authoritative-status:hack/layersentry/runtime-evidence/authoritative-completion/SUCCESS' `
+              2>$null
+            $previousSuccess = ($LASTEXITCODE -eq 0)
+          }
+
+          if ($previousSuccess) {
+            New-Item -Path (Join-Path $root 'SUCCESS') -ItemType File -Force | Out-Null
+            @"
+          # LayerSentry fast terminal convergence
+
+          - Previous authoritative success marker: **true**
+          - Additional VM mutation required: **false**
+          - Installation/API completion: **true**
+          - Workload qualification: **false**
+          - True air-gap qualification: **false**
+          - Production release approved: **false**
+          "@ | Set-Content -LiteralPath (Join-Path $root 'STATUS.md') -Encoding UTF8
+            [ordered]@{
+              schemaVersion = '1.0'
+              completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+              previousAuthoritativeSuccess = $true
+              additionalVmMutationRequired = $false
+              installationApiCompletion = $true
+              workloadQualified = $false
+              trueAirgapQualified = $false
+              productionReleaseApproved = $false
+            } | ConvertTo-Json -Depth 8 |
+              Set-Content -LiteralPath (Join-Path $root 'result.json') -Encoding UTF8
+            "overall_success=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          Import-Module Hyper-V -ErrorAction Stop
+          foreach ($vmName in @('sen1', 'sen2', 'sen3')) {
+            $vm = Get-VM -Name $vmName -ErrorAction Stop
+            if ([string]$vm.State -eq 'Off') {
+              Start-VM -Name $vmName -ErrorAction Stop | Out-Null
+            }
+          }
+
+          $diskOutput = Join-Path $root 'disk'
+          & 'hack/layersentry/finalize-join-node-disks.ps1' `
+            -VmNames @('sen2', 'sen3') `
+            -MinimumCompletedDiskGiB 20.0 `
+            -RequiredStableSeconds 60 `
+            -MaxWaitMinutes 20 `
+            -OutputDirectory $diskOutput
+
+          $runtimeOutput = Join-Path $root 'runtime'
+          $runtimeSucceeded = $false
+          $runtimeFailure = $null
+          try {
+            & 'hack/layersentry/complete-three-node-runtime.ps1' `
+              -ClusterUrl 'https://10.10.10.10' `
+              -PrimaryNode '10.10.10.11' `
+              -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+              -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+              -MaxWaitMinutes 20 `
+              -OutputDirectory $runtimeOutput
+            $runtimeSucceeded = $true
+          }
+          catch {
+            $runtimeFailure = $_.Exception.Message
+          }
+
+          if (-not $runtimeSucceeded) {
+            $installedJoinNodes = @()
+            foreach ($vmName in @('sen2', 'sen3')) {
+              $osDrive = @(
+                Get-VMHardDiskDrive -VMName $vmName -ErrorAction Stop |
+                  Where-Object {
+                    -not [string]::IsNullOrWhiteSpace([string]$_.Path) -and
+                    [string]$_.Path -match '(?i)-os\.vhdx$'
+                  }
+              )
+              $dvdAttached = @(
+                Get-VMDvdDrive -VMName $vmName -ErrorAction SilentlyContinue |
+                  Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Path) }
+              ).Count -gt 0
+              if ($osDrive.Count -eq 1) {
+                $vhd = Get-VHD -Path $osDrive[0].Path -ErrorAction Stop
+                if (($vhd.FileSize / 1GB) -ge 20 -and -not $dvdAttached) {
+                  $installedJoinNodes += $vmName
+                }
+              }
+            }
+
+            if ($installedJoinNodes.Count -eq 2) {
+              foreach ($vmName in $installedJoinNodes) {
+                Restart-VM -Name $vmName -Force -ErrorAction Stop
+              }
+              Start-Sleep -Seconds 180
+              if (Test-Path -LiteralPath $runtimeOutput) {
+                Remove-Item -LiteralPath $runtimeOutput -Recurse -Force
+              }
+              & 'hack/layersentry/complete-three-node-runtime.ps1' `
+                -ClusterUrl 'https://10.10.10.10' `
+                -PrimaryNode '10.10.10.11' `
+                -NodeAddresses @('10.10.10.11', '10.10.10.12', '10.10.10.13') `
+                -CredentialPath 'C:\ProgramData\LayerSentry\bootstrap-credentials.json' `
+                -MaxWaitMinutes 15 `
+                -OutputDirectory $runtimeOutput
+              $runtimeSucceeded = $true
+              $runtimeFailure = $null
+            }
+            else {
+              throw $runtimeFailure
+            }
+          }
+
+          $diskResult = Get-Content `
+            -LiteralPath (Join-Path $diskOutput 'join-disk-finalization.json') `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+          $runtimeResult = Get-Content `
+            -LiteralPath (Join-Path $runtimeOutput 'runtime-completion.json') `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+          $overall = [bool]$diskResult.passed -and [bool]$runtimeResult.passed
+          $marker = if ($overall) { 'SUCCESS' } else { 'FAILURE' }
+          New-Item -Path (Join-Path $root $marker) -ItemType File -Force | Out-Null
+          @"
+          # LayerSentry fast terminal convergence
+
+          - Previous authoritative success marker: **false**
+          - Join-node disk finalization passed: $([bool]$diskResult.passed)
+          - Kubernetes/runtime/API validation passed: $([bool]$runtimeResult.passed)
+          - Installation/API completion: $overall
+          - Workload qualification: **false**
+          - True air-gap qualification: **false**
+          - Production release approved: **false**
+          - Failure: $($runtimeResult.failure)
+          "@ | Set-Content -LiteralPath (Join-Path $root 'STATUS.md') -Encoding UTF8
+          [ordered]@{
+            schemaVersion = '1.0'
+            completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            previousAuthoritativeSuccess = $false
+            joinDiskFinalizationPassed = [bool]$diskResult.passed
+            runtimeApiValidationPassed = [bool]$runtimeResult.passed
+            installationApiCompletion = $overall
+            runtimeFailure = $runtimeResult.failure
+            workloadQualified = $false
+            trueAirgapQualified = $false
+            productionReleaseApproved = $false
+          } | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $root 'result.json') -Encoding UTF8
+          "overall_success=$($overall.ToString().ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $overall) {
+            throw 'LayerSentry fast terminal convergence did not pass every installation/API gate.'
+          }
+
+      - name: Publish sanitized terminal evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $relative = 'hack/layersentry/runtime-evidence/fast-terminal-convergence'
+          if (-not (Test-Path -LiteralPath $relative)) {
+            New-Item -Path $relative -ItemType Directory -Force | Out-Null
+            New-Item -Path (Join-Path $relative 'FAILURE') -ItemType File -Force | Out-Null
+            @"
+          # LayerSentry fast terminal convergence
+
+          - Evidence generation failed before the output directory was created.
+          - Installation/API completion: **false**
+          - Production release approved: **false**
+          "@ | Set-Content -LiteralPath (Join-Path $relative 'STATUS.md') -Encoding UTF8
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C layersentry-fast-final-status-work $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to create final-status work branch.'
+          }
+          git add -- $relative
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to stage terminal evidence.'
+          }
+          git commit -m 'ops(status): publish LayerSentry fast terminal result [skip ci]'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to commit terminal evidence.'
+          }
+          git push --force origin 'HEAD:ops/layersentry-fast-final-status'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to publish the final-status branch.'
+          }
+
+      - name: Show terminal status
+        if: always()
+        shell: powershell
+        run: |
+          $status = 'hack/layersentry/runtime-evidence/fast-terminal-convergence/STATUS.md'
+          if (Test-Path -LiteralPath $status -PathType Leaf) {
+            Get-Content -LiteralPath $status
+          }
+
+      - name: Upload terminal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-fast-terminal-convergence-${{ github.run_id }}
+          path: hack/layersentry/runtime-evidence/fast-terminal-convergence
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
