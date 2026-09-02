@@ -1,12 +1,11 @@
 {
-  "requestId": "set-sen1-cluster-token-20260902-01",
-  "delayAfterSeconds": 10,
+  "requestId": "refresh-consoles-after-cluster-token-20260902-01",
+  "delayAfterSeconds": 5,
   "targets": [
     {
       "vm": "sen1",
       "actions": [
-        {"kind": "secret", "name": "clusterToken"},
-        {"kind": "key", "code": 13}
+        {"kind": "sleep", "milliseconds": 100}
       ]
     }
   ]
