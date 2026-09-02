@@ -1,0 +1,105 @@
+name: LayerSentry Ensure Join Installs Started
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/join-start-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-join-start-guard
+  cancel-in-progress: false
+
+jobs:
+  ensure-started:
+    name: Verify sen2 and sen3 installation writes have started
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact join-start request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate request and PowerShell source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [string[]]$requests = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/join-start-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with exit code $LASTEXITCODE"
+          }
+          if ($requests.Count -ne 1) {
+            throw "Expected exactly one join-start request; found $($requests.Count)."
+          }
+          $request = Get-Content -LiteralPath $requests[0] -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'ENSURE_JOIN_INSTALLS_STARTED') {
+            throw "Unsupported operation: $($request.operation)"
+          }
+          if ([string]$request.authorization -ne 'USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION') {
+            throw 'The request is missing the user authorization marker.'
+          }
+          $targets = @($request.vmNames | ForEach-Object { [string]$_ } | Sort-Object)
+          if ($targets.Count -ne 2 -or $targets[0] -ne 'sen2' -or $targets[1] -ne 'sen3') {
+            throw 'The request must target exactly sen2 and sen3.'
+          }
+          if ([bool]$request.productionReleaseApprovalImplied) {
+            throw 'The request must not imply production release approval.'
+          }
+
+          $tokens = $null
+          $errors = $null
+          $scriptPath = (Resolve-Path -LiteralPath 'hack/layersentry/ensure-join-installs-started.ps1').ProviderPath
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $scriptPath, $_.Extent.StartLineNumber, $_.Message)
+            }
+            exit 1
+          }
+          Write-Host "Validated join-start request: $($requests[0])"
+
+      - name: Ensure both join-node installs have started
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'layersentry-join-start-guard'
+          & 'hack/layersentry/ensure-join-installs-started.ps1' `
+            -VmNames @('sen2', 'sen3') `
+            -MinimumStartedDiskGiB 1.0 `
+            -ObservationSeconds 180 `
+            -OutputDirectory $output
+
+      - name: Show sanitized status
+        if: always()
+        shell: powershell
+        run: |
+          $status = Join-Path $env:RUNNER_TEMP 'layersentry-join-start-guard\STATUS.md'
+          if (Test-Path -LiteralPath $status -PathType Leaf) {
+            Get-Content -LiteralPath $status
+          }
+
+      - name: Upload join-start evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-join-start-guard-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-join-start-guard
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
