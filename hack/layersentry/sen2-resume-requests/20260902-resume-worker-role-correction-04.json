@@ -1,0 +1,33 @@
+{
+  "requestId": "repair-sen2-worker-role-and-agent-20260902-resume-04",
+  "operation": "REPAIR_SEN2_AGENT_SERVICE_CONFLICT",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "targetNode": "sen2",
+  "targetAddress": "10.10.10.12",
+  "expectedRancherdRole": "agent",
+  "disableConflictingRke2Server": true,
+  "correctErroneousRancherRoles": true,
+  "restartRancherSystemAgentIfNeeded": true,
+  "expectedCapiMachineUid": "fbc63284-6a86-4827-b2df-477ece763cad",
+  "expectedRkeBootstrapUid": "7d1481a5-cff7-4903-bbc0-874b8d764c04",
+  "expectedCustomMachineUid": "54e8ea49-b617-475a-b422-4e1222fa768c",
+  "expectedPlanSecretUid": "73fb994b-8b32-4d9b-9599-a621ef934629",
+  "expectedOldPlanSha256": "b24c9bdb896734ac1cde0846f32d702b7e78de1c7ec2f9733b5a99bc9bad2b7f",
+  "expectedErroneousRoleFieldManager": "kubectl-label",
+  "expectedErroneousRoleTimestampUtc": "2026-09-02T10:17:48Z",
+  "repairScope": [
+    "remove only the five erroneous control-plane and etcd labels from the sen2 CAPI Machine and RKEBootstrap using UID-guarded JSON patches",
+    "wait for Rancher to generate a changed worker-only plan secret",
+    "wait for sen2 to consume INSTALL_RKE2_TYPE=agent, restarting only rancher-system-agent if plan consumption stalls",
+    "back up sen2 Harvester and rancherd configuration",
+    "stop and disable only the conflicting rke2-server service",
+    "enable rke2-agent and reboot only sen2",
+    "require twenty-four consecutive local service-health samples",
+    "complete authenticated Kubernetes, KubeVirt and Longhorn validation"
+  ],
+  "reinstallOrWipeDisks": false,
+  "deleteRke2Data": false,
+  "acceptEula": false,
+  "writeCredentialValuesToEvidence": false,
+  "productionReleaseApprovalImplied": false
+}
