@@ -106,31 +106,46 @@ jobs:
             $env:SSH_ASKPASS_REQUIRE = 'force'
             $env:DISPLAY = 'LayerSentry'
 
-            $remoteCommand = @(
+            $remoteScript = @(
               'set +e'
               'echo ===identity==='
               'hostname'
               'date -u'
               'uname -a'
+              'cat /etc/os-release 2>/dev/null || true'
               'echo ===service-states==='
               'for svc in rancherd rke2-server rke2-agent kubelet; do echo ---$svc---; systemctl is-enabled "$svc" 2>&1 || true; systemctl is-active "$svc" 2>&1 || true; systemctl show "$svc" --property=LoadState,ActiveState,SubState,Result,ExecMainStatus,NRestarts --no-pager 2>&1 || true; done'
-              'echo ===units==='
-              'systemctl list-units --type=service --all --no-pager 2>&1 | grep -Ei "rancher|rke2|kubelet|containerd" || true'
+              'echo ===failed-units==='
+              'systemctl --failed --no-pager 2>&1 || true'
+              'echo ===matching-units==='
+              "systemctl list-units --type=service --all --no-pager 2>&1 | grep -Ei 'rancher|rke2|kubelet|containerd|elemental|cos' || true"
               'echo ===listeners==='
-              'ss -lntp 2>/dev/null | grep -E ":(22|6443|9345|10250)[[:space:]]" || true'
+              "ss -lntp 2>/dev/null | grep -E ':(22|6443|9345|10250)[[:space:]]' || true"
               'echo ===processes==='
-              'ps -ef | grep -E "[r]ancherd|[r]ke2|[k]ubelet|[c]ontainerd" || true'
+              "ps -ef | grep -E '[r]ancherd|[r]ke2|[k]ubelet|[c]ontainerd' || true"
               'echo ===filesystem-metadata==='
               'ls -ld /etc/rancher /etc/rancher/rke2 /var/lib/rancher /var/lib/rancher/rke2 2>&1 || true'
-              'find /etc/rancher/rke2 -maxdepth 1 -type f -printf "%M %u:%g %s %TY-%Tm-%TdT%TH:%TM:%TS %p\n" 2>/dev/null || true'
-              'echo ===recent-journal==='
-              'sudo -n journalctl -u rancherd -u rke2-server -u rke2-agent --since "-40 minutes" -n 400 --no-pager 2>&1 || journalctl -u rancherd -u rke2-server -u rke2-agent --since "-40 minutes" -n 160 --no-pager 2>&1 || true'
-            ) -join '; '
+              "find /etc/rancher/rke2 -maxdepth 1 -type f -printf '%M %u:%g %s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null || true"
+              'df -h 2>&1 || true'
+              'echo ===recent-rancherd-rke2-journal==='
+              "sudo -n journalctl -u rancherd -u rke2-server -u rke2-agent --since '-50 minutes' -n 500 --no-pager 2>&1 || journalctl -u rancherd -u rke2-server -u rke2-agent --since '-50 minutes' -n 180 --no-pager 2>&1 || true"
+              'echo ===recent-boot-errors==='
+              'sudo -n journalctl -b -p err -n 220 --no-pager 2>&1 || journalctl -b -p err -n 100 --no-pager 2>&1 || true'
+            ) -join "`n"
+            $remoteScript += "`n"
 
             $summary = @()
             foreach ($address in $addresses) {
-              $stdoutPath = Join-Path $secureRoot ($address.Replace('.', '-') + '.stdout.txt')
-              $stderrPath = Join-Path $secureRoot ($address.Replace('.', '-') + '.stderr.txt')
+              $safeName = $address.Replace('.', '-')
+              $remotePath = Join-Path $secureRoot ($safeName + '.sh')
+              $stdoutPath = Join-Path $secureRoot ($safeName + '.stdout.txt')
+              $stderrPath = Join-Path $secureRoot ($safeName + '.stderr.txt')
+              [System.IO.File]::WriteAllText(
+                $remotePath,
+                $remoteScript,
+                (New-Object System.Text.UTF8Encoding($false))
+              )
+
               $sshArguments = @(
                 '-T',
                 '-o', 'StrictHostKeyChecking=no',
@@ -141,17 +156,17 @@ jobs:
                 '-o', 'NumberOfPasswordPrompts=1',
                 '-o', 'ConnectTimeout=15',
                 "rancher@$address",
-                $remoteCommand
+                'bash', '-s'
               )
-              $savedErrorActionPreference = $ErrorActionPreference
-              $ErrorActionPreference = 'Continue'
-              try {
-                & $ssh.Source @sshArguments 1> $stdoutPath 2> $stderrPath
-                $sshExitCode = $LASTEXITCODE
-              }
-              finally {
-                $ErrorActionPreference = $savedErrorActionPreference
-              }
+              $process = Start-Process `
+                -FilePath $ssh.Source `
+                -ArgumentList $sshArguments `
+                -NoNewWindow `
+                -Wait `
+                -PassThru `
+                -RedirectStandardInput $remotePath `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath
 
               $combined = [string](Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue) +
                 "`n===ssh-stderr===`n" +
@@ -164,12 +179,14 @@ jobs:
                 '(?i)K10[a-z0-9]{20,}::server:[a-z0-9]{20,}',
                 '[REDACTED-RKE2-TOKEN]'
               )
-              $safePath = Join-Path $outputRoot ($address.Replace('.', '-') + '.txt')
-              Set-Content -LiteralPath $safePath -Value $combined -Encoding UTF8
+              Set-Content `
+                -LiteralPath (Join-Path $outputRoot ($safeName + '.txt')) `
+                -Value $combined `
+                -Encoding UTF8
 
               $summary += [ordered]@{
                 address = $address
-                sshExitCode = $sshExitCode
+                sshExitCode = $process.ExitCode
                 rancherdActive = ($combined -match '(?ms)---rancherd---.*?\r?\nactive\r?\n')
                 rke2ServerActive = ($combined -match '(?ms)---rke2-server---.*?\r?\nactive\r?\n')
                 rke2AgentActive = ($combined -match '(?ms)---rke2-agent---.*?\r?\nactive\r?\n')
