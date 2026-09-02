@@ -1,0 +1,32 @@
+﻿{
+    "SchemaVersion":  "2.1",
+    "RequestId":  "advance-join-nodes-to-install-confirmation-20260902-01",
+    "ExecutedAtUtc":  "2026-09-02T02:09:48.4489216Z",
+    "Host":  "TESTSER",
+    "CredentialPathUsed":  null,
+    "Results":  [
+                    {
+                        "VM":  "sen2",
+                        "Actions":  [
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  13,
+                                            "Status":  "success"
+                                        }
+                                    ],
+                        "StateAfter":  "Running"
+                    },
+                    {
+                        "VM":  "sen3",
+                        "Actions":  [
+                                        {
+                                            "Kind":  "key",
+                                            "Code":  13,
+                                            "Status":  "success"
+                                        }
+                                    ],
+                        "StateAfter":  "Running"
+                    }
+                ],
+    "FatalError":  null
+}

@@ -1,0 +1,12 @@
+﻿LayerSentry Hyper-V console command
+Request ID: advance-join-nodes-to-install-confirmation-20260902-01
+Executed UTC: 2026-09-02T02:09:48.4489216Z
+Fatal error: 
+
+VM   StateAfter
+--   ----------
+sen2 Running   
+sen3 Running   
+
+
+
