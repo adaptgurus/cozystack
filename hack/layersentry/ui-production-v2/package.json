@@ -1,0 +1,17 @@
+{
+  "name": "@layersentry/production-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Air-gap-safe LayerSentry management UI shell and branding runtime.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "ci": "npm run validate && npm test && npm run build"
+  },
+  "license": "UNLICENSED"
+}
