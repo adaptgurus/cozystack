@@ -1,0 +1,12 @@
+{
+  "requestId": "create-retained-kubevirt-vm-20260902-040000",
+  "operation": "CREATE_AND_VALIDATE_RETAINED_KUBEVIRT_VM",
+  "authorization": "USER_GRANTED_FULL_POWERSHELL_AND_INSTALL_PERMISSION",
+  "clusterUrl": "https://10.10.10.10",
+  "namespace": "layersentry-validation",
+  "virtualMachine": "layersentry-smoke-vm",
+  "containerDiskRepository": "quay.io/kubevirt/cirros-container-disk-demo",
+  "containerDiskReferencePolicy": "resolve-tag-once-and-use-linux-amd64-sha256-digest",
+  "retainVmForInspection": true,
+  "productionReleaseApprovalImplied": false
+}
