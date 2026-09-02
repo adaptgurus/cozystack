@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: layersentry-production-ui
+  namespace: layersentry-system
+  labels:
+    app.kubernetes.io/name: layersentry-production-ui
+    app.kubernetes.io/part-of: layersentry
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: layersentry-production-ui
