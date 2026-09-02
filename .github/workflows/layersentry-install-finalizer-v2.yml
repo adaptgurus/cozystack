@@ -66,19 +66,26 @@ jobs:
             $newNodeCount +
             $content.Substring($nodeCountIndex + $oldNodeCount.Length)
 
-          # PowerShell functions enumerate output. With one DVD attached,
-          # Get-DvdPaths therefore becomes a scalar string unless every caller
-          # explicitly wraps the invocation. StrictMode then rejects .Count.
-          $oldDvdAssignment = '$dvdPaths = Get-DvdPaths -VmName $VmName'
-          $newDvdAssignment = '$dvdPaths = @(Get-DvdPaths -VmName $VmName)'
-          $dvdAssignmentCount = [regex]::Matches(
+          # PowerShell variables are case-insensitive, but .NET string/regex
+          # matching is not. Patch the one function-scoped $VmName occurrence
+          # and the two loop-scoped $vmName occurrences independently.
+          $oldDvdUpper = '$dvdPaths = Get-DvdPaths -VmName $VmName'
+          $newDvdUpper = '$dvdPaths = @(Get-DvdPaths -VmName $VmName)'
+          $oldDvdLower = '$dvdPaths = Get-DvdPaths -VmName $vmName'
+          $newDvdLower = '$dvdPaths = @(Get-DvdPaths -VmName $vmName)'
+          $upperCount = [regex]::Matches(
             $content,
-            [regex]::Escape($oldDvdAssignment)
+            [regex]::Escape($oldDvdUpper)
           ).Count
-          if ($dvdAssignmentCount -ne 3) {
-            throw "Expected exactly three scalar DVD path assignments; found $dvdAssignmentCount."
+          $lowerCount = [regex]::Matches(
+            $content,
+            [regex]::Escape($oldDvdLower)
+          ).Count
+          if ($upperCount -ne 1 -or $lowerCount -ne 2) {
+            throw "Expected DVD assignment counts upper=1/lower=2; found upper=$upperCount/lower=$lowerCount."
           }
-          $content = $content.Replace($oldDvdAssignment, $newDvdAssignment)
+          $content = $content.Replace($oldDvdUpper, $newDvdUpper)
+          $content = $content.Replace($oldDvdLower, $newDvdLower)
 
           $installCountPattern = '(?ms)^\s*\$installedServiceCount = @\(\s*\(Test-TcpAddress -Address \$address -Port 22\),\s*\(Test-TcpAddress -Address \$address -Port 9345\),\s*\(Test-TcpAddress -Address \$address -Port 10250\) \|\s*Where-Object \{ \$_ \}\s*\)\.Count'
           $match = [regex]::Match($content, $installCountPattern)
