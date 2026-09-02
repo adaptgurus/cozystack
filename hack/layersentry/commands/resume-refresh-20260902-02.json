@@ -1,0 +1,24 @@
+{
+  "requestId": "resume-refresh-20260902-02",
+  "delayAfterSeconds": 8,
+  "targets": [
+    {
+      "vm": "sen1",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    },
+    {
+      "vm": "sen2",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    },
+    {
+      "vm": "sen3",
+      "actions": [
+        {"kind": "sleep", "milliseconds": 100}
+      ]
+    }
+  ]
+}
