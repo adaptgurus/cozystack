@@ -1,0 +1,314 @@
+name: LayerSentry - Refresh manual-install VMs on TESTSER v2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-refresh-manual-install-vms-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: layersentry-refresh-manual-install-vms-testser-v2
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Verify retained ISO, delete sen1-sen3, recreate powered-off VMs
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 150
+    env:
+      ARTIFACT_NAME: layersentry-v1.0-harvester-v1.8.2-amd64-offline-7355b893cae5cef00516f569bd406c5eae985259
+      SOURCE_RUN_ID: '33716608731'
+      EXPECTED_ISO_SIZE_BYTES: '9369419776'
+      EXPECTED_SHA256: 6d337528fe17714a902b1ca3ab9ed5867fb1c976330bc115a37d5688ac871da4
+      EXPECTED_SHA512: e19d266511f440e125dc7cf2da7a6d716b3d60121d7f96fc5aa0f65d53868d281dcc5ac98afd70f994c68750df2f0ac70cbfe512a38053a657765c7f40fd215a
+      STAGING_DIR: C:\LayerSentry\retained-artifact-7355b893
+      ISO_PATH: C:\LayerSentry\LayerSentry-v1.0-offline-7355b893.iso
+      VM_ROOT: C:\Hyper-V\LayerSentry
+      SWITCH_NAME: Cozystack-NAT
+      NAT_NAME: Cozystack-NAT
+      NAT_PREFIX: 10.10.10.0/24
+      GATEWAY: 10.10.10.1
+      CLUSTER_VIP: 10.10.10.10
+      RESULT_JSON: C:\LayerSentry\manual-install-vm-prep-result.json
+
+    steps:
+      - name: Safety preflight on TESTSER
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:COMPUTERNAME -ine 'TESTSER') {
+            throw "Refusing to run on unexpected host '$env:COMPUTERNAME'. Expected TESTSER."
+          }
+          Import-Module Hyper-V -ErrorAction Stop
+          if ((Get-Service vmms -ErrorAction Stop).Status -ne 'Running') {
+            throw 'Hyper-V VMMS is not running.'
+          }
+          $switch = Get-VMSwitch -Name $env:SWITCH_NAME -ErrorAction Stop
+          if ([string]$switch.SwitchType -ne 'Internal') {
+            throw "Switch $env:SWITCH_NAME is not Internal."
+          }
+          $nat = Get-NetNat -Name $env:NAT_NAME -ErrorAction Stop
+          if ($nat.InternalIPInterfaceAddressPrefix -ne $env:NAT_PREFIX) {
+            throw "NAT prefix mismatch. Found $($nat.InternalIPInterfaceAddressPrefix), expected $env:NAT_PREFIX."
+          }
+          $gateway = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $env:GATEWAY -ErrorAction Stop
+          if ($gateway.PrefixLength -ne 24) {
+            throw "Gateway $env:GATEWAY does not use /24."
+          }
+          $c = Get-Volume -DriveLetter C -ErrorAction Stop
+          $freeGiB = [math]::Round($c.SizeRemaining / 1GB, 2)
+          Write-Host "C: free before retained artifact download: $freeGiB GiB"
+          if ($c.SizeRemaining -lt 25GB) {
+            throw "C: has only $freeGiB GiB free; at least 25 GiB is required before artifact download."
+          }
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:ISO_PATH) | Out-Null
+          Remove-Item -LiteralPath $env:STAGING_DIR -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $env:STAGING_DIR | Out-Null
+          Write-Host 'TESTSER safety preflight: PASS'
+
+      - name: Download immutable retained BUILD-GOOD artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.STAGING_DIR }}
+          github-token: ${{ github.token }}
+          repository: adaptgurus/harvester-installer
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Verify retained ISO and place stable copy
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $candidates = @(Get-ChildItem -LiteralPath $env:STAGING_DIR -Filter '*.iso' -File -Recurse -ErrorAction Stop)
+          if ($candidates.Count -ne 1) {
+            throw "Expected exactly one ISO in retained artifact; found $($candidates.Count)."
+          }
+          $candidate = $candidates[0]
+          if ([int64]$candidate.Length -ne [int64]$env:EXPECTED_ISO_SIZE_BYTES) {
+            throw "ISO size mismatch: $($candidate.Length), expected $env:EXPECTED_ISO_SIZE_BYTES. No VM will be deleted."
+          }
+          $sha256 = (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sha512 = (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ($sha256 -cne $env:EXPECTED_SHA256) {
+            throw "ISO SHA-256 mismatch: $sha256. No VM will be deleted."
+          }
+          if ($sha512 -cne $env:EXPECTED_SHA512) {
+            throw "ISO SHA-512 mismatch: $sha512. No VM will be deleted."
+          }
+
+          $partial = "$($env:ISO_PATH).partial"
+          Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+          Move-Item -LiteralPath $candidate.FullName -Destination $partial -Force
+          $partialFile = Get-Item -LiteralPath $partial -ErrorAction Stop
+          $partialSha256 = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([int64]$partialFile.Length -ne [int64]$env:EXPECTED_ISO_SIZE_BYTES -or $partialSha256 -cne $env:EXPECTED_SHA256) {
+            throw 'Stable placement verification failed. No VM will be deleted.'
+          }
+          Move-Item -LiteralPath $partial -Destination $env:ISO_PATH -Force
+          "$($env:EXPECTED_SHA256) *$(Split-Path -Leaf $env:ISO_PATH)" | Set-Content -LiteralPath "$($env:ISO_PATH).sha256" -Encoding ASCII
+          "$($env:EXPECTED_SHA512) *$(Split-Path -Leaf $env:ISO_PATH)" | Set-Content -LiteralPath "$($env:ISO_PATH).sha512" -Encoding ASCII
+          Write-Host 'Retained ISO verification: PASS'
+          Write-Host "ISO: $env:ISO_PATH"
+          Write-Host "Bytes: $($partialFile.Length)"
+          Write-Host "SHA-256: $sha256"
+          Write-Host "SHA-512: $sha512"
+
+      - name: Delete only old sen1 sen2 sen3 VMs and their attached disks
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          # Re-run the immutable candidate gate immediately before destructive work.
+          $iso = Get-Item -LiteralPath $env:ISO_PATH -ErrorAction Stop
+          $sha256 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sha512 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ([int64]$iso.Length -ne [int64]$env:EXPECTED_ISO_SIZE_BYTES -or $sha256 -cne $env:EXPECTED_SHA256 -or $sha512 -cne $env:EXPECTED_SHA512) {
+            throw 'Retained ISO gate failed immediately before destructive work. Nothing will be deleted.'
+          }
+
+          foreach ($name in @('sen1','sen2','sen3')) {
+            $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+            $diskPaths = @()
+            if ($null -ne $vm) {
+              $diskPaths = @(Get-VMHardDiskDrive -VMName $name -ErrorAction Stop | ForEach-Object { $_.Path } | Where-Object { $_ })
+              Write-Host "Removing VM $name. Attached disks: $($diskPaths -join ', ')"
+              if ($vm.State -ne 'Off') {
+                Stop-VM -Name $name -TurnOff -Force -ErrorAction Stop
+              }
+              Remove-VM -Name $name -Force -ErrorAction Stop
+            } else {
+              Write-Host "VM $name is already absent."
+            }
+
+            foreach ($diskPath in $diskPaths) {
+              $extension = [IO.Path]::GetExtension($diskPath).ToLowerInvariant()
+              if ($extension -notin @('.vhd','.vhdx','.avhd','.avhdx')) {
+                throw "Refusing unexpected disk extension for $name: $diskPath"
+              }
+              if (Test-Path -LiteralPath $diskPath -PathType Leaf) {
+                Remove-Item -LiteralPath $diskPath -Force -ErrorAction Stop
+                Write-Host "Deleted attached disk: $diskPath"
+              }
+            }
+
+            foreach ($root in @('C:\Hyper-V\LayerSentry','D:\Hyper-V\LayerSentry')) {
+              $nodeDir = Join-Path $root $name
+              if (Test-Path -LiteralPath $nodeDir -PathType Container) {
+                Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted exact stale node directory: $nodeDir"
+              }
+            }
+            if ($null -ne (Get-VM -Name $name -ErrorAction SilentlyContinue)) {
+              throw "VM $name still exists after removal."
+            }
+          }
+          Write-Host 'Scoped deletion of sen1/sen2/sen3: PASS'
+
+      - name: Create three fresh powered-off manual-install VMs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $nodes = @(
+            [pscustomobject]@{ Name='sen1'; Address='10.10.10.11/24' },
+            [pscustomobject]@{ Name='sen2'; Address='10.10.10.12/24' },
+            [pscustomobject]@{ Name='sen3'; Address='10.10.10.13/24' }
+          )
+          New-Item -ItemType Directory -Force -Path $env:VM_ROOT | Out-Null
+
+          try {
+            foreach ($node in $nodes) {
+              $name = [string]$node.Name
+              if ($null -ne (Get-VM -Name $name -ErrorAction SilentlyContinue)) {
+                throw "Target VM $name unexpectedly exists before creation."
+              }
+              $vmBase = Join-Path $env:VM_ROOT $name
+              $vhdDir = Join-Path $vmBase 'Virtual Hard Disks'
+              New-Item -ItemType Directory -Force -Path $vhdDir | Out-Null
+              $osDisk = Join-Path $vhdDir "$name-os.vhdx"
+              $dataDisk = Join-Path $vhdDir "$name-data.vhdx"
+              if ((Test-Path -LiteralPath $osDisk) -or (Test-Path -LiteralPath $dataDisk)) {
+                throw "Stale target VHDX remains for $name."
+              }
+
+              New-VM -Name $name -Generation 2 -Path $vmBase -MemoryStartupBytes 32GB -NewVHDPath $osDisk -NewVHDSizeBytes 100GB -SwitchName $env:SWITCH_NAME | Out-Null
+              Set-VMProcessor -VMName $name -Count 10 -ExposeVirtualizationExtensions $true
+              Set-VMMemory -VMName $name -DynamicMemoryEnabled $false -StartupBytes 32GB
+              Set-VM -Name $name -AutomaticCheckpointsEnabled $false -CheckpointType Disabled -AutomaticStartAction Nothing -AutomaticStopAction ShutDown
+              Set-VMFirmware -VMName $name -EnableSecureBoot Off
+              $adapter = Get-VMNetworkAdapter -VMName $name -ErrorAction Stop | Select-Object -First 1
+              Set-VMNetworkAdapter -VMName $name -Name $adapter.Name -MacAddressSpoofing On -DhcpGuard Off -RouterGuard Off
+              New-VHD -Path $dataDisk -Dynamic -SizeBytes 300GB | Out-Null
+              Add-VMHardDiskDrive -VMName $name -ControllerType SCSI -Path $dataDisk
+              $dvd = Add-VMDvdDrive -VMName $name -Path $env:ISO_PATH -Passthru
+              Set-VMFirmware -VMName $name -FirstBootDevice $dvd
+              $notes = @(
+                'LayerSentry v1.0 manual installation candidate'
+                'Retained BUILD-GOOD source: 7355b893cae5cef00516f569bd406c5eae985259'
+                "Planned node IP: $($node.Address)"
+                "Cluster VIP: $env:CLUSTER_VIP"
+                "Gateway: $env:GATEWAY"
+                "ISO SHA-256: $env:EXPECTED_SHA256"
+                'Installation intentionally not started by automation'
+              ) -join [Environment]::NewLine
+              Set-VM -Name $name -Notes $notes
+            }
+          }
+          catch {
+            foreach ($name in @('sen1','sen2','sen3')) {
+              $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+              if ($null -ne $vm) {
+                if ($vm.State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force -ErrorAction SilentlyContinue }
+                Remove-VM -Name $name -Force -ErrorAction SilentlyContinue
+              }
+              $nodeDir = Join-Path $env:VM_ROOT $name
+              Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            throw
+          }
+          Write-Host 'Fresh VM creation: PASS'
+
+      - name: Validate manual-install handoff and record evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $rows = New-Object System.Collections.Generic.List[object]
+
+          foreach ($name in @('sen1','sen2','sen3')) {
+            $vm = Get-VM -Name $name -ErrorAction Stop
+            $cpu = Get-VMProcessor -VMName $name -ErrorAction Stop
+            $mem = Get-VMMemory -VMName $name -ErrorAction Stop
+            $fw = Get-VMFirmware -VMName $name -ErrorAction Stop
+            $nic = Get-VMNetworkAdapter -VMName $name -ErrorAction Stop | Select-Object -First 1
+            $dvd = Get-VMDvdDrive -VMName $name -ErrorAction Stop | Select-Object -First 1
+            $drives = @(Get-VMHardDiskDrive -VMName $name -ErrorAction Stop)
+            if ($vm.State -ne 'Off') { throw "$name is not powered off." }
+            if ([int]$vm.Generation -ne 2) { throw "$name is not Generation 2." }
+            if ($cpu.Count -ne 10 -or -not $cpu.ExposeVirtualizationExtensions) { throw "$name CPU/nested-virtualization invariant failed." }
+            if ($mem.DynamicMemoryEnabled -or [int64]$mem.Startup -ne 32GB) { throw "$name memory invariant failed." }
+            if ([string]$fw.SecureBoot -ne 'Off') { throw "$name Secure Boot is not Off." }
+            if ($nic.SwitchName -ne $env:SWITCH_NAME -or [string]$nic.MacAddressSpoofing -ne 'On') { throw "$name network invariant failed." }
+            if ($dvd.Path -ne $env:ISO_PATH) { throw "$name DVD does not point to retained ISO." }
+            if ($drives.Count -ne 2) { throw "$name does not have exactly two hard disks." }
+            $sizes = @($drives | ForEach-Object { (Get-VHD -Path $_.Path -ErrorAction Stop).Size } | Sort-Object)
+            if ($sizes[0] -ne 100GB -or $sizes[1] -ne 300GB) { throw "$name disk-size invariant failed." }
+
+            $rows.Add([pscustomobject]@{
+              Name=$name
+              State=[string]$vm.State
+              Generation=[int]$vm.Generation
+              VCPU=$cpu.Count
+              StartupMemoryGiB=32
+              DynamicMemory=$mem.DynamicMemoryEnabled
+              NestedVirtualization=$cpu.ExposeVirtualizationExtensions
+              SecureBoot=[string]$fw.SecureBoot
+              Switch=$nic.SwitchName
+              MacSpoofing=[string]$nic.MacAddressSpoofing
+              HardDisks=@($drives | ForEach-Object { $v=Get-VHD -Path $_.Path; [pscustomobject]@{Path=$_.Path;VirtualSizeGiB=[math]::Round($v.Size/1GB,0);VhdType=[string]$v.VhdType} })
+              DvdPath=$dvd.Path
+            })
+          }
+
+          $iso = Get-Item -LiteralPath $env:ISO_PATH -ErrorAction Stop
+          $report = [pscustomobject]@{
+            SchemaVersion='2.0'
+            CollectedAtUtc=(Get-Date).ToUniversalTime().ToString('o')
+            Host=$env:COMPUTERNAME
+            InstallationPerformed=$false
+            CandidateStatus='BUILD-GOOD / provenance-complete / full-offline candidate; not runtime-qualified'
+            BuildSource='7355b893cae5cef00516f569bd406c5eae985259'
+            FinalizerRepository='adaptgurus/harvester-installer'
+            FinalizerRunId='33716608731'
+            ArtifactId='9879403683'
+            ISO=[pscustomobject]@{Path=$env:ISO_PATH;LengthBytes=$iso.Length;SHA256=(Get-FileHash $env:ISO_PATH -Algorithm SHA256).Hash.ToLowerInvariant();SHA512=(Get-FileHash $env:ISO_PATH -Algorithm SHA512).Hash.ToLowerInvariant()}
+            NetworkPlan=[pscustomobject]@{Prefix=$env:NAT_PREFIX;Gateway=$env:GATEWAY;ClusterVip=$env:CLUSTER_VIP;sen1='10.10.10.11/24';sen2='10.10.10.12/24';sen3='10.10.10.13/24'}
+            VMs=@($rows)
+          }
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:RESULT_JSON) | Out-Null
+          $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $env:RESULT_JSON -Encoding UTF8
+          $report | ConvertTo-Json -Depth 8 | Write-Host
+          Write-Host 'MANUAL INSTALL HANDOFF: PASS - all three VMs are powered OFF; installation not started.'
+
+      - name: Upload preparation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-manual-install-vm-prep-v2-${{ github.run_id }}
+          path: C:\LayerSentry\manual-install-vm-prep-result.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
