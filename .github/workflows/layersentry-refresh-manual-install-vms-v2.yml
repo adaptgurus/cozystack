@@ -234,6 +234,12 @@ jobs:
             }
 
             foreach ($root in @('C:\Hyper-V\LayerSentry','D:\Hyper-V\LayerSentry')) {
+              $driveName = $root.Substring(0, 1)
+              if ($null -eq (Get-PSDrive -Name $driveName -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+                Write-Host "Skipping stale-root check because drive ${driveName}: is absent: $root"
+                continue
+              }
+
               $nodeDir = Join-Path $root $name
               if (Test-Path -LiteralPath $nodeDir -PathType Container) {
                 Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction Stop
