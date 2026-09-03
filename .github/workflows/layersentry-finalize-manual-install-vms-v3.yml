@@ -331,6 +331,20 @@ jobs:
             throw "Duplicate static MAC detected after assignment: $($observedMacs -join ', ')"
           }
 
+          # PowerShell 5.1 can throw "Argument types do not match" when a generic
+          # List[object] is embedded directly in a PSCustomObject. Materialize a
+          # normal object array and a simple ordered map before constructing JSON.
+          $vmRows = @($rows | ForEach-Object { $_ })
+          $macMap = [ordered]@{}
+          foreach ($row in $vmRows) {
+            $macMap[[string]$row.Name] = [string]$row.MacAddress
+          }
+          foreach ($name in @('sen1','sen2','sen3')) {
+            if (-not $macMap.Contains($name)) {
+              throw "Final evidence is missing VM row $name."
+            }
+          }
+
           $report = [pscustomobject]@{
             SchemaVersion = '3.1'
             CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -361,12 +375,8 @@ jobs:
               sen2 = '10.10.10.12/24'
               sen3 = '10.10.10.13/24'
             }
-            ActualMacMapping = [ordered]@{
-              sen1 = ($rows | Where-Object Name -eq 'sen1').MacAddress
-              sen2 = ($rows | Where-Object Name -eq 'sen2').MacAddress
-              sen3 = ($rows | Where-Object Name -eq 'sen3').MacAddress
-            }
-            VMs = @($rows)
+            ActualMacMapping = $macMap
+            VMs = $vmRows
             CompletionFlags = [ordered]@{
               isoArtifactDownloaded = $true
               isoSizeVerified = $true
