@@ -1,0 +1,504 @@
+name: LayerSentry - Finalize manual-install VM handoff on TESTSER v3
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-finalize-manual-install-vms-v3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: layersentry-refresh-manual-install-vms-testser-v2
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Assign static MACs and validate powered-off manual-install VMs
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    env:
+      EXPECTED_ISO_SIZE_BYTES: '9369419776'
+      EXPECTED_SHA256: 6d337528fe17714a902b1ca3ab9ed5867fb1c976330bc115a37d5688ac871da4
+      EXPECTED_SHA512: e19d266511f440e125dc7cf2da7a6d716b3d60121d7f96fc5aa0f65d53868d281dcc5ac98afd70f994c68750df2f0ac70cbfe512a38053a657765c7f40fd215a
+      ISO_PATH: C:\LayerSentry\LayerSentry-v1.0-offline-7355b893.iso
+      VM_ROOT: C:\Hyper-V\LayerSentry
+      SWITCH_NAME: Cozystack-NAT
+      NAT_NAME: Cozystack-NAT
+      NAT_PREFIX: 10.10.10.0/24
+      GATEWAY: 10.10.10.1
+      CLUSTER_VIP: 10.10.10.10
+      RESULT_JSON: C:\LayerSentry\manual-install-vm-prep-result.json
+      FAILURE_JSON: C:\LayerSentry\manual-install-vm-finalize-failure-${{ github.run_id }}.json
+
+    steps:
+      - name: Verify baseline, assign unique static MACs, and record handoff
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Normalize-Mac {
+            param([AllowNull()][string]$Value)
+            if ([string]::IsNullOrWhiteSpace($Value)) {
+              return ''
+            }
+            return (($Value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant())
+          }
+
+          function Get-ExpectedDiskPaths {
+            param([Parameter(Mandatory)][string]$Name)
+            $vmBase = Join-Path $env:VM_ROOT $Name
+            return [pscustomobject]@{
+              OS = [IO.Path]::GetFullPath(
+                (Join-Path $vmBase "Virtual Hard Disks\$Name-os.vhdx")
+              )
+              Data = [IO.Path]::GetFullPath(
+                (Join-Path $vmBase "Virtual Hard Disks\$Name-data.vhdx")
+              )
+            }
+          }
+
+          function Assert-PreparedVmBaseline {
+            param(
+              [Parameter(Mandatory)][pscustomobject]$Node,
+              [switch]$RequireStaticMac
+            )
+
+            $name = [string]$Node.Name
+            $vm = Get-VM -Name $name -ErrorAction Stop
+            $cpu = Get-VMProcessor -VMName $name -ErrorAction Stop
+            $mem = Get-VMMemory -VMName $name -ErrorAction Stop
+            $fw = Get-VMFirmware -VMName $name -ErrorAction Stop
+            $nics = @(Get-VMNetworkAdapter -VMName $name -ErrorAction Stop)
+            $dvds = @(Get-VMDvdDrive -VMName $name -ErrorAction Stop)
+            $drives = @(Get-VMHardDiskDrive -VMName $name -ErrorAction Stop)
+
+            if ($vm.State -ne 'Off') {
+              throw "$name must remain powered off."
+            }
+            if ([int]$vm.Generation -ne 2) {
+              throw "$name is not Generation 2."
+            }
+            if ($cpu.Count -ne 10 -or -not $cpu.ExposeVirtualizationExtensions) {
+              throw "$name CPU/nested-virtualization invariant failed."
+            }
+            if ($mem.DynamicMemoryEnabled -or [int64]$mem.Startup -ne 32GB) {
+              throw "$name memory invariant failed."
+            }
+            if ([string]$fw.SecureBoot -ne 'Off') {
+              throw "$name Secure Boot is not Off."
+            }
+            if ($vm.AutomaticCheckpointsEnabled -or [string]$vm.CheckpointType -ne 'Disabled') {
+              throw "$name checkpoint invariant failed."
+            }
+            if (
+              [string]$vm.AutomaticStartAction -ne 'Nothing' -or
+              [string]$vm.AutomaticStopAction -ne 'ShutDown'
+            ) {
+              throw "$name automatic start/stop invariant failed."
+            }
+            if ($nics.Count -ne 1) {
+              throw "$name must have exactly one network adapter; found $($nics.Count)."
+            }
+            if ($dvds.Count -ne 1) {
+              throw "$name must have exactly one DVD drive; found $($dvds.Count)."
+            }
+            if ($drives.Count -ne 2) {
+              throw "$name must have exactly two hard disks; found $($drives.Count)."
+            }
+
+            $nic = $nics[0]
+            $dvd = $dvds[0]
+            if (
+              $nic.SwitchName -ne $env:SWITCH_NAME -or
+              [string]$nic.MacAddressSpoofing -ne 'On' -or
+              [string]$nic.DhcpGuard -ne 'Off' -or
+              [string]$nic.RouterGuard -ne 'Off'
+            ) {
+              throw "$name network invariant failed."
+            }
+            if ($dvd.Path -ne $env:ISO_PATH) {
+              throw "$name DVD does not point to the retained ISO."
+            }
+
+            $bootOrder = @($fw.BootOrder)
+            if ($bootOrder.Count -lt 1) {
+              throw "$name has no first boot device."
+            }
+            $firstBoot = $bootOrder[0]
+            if ($null -eq $firstBoot.Device -or [string]$firstBoot.Device.Path -ne $env:ISO_PATH) {
+              throw "$name DVD is not first in UEFI boot order."
+            }
+
+            $expected = Get-ExpectedDiskPaths -Name $name
+            $driveByPath = @{}
+            foreach ($drive in $drives) {
+              $fullPath = [IO.Path]::GetFullPath([string]$drive.Path)
+              $driveByPath[$fullPath] = $drive
+            }
+            if (
+              -not $driveByPath.ContainsKey($expected.OS) -or
+              -not $driveByPath.ContainsKey($expected.Data)
+            ) {
+              throw "$name hard-disk path invariant failed."
+            }
+
+            $osVhd = Get-VHD -Path $expected.OS -ErrorAction Stop
+            $dataVhd = Get-VHD -Path $expected.Data -ErrorAction Stop
+            if ([int64]$osVhd.Size -ne 250GB -or [string]$osVhd.VhdType -ne 'Dynamic') {
+              throw "$name OS VHDX invariant failed."
+            }
+            if ([int64]$dataVhd.Size -ne 300GB -or [string]$dataVhd.VhdType -ne 'Dynamic') {
+              throw "$name data VHDX invariant failed."
+            }
+
+            $currentMac = Normalize-Mac -Value ([string]$nic.MacAddress)
+            $targetMac = Normalize-Mac -Value ([string]$Node.MacAddress)
+            if ($RequireStaticMac) {
+              if ($currentMac -cne $targetMac -or $nic.DynamicMacAddressEnabled) {
+                throw "$name static-MAC invariant failed. Current=$currentMac Target=$targetMac Dynamic=$($nic.DynamicMacAddressEnabled)"
+              }
+            } elseif ($currentMac -notin @('000000000000', $targetMac)) {
+              throw "$name has an unexpected pre-install MAC address: $currentMac"
+            }
+
+            return [pscustomobject]@{
+              VM = $vm
+              CPU = $cpu
+              Memory = $mem
+              Firmware = $fw
+              NIC = $nic
+              DVD = $dvd
+              Drives = $drives
+              ExpectedDisks = $expected
+              OSVhd = $osVhd
+              DataVhd = $dataVhd
+              CurrentMac = $currentMac
+              TargetMac = $targetMac
+            }
+          }
+
+          if ($env:COMPUTERNAME -ine 'TESTSER') {
+            throw "Refusing to run on unexpected host '$env:COMPUTERNAME'. Expected TESTSER."
+          }
+
+          Remove-Item -LiteralPath $env:RESULT_JSON -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:FAILURE_JSON -Force -ErrorAction SilentlyContinue
+
+          Import-Module Hyper-V -ErrorAction Stop
+          if ((Get-Service vmms -ErrorAction Stop).Status -ne 'Running') {
+            throw 'Hyper-V VMMS is not running.'
+          }
+
+          $switch = Get-VMSwitch -Name $env:SWITCH_NAME -ErrorAction Stop
+          if ([string]$switch.SwitchType -ne 'Internal') {
+            throw "Switch $env:SWITCH_NAME is not Internal."
+          }
+          $nat = Get-NetNat -Name $env:NAT_NAME -ErrorAction Stop
+          if ($nat.InternalIPInterfaceAddressPrefix -ne $env:NAT_PREFIX) {
+            throw "NAT prefix mismatch. Found $($nat.InternalIPInterfaceAddressPrefix), expected $env:NAT_PREFIX."
+          }
+          $gateway = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $env:GATEWAY -ErrorAction Stop
+          if ($gateway.PrefixLength -ne 24) {
+            throw "Gateway $env:GATEWAY does not use /24."
+          }
+
+          $iso = Get-Item -LiteralPath $env:ISO_PATH -ErrorAction Stop
+          if ([int64]$iso.Length -ne [int64]$env:EXPECTED_ISO_SIZE_BYTES) {
+            throw "Stable ISO size mismatch: $($iso.Length), expected $env:EXPECTED_ISO_SIZE_BYTES."
+          }
+          $isoSha256 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+          $isoSha512 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ($isoSha256 -cne $env:EXPECTED_SHA256 -or $isoSha512 -cne $env:EXPECTED_SHA512) {
+            throw 'Stable ISO digest verification failed. No VM setting will be changed.'
+          }
+          Write-Host 'Stable retained ISO size/SHA-256/SHA-512 verification: PASS'
+
+          $nodes = @(
+            [pscustomobject]@{
+              Name = 'sen1'
+              Address = '10.10.10.11/24'
+              MacAddress = '00155D0A0A11'
+            },
+            [pscustomobject]@{
+              Name = 'sen2'
+              Address = '10.10.10.12/24'
+              MacAddress = '00155D0A0A12'
+            },
+            [pscustomobject]@{
+              Name = 'sen3'
+              Address = '10.10.10.13/24'
+              MacAddress = '00155D0A0A13'
+            }
+          )
+
+          $targetNames = @($nodes | ForEach-Object { [string]$_.Name })
+          $targetMacs = @($nodes | ForEach-Object { Normalize-Mac -Value ([string]$_.MacAddress) })
+          if (@($targetNames | Select-Object -Unique).Count -ne 3) {
+            throw 'Target VM names are not unique.'
+          }
+          if (@($targetMacs | Select-Object -Unique).Count -ne 3) {
+            throw 'Target static MAC addresses are not unique.'
+          }
+          foreach ($targetMac in $targetMacs) {
+            if ($targetMac -notmatch '^[0-9A-F]{12}$' -or $targetMac -eq '000000000000') {
+              throw "Invalid target static MAC address: $targetMac"
+            }
+          }
+
+          # Validate every non-MAC invariant before changing any adapter.
+          $baseline = @{}
+          foreach ($node in $nodes) {
+            $baseline[$node.Name] = Assert-PreparedVmBaseline -Node $node
+          }
+          Write-Host 'Fresh powered-off VM baseline validation before MAC assignment: PASS'
+
+          # Protect unrelated VMs from a target MAC collision.
+          foreach ($otherVm in @(Get-VM -ErrorAction Stop)) {
+            if ($otherVm.Name -in $targetNames) {
+              continue
+            }
+            foreach ($otherNic in @(Get-VMNetworkAdapter -VMName $otherVm.Name -ErrorAction Stop)) {
+              $otherMac = Normalize-Mac -Value ([string]$otherNic.MacAddress)
+              if ($otherMac -in $targetMacs) {
+                throw "Target MAC $otherMac is already used by unrelated VM '$($otherVm.Name)'."
+              }
+            }
+          }
+          Write-Host 'Unrelated-VM MAC collision check: PASS'
+
+          # Assign deterministic MACs without starting any VM.
+          foreach ($node in $nodes) {
+            $state = $baseline[$node.Name]
+            Set-VMNetworkAdapter `
+              -VMName $node.Name `
+              -Name $state.NIC.Name `
+              -StaticMacAddress $node.MacAddress `
+              -ErrorAction Stop
+            Write-Host "Assigned static pre-install MAC $($node.MacAddress) to $($node.Name)."
+          }
+
+          $rows = New-Object System.Collections.Generic.List[object]
+          $observedMacs = New-Object System.Collections.Generic.List[string]
+          foreach ($node in $nodes) {
+            $state = Assert-PreparedVmBaseline -Node $node -RequireStaticMac
+            $observedMacs.Add($state.CurrentMac)
+            $rows.Add([pscustomobject]@{
+              Name = $node.Name
+              PlannedAddress = $node.Address
+              State = [string]$state.VM.State
+              Generation = [int]$state.VM.Generation
+              VCPU = $state.CPU.Count
+              StartupMemoryGiB = 32
+              DynamicMemory = $state.Memory.DynamicMemoryEnabled
+              NestedVirtualization = $state.CPU.ExposeVirtualizationExtensions
+              SecureBoot = [string]$state.Firmware.SecureBoot
+              AutomaticCheckpoints = $state.VM.AutomaticCheckpointsEnabled
+              CheckpointType = [string]$state.VM.CheckpointType
+              AutomaticStartAction = [string]$state.VM.AutomaticStartAction
+              AutomaticStopAction = [string]$state.VM.AutomaticStopAction
+              Switch = $state.NIC.SwitchName
+              MacAddress = $state.CurrentMac
+              DynamicMacAddressEnabled = $state.NIC.DynamicMacAddressEnabled
+              MacSpoofing = [string]$state.NIC.MacAddressSpoofing
+              DhcpGuard = [string]$state.NIC.DhcpGuard
+              RouterGuard = [string]$state.NIC.RouterGuard
+              HardDisks = @(
+                [pscustomobject]@{
+                  Role = 'OS'
+                  Path = $state.ExpectedDisks.OS
+                  VirtualSizeGiB = 250
+                  VhdType = [string]$state.OSVhd.VhdType
+                },
+                [pscustomobject]@{
+                  Role = 'Data'
+                  Path = $state.ExpectedDisks.Data
+                  VirtualSizeGiB = 300
+                  VhdType = [string]$state.DataVhd.VhdType
+                }
+              )
+              DvdPath = $state.DVD.Path
+              DvdFirst = $true
+            })
+          }
+
+          if (@($observedMacs | Select-Object -Unique).Count -ne 3) {
+            throw "Duplicate static MAC detected after assignment: $($observedMacs -join ', ')"
+          }
+
+          $report = [pscustomobject]@{
+            SchemaVersion = '3.1'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            Host = $env:COMPUTERNAME
+            GitHubRepository = $env:GITHUB_REPOSITORY
+            GitHubWorkflow = $env:GITHUB_WORKFLOW
+            GitHubRunId = $env:GITHUB_RUN_ID
+            GitHubSha = $env:GITHUB_SHA
+            SourceRefreshRunId = '33742868497'
+            SourceRefreshSha = 'fc476c69a8e462f4c1ec5524dbfb9f8a5547d786'
+            InstallationPerformed = $false
+            CandidateStatus = 'BUILD-GOOD / provenance-complete / full-offline candidate; not runtime-qualified'
+            BuildSource = '7355b893cae5cef00516f569bd406c5eae985259'
+            FinalizerRepository = 'adaptgurus/harvester-installer'
+            FinalizerRunId = '33716608731'
+            ArtifactId = '9879403683'
+            ISO = [pscustomobject]@{
+              Path = $env:ISO_PATH
+              LengthBytes = $iso.Length
+              SHA256 = $isoSha256
+              SHA512 = $isoSha512
+            }
+            NetworkPlan = [pscustomobject]@{
+              Prefix = $env:NAT_PREFIX
+              Gateway = $env:GATEWAY
+              ClusterVip = $env:CLUSTER_VIP
+              sen1 = '10.10.10.11/24'
+              sen2 = '10.10.10.12/24'
+              sen3 = '10.10.10.13/24'
+            }
+            ActualMacMapping = [ordered]@{
+              sen1 = ($rows | Where-Object Name -eq 'sen1').MacAddress
+              sen2 = ($rows | Where-Object Name -eq 'sen2').MacAddress
+              sen3 = ($rows | Where-Object Name -eq 'sen3').MacAddress
+            }
+            VMs = @($rows)
+            CompletionFlags = [ordered]@{
+              isoArtifactDownloaded = $true
+              isoSizeVerified = $true
+              isoSha256Verified = $true
+              isoSha512Verified = $true
+              oldSen1Deleted = $true
+              oldSen2Deleted = $true
+              oldSen3Deleted = $true
+              oldAttachedDisksDeleted = $true
+              freshSen1Created = $true
+              freshSen2Created = $true
+              freshSen3Created = $true
+              allFreshVmsPoweredOff = $true
+              allFreshVmsGeneration2 = $true
+              allFreshVmsVcpu10 = $true
+              allFreshVmsMemory32GiBStatic = $true
+              allFreshVmsNestedVirtualization = $true
+              allFreshVmsSecureBootOff = $true
+              allFreshVmsOsDisk250GiB = $true
+              allFreshVmsDataDisk300GiB = $true
+              allFreshVmsIsoAttached = $true
+              allFreshVmsDvdFirst = $true
+              actualMacAddressesRecorded = $true
+              allFreshVmsStaticMacUnique = $true
+              installationPerformed = $false
+              credentialValuesWrittenToEvidence = $false
+            }
+          }
+
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:RESULT_JSON) | Out-Null
+          $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $env:RESULT_JSON -Encoding UTF8
+          $report | ConvertTo-Json -Depth 10 | Write-Host
+          Write-Host 'MANUAL INSTALL HANDOFF: PASS - all three VMs remain powered OFF; installation not started.'
+
+      - name: Record fail-closed TESTSER state when finalization fails
+        if: failure()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-StrictMode -Off
+
+          $snapshot = [ordered]@{
+            SchemaVersion = '1.0'
+            CollectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+            Host = $env:COMPUTERNAME
+            GitHubRepository = $env:GITHUB_REPOSITORY
+            GitHubWorkflow = $env:GITHUB_WORKFLOW
+            GitHubRunId = $env:GITHUB_RUN_ID
+            GitHubSha = $env:GITHUB_SHA
+            Result = 'FAILED'
+            InstallationPerformed = $false
+            CredentialValuesWrittenToEvidence = $false
+          }
+
+          try {
+            Import-Module Hyper-V -ErrorAction Stop
+            $snapshot['VMs'] = @(
+              foreach ($name in @('sen1','sen2','sen3')) {
+                $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+                if ($null -eq $vm) {
+                  [pscustomobject]@{ Name=$name; Exists=$false }
+                  continue
+                }
+                $nic = Get-VMNetworkAdapter -VMName $name -ErrorAction SilentlyContinue | Select-Object -First 1
+                $dvd = Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue | Select-Object -First 1
+                $drives = @(
+                  Get-VMHardDiskDrive -VMName $name -ErrorAction SilentlyContinue |
+                    ForEach-Object {
+                      $vhd = Get-VHD -Path $_.Path -ErrorAction SilentlyContinue
+                      [pscustomobject]@{
+                        Path = $_.Path
+                        VirtualSizeGiB = if ($null -ne $vhd) {
+                          [math]::Round($vhd.Size / 1GB, 0)
+                        } else {
+                          $null
+                        }
+                      }
+                    }
+                )
+                [pscustomobject]@{
+                  Name = $name
+                  Exists = $true
+                  State = [string]$vm.State
+                  Generation = [int]$vm.Generation
+                  MacAddress = if ($null -ne $nic) { [string]$nic.MacAddress } else { $null }
+                  DynamicMacAddressEnabled = if ($null -ne $nic) {
+                    $nic.DynamicMacAddressEnabled
+                  } else {
+                    $null
+                  }
+                  HardDisks = $drives
+                  DvdPath = if ($null -ne $dvd) { [string]$dvd.Path } else { $null }
+                }
+              }
+            )
+          }
+          catch {
+            $snapshot['HyperVInventoryError'] = $_.Exception.Message
+          }
+
+          try {
+            if (Test-Path -LiteralPath $env:ISO_PATH -PathType Leaf) {
+              $iso = Get-Item -LiteralPath $env:ISO_PATH
+              $snapshot['ISO'] = [ordered]@{
+                Path = $env:ISO_PATH
+                LengthBytes = $iso.Length
+                SHA256 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+                SHA512 = (Get-FileHash -LiteralPath $env:ISO_PATH -Algorithm SHA512).Hash.ToLowerInvariant()
+              }
+            } else {
+              $snapshot['ISO'] = [ordered]@{
+                Path = $env:ISO_PATH
+                Exists = $false
+              }
+            }
+          }
+          catch {
+            $snapshot['IsoInventoryError'] = $_.Exception.Message
+          }
+
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:FAILURE_JSON) | Out-Null
+          $snapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $env:FAILURE_JSON -Encoding UTF8
+          $snapshot | ConvertTo-Json -Depth 8 | Write-Host
+
+      - name: Upload corrected preparation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-manual-install-vm-prep-v3-${{ github.run_id }}
+          path: |
+            C:\LayerSentry\manual-install-vm-prep-result.json
+            C:\LayerSentry\manual-install-vm-finalize-failure-${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
