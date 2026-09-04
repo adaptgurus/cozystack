@@ -34,6 +34,12 @@ jobs:
             Remove-Item -LiteralPath $evidence -Recurse -Force
           }
           New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+          @(
+            'LAYERSENTRY_DR_R0_LIVE_INVENTORY_STARTED'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            'MUTATION_PERFORMED=false'
+          ) | Set-Content -Path (Join-Path $evidence 'started.txt') -Encoding UTF8
 
           function Get-PropertyValue {
             param(
@@ -105,6 +111,22 @@ jobs:
           $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
           $vmHost = Get-VMHost -ErrorAction Stop
           $vmms = Get-Service vmms -ErrorAction Stop
+
+          $lastBootUtc = $null
+          $lastBootRaw = Get-PropertyValue $operatingSystem 'LastBootUpTime'
+          if ($null -ne $lastBootRaw) {
+            try {
+              if ($lastBootRaw -is [DateTime]) {
+                $lastBootUtc = ([DateTime]$lastBootRaw).ToUniversalTime().ToString('o')
+              }
+              else {
+                $lastBootUtc = ([Management.ManagementDateTimeConverter]::ToDateTime([string]$lastBootRaw)).ToUniversalTime().ToString('o')
+              }
+            }
+            catch {
+              $lastBootUtc = [string]$lastBootRaw
+            }
+          }
 
           $hostVolumes = @(
             Get-Volume -ErrorAction SilentlyContinue |
@@ -245,7 +267,7 @@ jobs:
               TotalPhysicalMemoryGiB = To-GiB $computerSystem.TotalPhysicalMemory
               OsCaption = [string]$operatingSystem.Caption
               OsVersion = [string]$operatingSystem.Version
-              LastBootUtc = ([Management.ManagementDateTimeConverter]::ToDateTime($operatingSystem.LastBootUpTime)).ToUniversalTime().ToString('o')
+              LastBootUtc = $lastBootUtc
               VmmsStatus = [string]$vmms.Status
               HyperV = [ordered]@{
                 VirtualHardDiskPath = [string]$vmHost.VirtualHardDiskPath
