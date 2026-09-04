@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "operation": "RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM",
+  "authorization": "USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "installerCommit": "aeda25d62cfe047bb62202eea17aa4f87554a2c2",
+  "scope": "single existing Rocky Linux 9 VM only",
+  "retryAfterWorkflowValidationFix": true,
+  "allowDatabaseInitializationIfMissing": true,
+  "allowUiBuildAndDeployment": true,
+  "allowEphemeralSshBootstrap": true,
+  "allowNetworkBridgeChanges": false,
+  "allowStorageDestructiveChanges": false,
+  "allowVmDeletion": false,
+  "productionReleaseApprovalImplied": false
+}
