@@ -1,0 +1,14 @@
+{
+  "operation": "MIGRATE_LAYERSENTRY_ETH0_TO_CLOUDBR0",
+  "authorization": "USER_AUTHORIZED_ROLLBACK_PROTECTED_NETWORK_MIGRATION",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "physicalInterface": "eth0",
+  "bridge": "cloudbr0",
+  "prefix": 24,
+  "gateway": "10.10.10.1",
+  "dns": ["1.1.1.1", "8.8.8.8"],
+  "hyperVSwitch": "Cozystack-NAT",
+  "scriptCommit": "c5e0a53ca1830e80c0c23b0c19213e1e0038c1a5",
+  "purpose": "Move the static Layersentry management IP from eth0 to cloudbr0 on the only Hyper-V VM. A 180-second guest rollback is mandatory and may be cancelled only after the Windows runner independently reconnects, validates SSH, routing and the Layersentry HTTP endpoint."
+}
