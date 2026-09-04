@@ -1,0 +1,159 @@
+name: LayerSentry CloudStack Full Branding Repair
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-full-branding-repair-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-full-branding-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact branding request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Rebuild and deploy Layersentry on the only Hyper-V VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-full-branding-repair'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-full-branding-repair-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one full-branding repair request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'REPAIR_LAYERSENTRY_FULL_BRANDING') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_FULL_BRANDING_REPAIR') { throw 'Authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
+          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Target FQDN mismatch.' }
+          if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'CloudStack version mismatch.' }
+          if ([string]$request.repairCommit -ne '12051c9f122494b3e820e541f4045276b9e39b8d') { throw 'Repair commit mismatch.' }
+
+          $vms = @(Get-VM)
+          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
+          $vm = $vms[0]
+          if ($vm.State -ne 'Running') { throw "Only VM '$($vm.Name)' is not running." }
+          $cpu = Get-VMProcessor -VMName $vm.Name
+          if (-not [bool]$cpu.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed.' }
+          $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
+          if ([string]$nic.MacAddressSpoofing -ne 'On') { throw 'MAC spoofing is not enabled.' }
+          Write-Host "Safety gate passed for only VM: $($vm.Name)"
+
+          $key = Join-Path $env:RUNNER_TEMP 'layersentry-full-branding-ed25519'
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-full-branding-$env:GITHUB_RUN_ID"
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed.' }
+
+          $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patchedHelper = Join-Path $env:RUNNER_TEMP 'invoke-layersentry-full-branding-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$escapedVm')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected public key format.' }
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "full-branding-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $consolePath = Join-Path $env:RUNNER_TEMP 'layersentry-full-branding-console.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+          & $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old=$ErrorActionPreference
+              $ErrorActionPreference='Continue'
+              $probe=& ssh.exe @ssh 'printf FULL_BRANDING_READY' 2>&1
+              $rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if ($rc -eq 0 -and (($probe -join '') -match 'FULL_BRANDING_READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
+
+            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/12051c9f122494b3e820e541f4045276b9e39b8d/install-layersentry-rocky9-branding-repair.sh'
+            $remoteInstall="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 180 '$scriptUrl' -o /root/install-layersentry-rocky9-branding-repair.sh && chmod 700 /root/install-layersentry-rocky9-branding-repair.sh && bash -n /root/install-layersentry-rocky9-branding-repair.sh && /root/install-layersentry-rocky9-branding-repair.sh"
+            $old=$ErrorActionPreference
+            $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'branding-repair-stdout.txt')
+            $remoteRc=$LASTEXITCODE
+            $ErrorActionPreference=$old
+            if ($remoteRc -ne 0) {
+              $old=$ErrorActionPreference
+              $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "echo =====LATEST_BRANDING_LOG=====; L=`$(ls -1t /var/log/layersentry-branding-repair-*.log 2>/dev/null | head -1); echo LOG=`$L; test -z `"`$L`" || tail -n 1000 `"`$L`"; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====CONFIG_PATHS=====; ls -l /etc/cloudstack/ui/config.json /usr/share/cloudstack-ui/config.json 2>&1 || true" 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'branding-repair-failure.txt')
+              $ErrorActionPreference=$old
+              throw "Branding repair exited $remoteRc."
+            }
+
+            $verify="echo =====IDENTITY=====; hostname -f; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 15 http://127.0.0.1:8080/client/; echo; echo =====RUNTIME_CONFIG=====; curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json; echo; echo =====COMPILED=====; grep -Rqs --include='*.js' DBaaS /usr/share/cloudstack-ui && echo DBAAS=PASS || echo DBAAS=FAIL; grep -Rqs --include='*.js' APaaS /usr/share/cloudstack-ui && echo APAAS=PASS || echo APAAS=FAIL; grep -Rqs --include='*.js' 'Secure cloud infrastructure management' /usr/share/cloudstack-ui && echo ONBOARDING=PASS || echo ONBOARDING=FAIL; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 live branding repair completed' /var/log/layersentry-branding-repair-*.log | tail -1 || true"
+            $old=$ErrorActionPreference
+            $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $verify 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'branding-final-evidence.txt')
+            $verifyRc=$LASTEXITCODE
+            $ErrorActionPreference=$old
+            if ($verifyRc -ne 0) { throw "Final branding verification exited $verifyRc." }
+
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }
+          finally {
+            if ($ready) {
+              $safeComment=$comment.Replace("'","")
+              $old=$ErrorActionPreference
+              $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload full branding evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-full-branding-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-full-branding-repair\**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
