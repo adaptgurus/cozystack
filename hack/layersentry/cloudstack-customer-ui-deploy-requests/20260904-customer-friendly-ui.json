@@ -3,8 +3,8 @@
   "authorization": "USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY",
   "expectedAddress": "10.10.10.14",
   "expectedFqdn": "layersentry.lab.example",
-  "productRepairCommit": "27ce0193f8cb82bf4b02a4e0365e53ef762b68e7",
-  "uiCommit": "b448226098ff3e53163445eadfb9483d58eb02fa",
-  "requestedAt": "2026-09-04T14:32:00+05:30",
-  "purpose": "Replace stale upstream customer shell branding and simplify infrastructure setup terminology without changing backend API object names or infrastructure data."
+  "productRepairCommit": "75b993753055868a4e7ce448eea3526f96ae1cc8",
+  "uiCommit": "0361a0cccb9956b4c57f62dfbf091b01d0fa9f3c",
+  "requestedAt": "2026-09-04T14:39:00+05:30",
+  "purpose": "Deploy the locked Layersentry shell, readable navigation, and customer-friendly Site/Infrastructure Group/management-network terminology without changing backend APIs or infrastructure data."
 }
