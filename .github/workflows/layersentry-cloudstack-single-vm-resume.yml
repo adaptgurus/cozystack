@@ -1,4 +1,4 @@
-name: LayerSentry CloudStack Single-VM Resume
+name: LayerSentry CloudStack Single VM Resume
 
 on:
   push:
@@ -16,217 +16,168 @@ concurrency:
 
 jobs:
   resume:
-    name: Resume Layersentry CloudStack on the only Hyper-V VM
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 120
 
     steps:
-      - name: Checkout exact runner helpers
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Validate explicit single-VM recovery request
+      - name: Resume Layersentry on only Hyper-V VM
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
-          [string[]]$paths = @(
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-single-vm-resume'
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
             @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-resume-requests/*.json') |
               ForEach-Object { [string]$_ } |
               Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
           )
-          if ($LASTEXITCODE -ne 0) { throw "git diff-tree failed: $LASTEXITCODE" }
-          if ($paths.Count -ne 1) { throw "Expected exactly one recovery request; found $($paths.Count)." }
-          $requestPath = $paths[0].Trim()
-          $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            throw "git diff-tree failed with $LASTEXITCODE"
+          }
+          if ($changed.Count -ne 1) {
+            throw "Expected one recovery request; found $($changed.Count)."
+          }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
           if ([string]$request.operation -ne 'RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM') {
             throw "Unsupported operation: $($request.operation)"
           }
           if ([string]$request.authorization -ne 'USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY') {
-            throw 'Explicit installation recovery authorization is missing.'
+            throw 'Explicit recovery authorization is missing.'
           }
-          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Unexpected target address.' }
-          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Unexpected target FQDN.' }
-          if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'Unexpected CloudStack version.' }
-          if ([string]$request.installerCommit -ne 'aeda25d62cfe047bb62202eea17aa4f87554a2c2') { throw 'Unexpected installer commit.' }
-          "REQUEST_PATH=$requestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ([string]$request.expectedAddress -ne '10.10.10.14') {
+            throw 'Target address validation failed.'
+          }
+          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') {
+            throw 'Target FQDN validation failed.'
+          }
+          if ([string]$request.cloudstackVersion -ne '4.22.1.1') {
+            throw 'CloudStack version validation failed.'
+          }
+          if ([string]$request.installerCommit -ne 'aeda25d62cfe047bb62202eea17aa4f87554a2c2') {
+            throw 'Installer commit validation failed.'
+          }
 
-      - name: Assert exactly one running Hyper-V VM
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Import-Module Hyper-V -ErrorAction Stop
           $vms = @(Get-VM)
-          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
+          if ($vms.Count -ne 1) {
+            throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)."
+          }
           $vm = $vms[0]
-          if ($vm.State -ne 'Running') { throw "Only VM '$($vm.Name)' is not Running: $($vm.State)." }
-          $processor = Get-VMProcessor -VMName $vm.Name
-          if (-not [bool]$processor.ExposeVirtualizationExtensions) {
-            throw "Nested virtualization is not exposed for '$($vm.Name)'."
+          if ($vm.State -ne 'Running') {
+            throw "Only VM $($vm.Name) is not running."
           }
-          $adapter = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
-          if ([string]$adapter.MacAddressSpoofing -ne 'On') {
-            throw "MAC address spoofing is not On for '$($vm.Name)'."
+          $cpu = Get-VMProcessor -VMName $vm.Name
+          if (-not [bool]$cpu.ExposeVirtualizationExtensions) {
+            throw 'Nested virtualization is not exposed on the only VM.'
           }
-          "TARGET_VM=$($vm.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Approved only VM: $($vm.Name); state=$($vm.State); nestedVirtualization=True; macSpoofing=On"
+          $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
+          if ([string]$nic.MacAddressSpoofing -ne 'On') {
+            throw 'MAC address spoofing is not enabled on the only VM.'
+          }
+          Write-Host "Only VM approved: $($vm.Name)"
 
-      - name: Prepare evidence and ephemeral SSH key
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-single-vm-resume'
-          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
-          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
           $key = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-ephemeral-ed25519'
-          Remove-Item -LiteralPath $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
           $comment = "layersentry-runner-$env:GITHUB_RUN_ID"
           & ssh-keygen.exe -q -t ed25519 -N '' -C $comment -f $key
-          if ($LASTEXITCODE -ne 0) { throw 'ssh-keygen failed.' }
-          "EVIDENCE_DIR=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "SSH_KEY=$key" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "SSH_KEY_COMMENT=$comment" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($LASTEXITCODE -ne 0) {
+            throw 'ssh-keygen failed.'
+          }
 
-      - name: Bootstrap ephemeral SSH key through Hyper-V console
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Set-StrictMode -Version Latest
           $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
-          $patched = Join-Path $env:RUNNER_TEMP 'invoke-single-vm-console-command.ps1'
-          $text = Get-Content -LiteralPath $source -Raw -Encoding UTF8
-          $escapedVm = $env:TARGET_VM.Replace("'", "''")
+          $patched = Join-Path $env:RUNNER_TEMP 'invoke-cloudstack-single-vm-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
           $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
           $replacement = "`$allowedNames = @('$escapedVm')"
-          if (-not $text.Contains($needle)) { throw 'Console helper allowed-name guard was not found.' }
-          $text = $text.Replace($needle, $replacement)
-          Set-Content -LiteralPath $patched -Value $text -Encoding UTF8
+          if (-not $helper.Contains($needle)) {
+            throw 'Expected VM allow-list guard not found in console helper.'
+          }
+          $helper = $helper.Replace($needle, $replacement)
+          Set-Content -LiteralPath $patched -Value $helper -Encoding UTF8
 
-          $pub = (Get-Content -LiteralPath "$env:SSH_KEY.pub" -Raw -Encoding ASCII).Trim()
-          if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected ephemeral public key format.' }
-          $command = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
-          $request = [ordered]@{
-            requestId = "cloudstack-ssh-bootstrap-$env:GITHUB_RUN_ID"
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          if ($pub -notmatch '^ssh-ed25519\s+') {
+            throw 'Unexpected public key format.'
+          }
+          $bootstrapCommand = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "cloudstack-bootstrap-$env:GITHUB_RUN_ID"
             delayAfterSeconds = 3
             targets = @(
               [ordered]@{
-                vm = $env:TARGET_VM
+                vm = $vm.Name
                 actions = @(
                   [ordered]@{ kind = 'key'; code = 13 },
-                  [ordered]@{ kind = 'text'; value = $command },
+                  [ordered]@{ kind = 'text'; value = $bootstrapCommand },
                   [ordered]@{ kind = 'key'; code = 13 }
                 )
               }
             )
           }
-          $requestPath = Join-Path $env:RUNNER_TEMP 'cloudstack-ssh-bootstrap.json'
-          $request | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $requestPath -Encoding UTF8
-          & $patched -RequestPath $requestPath -OutputDirectory (Join-Path $env:EVIDENCE_DIR 'console-bootstrap')
+          $consoleRequestPath = Join-Path $env:RUNNER_TEMP 'cloudstack-console-bootstrap.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consoleRequestPath -Encoding UTF8
+          & $patched -RequestPath $consoleRequestPath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
 
-      - name: Verify ephemeral SSH access
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
           $ssh = @(
-            '-i', $env:SSH_KEY,
+            '-i', $key,
             '-o', 'BatchMode=yes',
             '-o', 'StrictHostKeyChecking=no',
             '-o', 'UserKnownHostsFile=NUL',
             '-o', 'ConnectTimeout=10',
             'root@10.10.10.14'
           )
-          $ready = $false
-          for ($i=1; $i -le 12; $i++) {
-            $result = & ssh.exe @ssh 'printf RUNNER_SSH_READY' 2>&1
-            if ($LASTEXITCODE -eq 0 -and (($result -join '') -match 'RUNNER_SSH_READY')) { $ready = $true; break }
+
+          $sshReady = $false
+          for ($attempt = 1; $attempt -le 12; $attempt++) {
+            $probe = & ssh.exe @ssh 'printf RUNNER_SSH_READY' 2>&1
+            if ($LASTEXITCODE -eq 0 -and (($probe -join '') -match 'RUNNER_SSH_READY')) {
+              $sshReady = $true
+              break
+            }
             Start-Sleep -Seconds 5
           }
-          if (-not $ready) { throw 'Ephemeral SSH bootstrap failed. The VM console may not have been at a root shell.' }
-          Write-Host 'Ephemeral SSH access verified without persisting a password in GitHub.'
+          if (-not $sshReady) {
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'bootstrap-failed-console')
+            throw 'Ephemeral SSH bootstrap failed; console was likely not at an authenticated root shell.'
+          }
 
-      - name: Fetch pinned recovery installer and resume Layersentry
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $ssh = @(
-            '-i', $env:SSH_KEY,
-            '-o', 'BatchMode=yes',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=NUL',
-            '-o', 'ServerAliveInterval=30',
-            '-o', 'ServerAliveCountMax=20',
-            'root@10.10.10.14'
-          )
-          $url = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/aeda25d62cfe047bb62202eea17aa4f87554a2c2/install-layersentry-rocky9-resume.sh'
-          $remote = "curl -fsSL '$url' -o /root/install-layersentry-rocky9-resume.sh && chmod 700 /root/install-layersentry-rocky9-resume.sh && bash -n /root/install-layersentry-rocky9-resume.sh && /root/install-layersentry-rocky9-resume.sh"
-          $outputPath = Join-Path $env:EVIDENCE_DIR 'resume-stdout.txt'
-          & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath $outputPath
-          $rc = $LASTEXITCODE
-          if ($rc -ne 0) { throw "Remote Layersentry recovery exited $rc." }
+          try {
+            $installerUrl = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/aeda25d62cfe047bb62202eea17aa4f87554a2c2/install-layersentry-rocky9-resume.sh'
+            $remoteInstall = "curl -fsSL '$installerUrl' -o /root/install-layersentry-rocky9-resume.sh && chmod 700 /root/install-layersentry-rocky9-resume.sh && bash -n /root/install-layersentry-rocky9-resume.sh && /root/install-layersentry-rocky9-resume.sh"
+            & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-stdout.txt')
+            if ($LASTEXITCODE -ne 0) {
+              throw "Remote recovery exited $LASTEXITCODE."
+            }
 
-      - name: Collect authoritative guest evidence
+            $remoteEvidence = "echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent; echo =====JAVA-KVM=====; java -version 2>&1 | head -3; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 resumed installation completed' /var/log/layersentry-rocky9-resume-*.log | tail -1 || true"
+            & ssh.exe @ssh $remoteEvidence 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-final-evidence.txt')
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }
+          finally {
+            $safeComment = $comment.Replace("'", "")
+            & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload recovery evidence
         if: always()
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $ssh = @(
-            '-i', $env:SSH_KEY,
-            '-o', 'BatchMode=yes',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=NUL',
-            '-o', 'ConnectTimeout=10',
-            'root@10.10.10.14'
-          )
-          $remote = @'
-          echo '===== IDENTITY ====='
-          hostname -f
-          ip -4 -br addr
-          ip route
-          echo '===== PACKAGES ====='
-          rpm -q cloudstack-management cloudstack-ui cloudstack-agent
-          echo '===== JAVA/KVM ====='
-          java -version 2>&1 | head -3
-          test -c /dev/kvm && ls -l /dev/kvm
-          lsmod | grep kvm || true
-          echo '===== SERVICES ====='
-          systemctl is-active mysqld cloudstack-management cloudstack-agent || true
-          echo '===== HTTP ====='
-          curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://127.0.0.1:8080/client/ || true
-          echo '===== LIBVIRT ====='
-          virsh -c qemu:///system list --all || true
-          echo '===== COMPLETION ====='
-          grep -F '[100%] Layersentry V1.0 resumed installation completed' /var/log/layersentry-rocky9-resume-*.log | tail -1 || true
-'@
-          & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath (Join-Path $env:EVIDENCE_DIR 'guest-final-evidence.txt')
-
-          & 'hack/layersentry/capture-hyperv-console.ps1' `
-            -VmNames @($env:TARGET_VM) `
-            -OutputDirectory (Join-Path $env:EVIDENCE_DIR 'final-console')
-
-      - name: Remove ephemeral SSH authorization
-        if: always()
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Continue'
-          if (-not (Test-Path -LiteralPath $env:SSH_KEY -PathType Leaf)) { exit 0 }
-          $ssh = @(
-            '-i', $env:SSH_KEY,
-            '-o', 'BatchMode=yes',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=NUL',
-            '-o', 'ConnectTimeout=8',
-            'root@10.10.10.14'
-          )
-          $comment = $env:SSH_KEY_COMMENT.Replace("'", "")
-          & ssh.exe @ssh "sed -i '/$comment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
-          Remove-Item -LiteralPath $env:SSH_KEY,"$env:SSH_KEY.pub" -Force -ErrorAction SilentlyContinue
-
-      - name: Upload sanitized recovery evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: layersentry-cloudstack-single-vm-resume-${{ github.run_id }}
           path: ${{ runner.temp }}\layersentry-cloudstack-single-vm-resume\**
