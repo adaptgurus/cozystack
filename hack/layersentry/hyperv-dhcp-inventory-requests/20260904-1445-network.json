@@ -1,0 +1,6 @@
+{
+  "operation": "INVENTORY_HYPERV_DHCP_SCOPE",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_NETWORK_INVENTORY",
+  "expectedNetwork": "10.10.10.0/24",
+  "purpose": "Read the active Windows DHCP Server scope, options, exclusions, reservations and leases for the Cozystack-NAT subnet before assigning CloudStack management and guest IP ranges."
+}
