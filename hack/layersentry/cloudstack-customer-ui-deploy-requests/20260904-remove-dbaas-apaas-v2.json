@@ -1,0 +1,10 @@
+{
+  "operation": "DEPLOY_LAYERSENTRY_CUSTOMER_UI",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "productRepairCommit": "85031bd2e394c16c631b6e493ced1af87c19fbd3",
+  "uiCommit": "6ce76d6c241629086ffcad794093dbdd5f2dd5ba",
+  "requestedAt": "2026-09-04T19:05:00+05:30",
+  "purpose": "Retry LayerSentry V1 UI deployment after removing the remaining DBaaS/APaaS onboarding reference; verify obsolete placeholder markers are absent before runtime deployment."
+}
