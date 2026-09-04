@@ -1,0 +1,9 @@
+{
+  "operation": "DEPLOY_LAYERSENTRY_CUSTOMER_UI",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "productRepairCommit": "27ce0193f8cb82bf4b02a4e0365e53ef762b68e7",
+  "uiCommit": "b448226098ff3e53163445eadfb9483d58eb02fa",
+  "purpose": "Replace stale upstream customer shell branding and simplify infrastructure setup terminology without changing backend API object names or infrastructure data."
+}
