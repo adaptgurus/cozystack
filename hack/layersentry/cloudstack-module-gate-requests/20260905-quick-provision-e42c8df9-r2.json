@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "operation": "QUALIFY_LAYERSENTRY_CLOUDSTACK_MODULE",
+  "authorization": "REPOSITORY_BUILD_AND_TEST_ONLY",
+  "cloudstackRepository": "adaptgurus/cloudstack",
+  "cloudstackCommit": "e42c8df9d4ed017e10f2c05c613a7918da682326",
+  "module": "quick-provision-v1-source-foundation-r2",
+  "requireStrictNpmCi": true,
+  "requireLint": true,
+  "requireUnitTests": true,
+  "requireProductionBuild": true,
+  "requireKvmOnlyCustomerAudit": true,
+  "liveCompletionGateRequired": true,
+  "liveDeploymentAuthorized": false,
+  "moduleCompletionApproved": false
+}
