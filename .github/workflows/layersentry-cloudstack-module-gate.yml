@@ -1,0 +1,275 @@
+name: LayerSentry CloudStack Module Gate
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-module-gate-requests/*.json
+      - .github/workflows/layersentry-cloudstack-module-gate.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-module-gate
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Qualify exact CloudStack UI or feature commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout exact runner request commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Bind and validate exactly one module-gate request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t requests < <(
+            git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'hack/layersentry/cloudstack-module-gate-requests/*.json' |
+              sed '/^[[:space:]]*$/d'
+          )
+          if (( ${#requests[@]} != 1 )); then
+            echo "Expected exactly one LayerSentry CloudStack module request; found ${#requests[@]}." >&2
+            printf '%s\n' "${requests[@]}" >&2
+            exit 1
+          fi
+
+          request="${requests[0]}"
+          jq -e '
+            .schemaVersion == "1.0" and
+            .operation == "QUALIFY_LAYERSENTRY_CLOUDSTACK_MODULE" and
+            .authorization == "REPOSITORY_BUILD_AND_TEST_ONLY" and
+            .cloudstackRepository == "adaptgurus/cloudstack" and
+            (.cloudstackCommit | test("^[a-f0-9]{40}$")) and
+            (.module | type == "string" and length > 0 and length <= 80) and
+            .requireStrictNpmCi == true and
+            .requireLint == true and
+            .requireUnitTests == true and
+            .requireProductionBuild == true and
+            .requireKvmOnlyCustomerAudit == true and
+            .liveCompletionGateRequired == true and
+            .liveDeploymentAuthorized == false and
+            .moduleCompletionApproved == false
+          ' "$request" >/dev/null
+
+          if grep -Ein 'password|passwd|secret|token|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|Bearer[[:space:]]' "$request"; then
+            echo 'Module-gate request must not contain credentials or reusable secret material.' >&2
+            exit 1
+          fi
+
+          sha="$(jq -r '.cloudstackCommit' "$request")"
+          module="$(jq -r '.module' "$request")"
+          echo "path=$request" >> "$GITHUB_OUTPUT"
+          echo "cloudstack_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "module=$module" >> "$GITHUB_OUTPUT"
+          echo "REQUEST_PATH=$request" >> "$GITHUB_ENV"
+          echo "CLOUDSTACK_SHA=$sha" >> "$GITHUB_ENV"
+          echo "MODULE_NAME=$module" >> "$GITHUB_ENV"
+
+      - name: Fetch exact LayerSentry CloudStack source
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/cloudstack"
+          git init -q "$src"
+          git -C "$src" remote add origin https://github.com/adaptgurus/cloudstack.git
+          git -C "$src" -c protocol.version=2 fetch --depth 1 origin "$CLOUDSTACK_SHA"
+          git -C "$src" checkout -q --detach FETCH_HEAD
+          observed="$(git -C "$src" rev-parse HEAD)"
+          test "$observed" = "$CLOUDSTACK_SHA"
+          echo "CLOUDSTACK_SOURCE=$src" >> "$GITHUB_ENV"
+
+      - name: Install pinned CloudStack 4.22 UI Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=16.20.2
+          archive="node-v${version}-linux-x64.tar.xz"
+          expected=874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
+          curl -fsS --retry 4 --retry-all-errors --connect-timeout 15 --max-time 180 \
+            "https://nodejs.org/dist/v${version}/${archive}" -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          nodebin="$RUNNER_TEMP/node-v${version}-linux-x64/bin"
+          echo "$nodebin" >> "$GITHUB_PATH"
+          echo "NODE_BIN=$nodebin" >> "$GITHUB_ENV"
+
+      - name: Verify pinned build runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          test "$(node --version)" = 'v16.20.2'
+
+      - name: Strict dependency installation
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          rm -rf node_modules
+          npm ci --no-audit --no-fund
+
+      - name: Lint without source modification
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run lint -- --no-fix
+          test -z "$(git -C "$CLOUDSTACK_SOURCE" status --short)"
+
+      - name: Execute unit tests
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run test:unit -- --runInBand
+
+      - name: Execute production UI build
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run build
+          test -f dist/index.html
+          test -f dist/config.json
+
+      - name: Enforce LayerSentry KVM-only and Quick Provision source contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$CLOUDSTACK_SOURCE"
+          test -f "$src/ui/src/config/productProfile.js"
+          grep -F "LAYERSENTRY_KVM_PROFILE = 'layersentry-kvm'" "$src/ui/src/config/productProfile.js"
+          grep -F "return name === 'KVM'" "$src/ui/src/config/productProfile.js"
+
+          if [[ "$MODULE_NAME" == quick-provision* ]]; then
+            file="$src/ui/src/views/layersentry/QuickProvision.vue"
+            test -f "$file"
+            grep -F 'Quick Provision' "$file"
+            grep -F "hypervisor: 'KVM'" "$file"
+            grep -F "path: '/quick-provision'" "$src/ui/src/config/router.js"
+            if grep -Ein 'VMware|XenServer|XCP-ng|Hyper-V|Proxmox|MaaS' "$file"; then
+              echo 'Quick Provision contains a non-KVM customer hypervisor name.' >&2
+              exit 1
+            fi
+          fi
+
+      - name: Verify built artifact contains LayerSentry Quick Provision when requested
+        if: startsWith(steps.request.outputs.module, 'quick-provision')
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Rqs --include='*.js' 'Quick Provision' "$CLOUDSTACK_SOURCE/ui/dist"
+          grep -Rqs --include='*.js' 'KVM only' "$CLOUDSTACK_SOURCE/ui/dist"
+
+      - name: Package exact qualified UI artifact
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/layersentry-cloudstack-module-release"
+          mkdir -p "$out"
+          cp -a "$CLOUDSTACK_SOURCE/ui/dist" "$out/ui-dist"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -C "$out" -czf "$out/ui-dist.tar.gz" ui-dist
+          sha256sum "$out/ui-dist.tar.gz" > "$out/ui-dist.tar.gz.sha256"
+          jq -n \
+            --arg product LayerSentry \
+            --arg module "$MODULE_NAME" \
+            --arg cloudstackCommit "$CLOUDSTACK_SHA" \
+            --arg runnerCommit "$GITHUB_SHA" \
+            --arg workflowRunId "$GITHUB_RUN_ID" \
+            '{
+              schemaVersion: "1.0",
+              product: $product,
+              module: $module,
+              cloudstackCommit: $cloudstackCommit,
+              runnerCommit: $runnerCommit,
+              workflowRunId: $workflowRunId,
+              sourceQualificationPassed: true,
+              liveClusterDeploymentPerformed: false,
+              moduleCompletionApproved: false
+            }' > "$out/build-evidence.json"
+
+      - name: Build sanitized terminal evidence
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          evidence="$RUNNER_TEMP/layersentry-cloudstack-module-gate-$GITHUB_RUN_ID"
+          mkdir -p "$evidence"
+          conclusion="${{ job.status }}"
+          passed=false
+          [[ "$conclusion" == success ]] && passed=true
+          jq -n \
+            --arg product LayerSentry \
+            --arg module "${MODULE_NAME:-unknown}" \
+            --arg cloudstackCommit "${CLOUDSTACK_SHA:-unknown}" \
+            --arg runnerCommit "$GITHUB_SHA" \
+            --arg workflowRunId "$GITHUB_RUN_ID" \
+            --arg requestPath "${REQUEST_PATH:-unknown}" \
+            --arg conclusion "$conclusion" \
+            --argjson passed "$passed" \
+            '{
+              schemaVersion: "1.0",
+              product: $product,
+              module: $module,
+              cloudstackCommit: $cloudstackCommit,
+              runnerCommit: $runnerCommit,
+              workflowRunId: $workflowRunId,
+              requestPath: $requestPath,
+              conclusion: $conclusion,
+              sourceQualificationPassed: $passed,
+              liveClusterDeploymentPerformed: false,
+              moduleCompletionApproved: false
+            }' > "$evidence/terminal-result.json"
+
+          {
+            echo '# LayerSentry CloudStack module gate'
+            echo
+            echo "- Module: ${MODULE_NAME:-unknown}"
+            echo "- CloudStack commit: ${CLOUDSTACK_SHA:-unknown}"
+            echo "- Runner commit: $GITHUB_SHA"
+            echo "- Source qualification: **$passed**"
+            echo '- Live Rocky Linux 9 deployment performed: **false**'
+            echo '- Module completion approved: **false**'
+            echo '- A separate exact-artifact Rocky 9/browser/RBAC acceptance gate is still required before module completion.'
+          } > "$evidence/STATUS.md"
+
+      - name: Upload qualified UI artifact
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-cloudstack-module-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/layersentry-cloudstack-module-release
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+
+      - name: Upload module-gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-cloudstack-module-gate-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/layersentry-cloudstack-module-gate-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
