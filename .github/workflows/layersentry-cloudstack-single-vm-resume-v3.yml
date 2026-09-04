@@ -1,0 +1,149 @@
+name: LayerSentry CloudStack Single VM Resume v3
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-resume-v3-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-single-vm-resume-v3
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resume Layersentry on the only Hyper-V VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-single-vm-resume-v3'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-resume-v3-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw "Expected exactly one v3 recovery request." }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM_V3') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY') { throw 'Recovery authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
+          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Target FQDN mismatch.' }
+          if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'CloudStack version mismatch.' }
+          if ([string]$request.installerCommit -ne 'd38dba2660c7777c6d3ae7992c8ce5b3d68019e6') { throw 'Installer commit mismatch.' }
+
+          $vms = @(Get-VM)
+          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
+          $vm = $vms[0]
+          if ($vm.State -ne 'Running') { throw "Only VM '$($vm.Name)' is not running." }
+          $cpu = Get-VMProcessor -VMName $vm.Name
+          if (-not [bool]$cpu.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed.' }
+          $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
+          if ([string]$nic.MacAddressSpoofing -ne 'On') { throw 'MAC spoofing is not enabled.' }
+          Write-Host "Safety gate passed for only VM: $($vm.Name)"
+
+          $key = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-v3-ed25519'
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-v3-$env:GITHUB_RUN_ID"
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed.' }
+
+          $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patchedHelper = Join-Path $env:RUNNER_TEMP 'invoke-cloudstack-v3-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$escapedVm')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected public key format.' }
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "cloudstack-v3-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $consolePath = Join-Path $env:RUNNER_TEMP 'cloudstack-v3-console.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+          & $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready = $false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              $probe=& ssh.exe @ssh 'printf RUNNER_V3_READY' 2>&1; $rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if ($rc -eq 0 -and (($probe -join '') -match 'RUNNER_V3_READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
+
+            $url='https://raw.githubusercontent.com/adaptgurus/cloudstack/d38dba2660c7777c6d3ae7992c8ce5b3d68019e6/install-layersentry-rocky9-resume-v3.sh'
+            $remote="curl -fsSL '$url' -o /root/install-layersentry-rocky9-resume-v3.sh && chmod 700 /root/install-layersentry-rocky9-resume-v3.sh && bash -n /root/install-layersentry-rocky9-resume-v3.sh && /root/install-layersentry-rocky9-resume-v3.sh"
+            $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-v3-stdout.txt')
+            $remoteRc=$LASTEXITCODE; $ErrorActionPreference=$old
+            if ($remoteRc -ne 0) {
+              $failure="echo =====V3_RUNTIME_LOG=====; L=`$(ls -1t /var/log/layersentry-rocky9-resume-v2-*.log 2>/dev/null | head -1); echo LOG=`$L; if [ -n `"`$L`" ]; then tail -n 900 `"`$L`"; fi; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====DB_TABLES=====; mysql --protocol=socket -uroot -NBe `"SELECT TABLE_SCHEMA,COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA IN ('cloud','cloud_usage') GROUP BY TABLE_SCHEMA;`" 2>&1 || true"
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              & ssh.exe @ssh $failure 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-failure-evidence.txt')
+              $ErrorActionPreference=$old
+              throw "Remote recovery v3 exited $remoteRc."
+            }
+
+            $verify="echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent mysql-server; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====CONFIG=====; C=/etc/cloudstack/management/config.json; test -r `"`$C`" && grep -E 'Layersentry|V1.0' `"`$C`" || true; echo =====COMPILED_CATALOGS=====; U=`$(dirname `$(rpm -ql cloudstack-ui | awk '/\/index.html`$/ {print; exit}')); grep -Rqs --include='*.js' DBaaS `"`$U`" && echo DBAAS_COMPILED=PASS || echo DBAAS_COMPILED=FAIL; grep -Rqs --include='*.js' APaaS `"`$U`" && echo APAAS_COMPILED=PASS || echo APAAS_COMPILED=FAIL; echo =====KVM=====; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 Rocky Linux 9 recovery v2 completed' /var/log/layersentry-rocky9-resume-v2-*.log | tail -1 || true"
+            $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $verify 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-final-evidence.txt')
+            $ErrorActionPreference=$old
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }
+          finally {
+            if ($ready) {
+              $safeComment=$comment.Replace("'","")
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-single-vm-resume-v3-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-single-vm-resume-v3\**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
