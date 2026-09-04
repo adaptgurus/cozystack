@@ -1,0 +1,8 @@
+{
+  "operation": "LAYERSENTRY_CLOUDSTACK_PHASE2_INVENTORY",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_PHASE2_INVENTORY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "purpose": "Collect read-only host, network, storage, CloudStack, KVM and Hyper-V evidence after successful Layersentry recovery v3, before any cloudbr0/storage/zone changes. User explicitly asked to resume and complete the deployment using the existing GitHub runner and the only Hyper-V VM."
+}
