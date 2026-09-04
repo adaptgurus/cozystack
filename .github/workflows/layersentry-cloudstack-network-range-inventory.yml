@@ -1,0 +1,117 @@
+name: LayerSentry CloudStack Network Range Inventory
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-network-range-inventory-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-network-range-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Collect read-only Hyper-V NAT and subnet occupancy evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-network-range-inventory'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-network-range-inventory-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one inventory request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'INVENTORY_LAYERSENTRY_POC_NETWORK_RANGE' -or [string]$r.authorization -ne 'USER_AUTHORIZED_READ_ONLY_NETWORK_INVENTORY'){throw 'Authorization mismatch.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedNetwork -ne '10.10.10.0/24'){throw 'Target network mismatch.'}
+
+          $vms=@(Get-VM)
+          if($vms.Count -ne 1){throw "Expected one Hyper-V VM; found $($vms.Count)."}
+          $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          $hostFile=Join-Path $evidence 'hyperv-network.txt'
+          '===== VM ====='|Set-Content $hostFile -Encoding UTF8
+          Get-VM -Name $vm.Name|Format-List Name,State,ProcessorCount,MemoryAssigned|Out-String|Add-Content $hostFile -Encoding UTF8
+          Get-VMNetworkAdapter -VMName $vm.Name|Format-List Name,SwitchName,MacAddress,MacAddressSpoofing,IPAddresses|Out-String|Add-Content $hostFile -Encoding UTF8
+          Get-VMNetworkAdapterVlan -VMName $vm.Name|Format-List *|Out-String|Add-Content $hostFile -Encoding UTF8
+          '===== VSWITCH ====='|Add-Content $hostFile -Encoding UTF8
+          Get-VMSwitch|Format-List Name,SwitchType,NetAdapterInterfaceDescription,AllowManagementOS|Out-String|Add-Content $hostFile -Encoding UTF8
+          '===== NAT ====='|Add-Content $hostFile -Encoding UTF8
+          Get-NetNat -ErrorAction SilentlyContinue|Format-List *|Out-String|Add-Content $hostFile -Encoding UTF8
+          Get-NetNatStaticMapping -ErrorAction SilentlyContinue|Format-Table -AutoSize|Out-String|Add-Content $hostFile -Encoding UTF8
+          '===== HOST IPV4 ====='|Add-Content $hostFile -Encoding UTF8
+          Get-NetIPAddress -AddressFamily IPv4|Sort-Object InterfaceAlias,IPAddress|Format-Table InterfaceAlias,IPAddress,PrefixLength,AddressState -AutoSize|Out-String|Add-Content $hostFile -Encoding UTF8
+          '===== SERVICES RELEVANT TO DHCP/NAT ====='|Add-Content $hostFile -Encoding UTF8
+          Get-Service|Where-Object {$_.Name -match 'dhcp|sharedaccess|hns|vmms|remoteaccess'}|Format-Table Name,Status,StartType,DisplayName -AutoSize|Out-String|Add-Content $hostFile -Encoding UTF8
+          '===== NEIGHBORS BEFORE SWEEP ====='|Add-Content $hostFile -Encoding UTF8
+          Get-NetNeighbor -AddressFamily IPv4|Where-Object {$_.IPAddress -like '10.10.10.*'}|Sort-Object IPAddress|Format-Table InterfaceAlias,IPAddress,LinkLayerAddress,State -AutoSize|Out-String|Add-Content $hostFile -Encoding UTF8
+
+          $alive=New-Object System.Collections.Generic.List[string]
+          foreach($i in 1..254){
+            $ip="10.10.10.$i"
+            $p=& ping.exe -n 1 -w 120 $ip 2>$null
+            if($LASTEXITCODE -eq 0){$alive.Add($ip)}
+          }
+          '===== ICMP RESPONDERS ====='|Add-Content $hostFile -Encoding UTF8
+          $alive|ForEach-Object {$_}|Add-Content $hostFile -Encoding UTF8
+          '===== NEIGHBORS AFTER SWEEP ====='|Add-Content $hostFile -Encoding UTF8
+          Get-NetNeighbor -AddressFamily IPv4|Where-Object {$_.IPAddress -like '10.10.10.*'}|Sort-Object IPAddress|Format-Table InterfaceAlias,IPAddress,LinkLayerAddress,State -AutoSize|Out-String|Add-Content $hostFile -Encoding UTF8
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-network-inventory-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-network-inventory-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-network-inventory-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')";$escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="network-inventory-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'network-inventory-console.json';$req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){$old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf NETWORK_INVENTORY_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'NETWORK_INVENTORY_READY')){$ready=$true;break};Start-Sleep 5}
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+            $cmd="echo =====GUEST_NETWORK=====; ip -4 -br addr; ip route; nmcli -f NAME,TYPE,DEVICE,AUTOCONNECT connection show; echo =====GUEST_NEIGHBORS=====; ip neigh show dev cloudbr0; echo =====OLD_DHCP_EVIDENCE=====; grep -RniE 'dhcp|server_identifier|10[.]10[.]10[.]10|10[.]10[.]10[.]1' /var/lib/NetworkManager /var/lib/dhclient /etc/NetworkManager/system-connections 2>/dev/null | head -300 || true; echo =====CLOUDSTACK_DB=====; mysql --protocol=socket -uroot -NBe `"SELECT CONCAT('zones=',COUNT(*)) FROM cloud.data_center; SELECT CONCAT('pods=',COUNT(*)) FROM cloud.host_pod_ref; SELECT CONCAT('hosts=',COUNT(*)) FROM cloud.host;`" 2>&1 || true; echo NETWORK_INVENTORY_COMPLETE"
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $cmd 2>&1|Tee-Object -FilePath (Join-Path $evidence 'guest-network.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){throw "Guest network inventory failed $rc."}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'console')
+          }finally{
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload network inventory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-network-range-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-network-range-inventory\**
+          if-no-files-found: warn
+          retention-days: 30
