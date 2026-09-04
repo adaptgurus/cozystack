@@ -1,0 +1,7 @@
+{
+  "operation": "VERIFY_LAYERSENTRY_RUNTIME_AFTER_RESTART",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_RUNTIME_BRANDING",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "purpose": "Restart CloudStack management after the committed Layersentry config was installed, verify the runtime /client/config.json and assets, confirm DBaaS/APaaS remain compiled, and keep the unconfigured agent disabled until bridge configuration."
+}
