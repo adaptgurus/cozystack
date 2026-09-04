@@ -2,6 +2,12 @@ name: LayerSentry Rocky R0 Read-only Acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-rocky-r0-readonly-acceptance.yml
+      - hack/layersentry/collect-rocky-r0-readonly.sh
 
 permissions:
   contents: read
