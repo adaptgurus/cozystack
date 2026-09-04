@@ -1,0 +1,96 @@
+name: LayerSentry Rocky R0 Read-only Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-rocky-r0-readonly-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: Read-only Rocky Linux 9 acceptance inventory
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+      ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+      ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+    steps:
+      - name: Checkout validation helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Collect sanitized Rocky evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ([string]::IsNullOrWhiteSpace($env:ROCKY_HOST) -or
+              [string]::IsNullOrWhiteSpace($env:ROCKY_USERNAME) -or
+              [string]::IsNullOrWhiteSpace($env:ROCKY_PASSWORD)) {
+            throw 'Required Rocky R0 credentials are unavailable as protected repository secrets.'
+          }
+          if ($env:ROCKY_HOST -notmatch '^[A-Za-z0-9.-]+$' -or $env:ROCKY_USERNAME -notmatch '^[A-Za-z0-9._-]+$') {
+            throw 'Rocky host or username contains unsupported characters.'
+          }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-rocky-r0-readonly-acceptance'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          $port = Test-NetConnection -ComputerName $env:ROCKY_HOST -Port 22 -InformationLevel Detailed
+          @(
+            "TARGET=$($env:ROCKY_HOST)"
+            "SSH_PORT_REACHABLE=$($port.TcpTestSucceeded.ToString().ToLowerInvariant())"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'ssh-reachability.txt') -Encoding UTF8
+          if (-not $port.TcpTestSucceeded) { throw 'Rocky SSH endpoint is not reachable from the runner.' }
+
+          if (-not (Get-Module -ListAvailable -Name Posh-SSH)) {
+            throw 'Posh-SSH is not installed on the self-hosted runner; refusing insecure command-line password handling.'
+          }
+          Import-Module Posh-SSH -ErrorAction Stop
+          $securePassword = ConvertTo-SecureString $env:ROCKY_PASSWORD -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential($env:ROCKY_USERNAME, $securePassword)
+          $session = $null
+          try {
+            $session = New-SSHSession -ComputerName $env:ROCKY_HOST -Credential $credential -AcceptKey -ConnectionTimeout 15 -ErrorAction Stop
+            $script = Get-Content -LiteralPath 'hack/layersentry/collect-rocky-r0-readonly.sh' -Raw -Encoding UTF8
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+            $command = "printf '%s' '$encoded' | base64 -d | bash"
+            $result = Invoke-SSHCommand -SessionId $session.SessionId -Command $command -TimeOut 60 -ErrorAction Stop
+            if ($result.ExitStatus -ne 0) { throw "Rocky read-only inventory exited $($result.ExitStatus)." }
+            $output = @($result.Output | ForEach-Object { [string]$_ })
+            if ($output -notcontains 'READ_ONLY_ROCKY_R0_INVENTORY_COMPLETE') { throw 'Rocky inventory completion marker is missing.' }
+            if ($output -notcontains 'MUTATION_PERFORMED=false') { throw 'Rocky inventory mutation marker is missing.' }
+            $output | Set-Content -LiteralPath (Join-Path $evidence 'rocky-inventory.txt') -Encoding UTF8
+          }
+          finally {
+            if ($null -ne $session) { Remove-SSHSession -SessionId $session.SessionId | Out-Null }
+            $credential = $null
+            $securePassword = $null
+          }
+
+          @(
+            'LAYERSENTRY_ROCKY_R0_READ_ONLY_ACCEPTANCE'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            'SSH_REACHABILITY=LIVE_VERIFIED'
+            'ROCKY_INVENTORY=LIVE_VERIFIED'
+            'MUTATION_PERFORMED=false'
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+          Get-Content -LiteralPath (Join-Path $evidence 'summary.txt')
+
+      - name: Upload sanitized Rocky evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-rocky-r0-readonly-acceptance-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-rocky-r0-readonly-acceptance\**
+          if-no-files-found: error
+          retention-days: 30
