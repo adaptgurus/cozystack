@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "operation": "RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM",
+  "authorization": "USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "installerCommit": "6617de6ee417c8970d9085431a8aa62de9698b2d",
+  "scope": "single existing Rocky Linux 9 VM only",
+  "retryReason": "upstream-cloudstack-4.22-ui-build-method-node16-npm-install-with-lock",
+  "allowDatabaseInitializationIfMissing": true,
+  "allowUiBuildAndDeployment": true,
+  "allowEphemeralSshBootstrap": true,
+  "allowNetworkBridgeChanges": false,
+  "allowStorageDestructiveChanges": false,
+  "allowVmDeletion": false,
+  "productionReleaseApprovalImplied": false
+}
