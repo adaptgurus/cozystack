@@ -1,0 +1,7 @@
+{
+  "operation": "DIAGNOSE_CLOUDSTACK_UI_CONFIG_SOURCE",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_DIAGNOSTIC",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "purpose": "Identify the exact filesystem source served as /client/config.json after the Layersentry files were updated and CloudStack management restarted. Read-only diagnostic only."
+}
