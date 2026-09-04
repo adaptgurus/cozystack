@@ -1,0 +1,12 @@
+{
+  "operation": "PREPARE_LAYERSENTRY_LOCAL_NFS_STORAGE",
+  "authorization": "USER_AUTHORIZED_LOCAL_POC_STORAGE_PREPARATION",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "network": "10.10.10.0/24",
+  "primary": "/export/primary",
+  "secondary": "/export/secondary",
+  "storageScriptCommit": "47c3bfb90df8e1d55067c7f14f5cce88e5bdc9a5",
+  "purpose": "Stop the unregistered CloudStack agent restart loop, create source-restricted local NFS primary/secondary exports for the single-node POC, validate NFS via 10.10.10.14, seed the CloudStack 4.22 KVM System VM template, and preserve the existing management/database/network state."
+}
