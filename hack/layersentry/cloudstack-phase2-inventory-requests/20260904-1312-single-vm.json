@@ -1,0 +1,8 @@
+{
+  "operation": "LAYERSENTRY_CLOUDSTACK_PHASE2_INVENTORY",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_PHASE2_INVENTORY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "purpose": "Retry phase-2 read-only inventory after correcting workflow YAML. No network, storage or CloudStack configuration mutations are authorized by this request."
+}
