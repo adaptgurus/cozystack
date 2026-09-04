@@ -71,7 +71,7 @@ jobs:
               '-o', 'BatchMode=no',
               '-o', 'PreferredAuthentications=password',
               '-o', 'PubkeyAuthentication=no',
-              '-o', 'StrictHostKeyChecking=accept-new',
+              '-o', 'StrictHostKeyChecking=no',
               '-o', "UserKnownHostsFile=$knownHosts",
               '-o', 'LogLevel=ERROR',
               '-o', 'ConnectTimeout=15',
@@ -83,10 +83,14 @@ jobs:
             $output = @(& ssh.exe @sshArguments 2>&1 | ForEach-Object { [string]$_ })
             $sshExitCode = $LASTEXITCODE
             $ErrorActionPreference = $oldPreference
+            $sanitizedOutput = @($output | ForEach-Object {
+              $_.Replace($env:ROCKY_HOST, '[TARGET]').Replace($env:ROCKY_USERNAME, '[USER]').Replace($env:ROCKY_PASSWORD, '[REDACTED]')
+            })
+            $sanitizedOutput | Set-Content -LiteralPath (Join-Path $evidence 'ssh-diagnostic.txt') -Encoding UTF8
             if ($sshExitCode -ne 0) { throw "Rocky read-only inventory exited $sshExitCode." }
             if ($output -notcontains 'READ_ONLY_ROCKY_R0_INVENTORY_COMPLETE') { throw 'Rocky inventory completion marker is missing.' }
             if ($output -notcontains 'MUTATION_PERFORMED=false') { throw 'Rocky inventory mutation marker is missing.' }
-            $output | Set-Content -LiteralPath (Join-Path $evidence 'rocky-inventory.txt') -Encoding UTF8
+            $sanitizedOutput | Set-Content -LiteralPath (Join-Path $evidence 'rocky-inventory.txt') -Encoding UTF8
           }
           finally {
             Remove-Item -LiteralPath $askPass -Force -ErrorAction SilentlyContinue
