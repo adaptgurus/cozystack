@@ -1,0 +1,8 @@
+{
+  "operation": "INVENTORY_LAYERSENTRY_POC_NETWORK_RANGE",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_NETWORK_INVENTORY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "expectedNetwork": "10.10.10.0/24",
+  "purpose": "Read-only inspection of the Hyper-V Cozystack-NAT network, relevant DHCP/NAT services, active neighbors and ICMP responders before selecting CloudStack management/guest/System VM ranges."
+}
