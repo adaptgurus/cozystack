@@ -1,0 +1,70 @@
+name: LayerSentry Runtime Branding Reload
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-runtime-branding-reload-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-runtime-branding-reload
+  cancel-in-progress: false
+
+jobs:
+  reload:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Restart management and verify runtime branding
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-runtime-branding-reload'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force | Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-runtime-branding-reload-requests/*.json') | ForEach-Object {[string]$_} | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected one reload request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if([string]$r.operation -ne 'VERIFY_LAYERSENTRY_RUNTIME_AFTER_RESTART' -or [string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_RUNTIME_BRANDING'){throw 'Authorization mismatch.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          $vms=@(Get-VM); if($vms.Count -ne 1){throw "Expected one VM; found $($vms.Count)."}; $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization not exposed.'}
+          if([string](Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1).MacAddressSpoofing -ne 'On'){throw 'MAC spoofing not enabled.'}
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-branding-reload-ed25519'; Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-branding-reload-$env:GITHUB_RUN_ID"; & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""; if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath; $patched=Join-Path $env:RUNNER_TEMP 'invoke-branding-reload-console.ps1'; $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''"); if(-not $helper.Contains($needle)){throw 'Console helper guard not found.'}; Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim(); $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="branding-reload-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}; $cp=Join-Path $env:RUNNER_TEMP 'branding-reload-console.json'; $req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8; & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14'); $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){ $old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf BRANDING_RELOAD_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'BRANDING_RELOAD_READY')){$ready=$true;break};Start-Sleep 5 }
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+            $b64='IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLUVldW8gcGlwZWZhaWwKZm9yIHAgaW4gL2V0Yy9jbG91ZHN0YWNrL3VpL2NvbmZpZy5qc29uIC91c3Ivc2hhcmUvY2xvdWRzdGFjay11aS9jb25maWcuanNvbjsgZG8KICBweXRob24zIC0gIiRwIiA8PCdQWScKaW1wb3J0IGpzb24sc3lzCmM9anNvbi5sb2FkKG9wZW4oc3lzLmFyZ3ZbMV0sZW5jb2Rpbmc9J3V0Zi04JykpCmFzc2VydCBjLmdldCgnYXBwVGl0bGUnKT09J0xheWVyc2VudHJ5Jwphc3NlcnQgYy5nZXQoJ2Zvb3RlcicpPT0nTGF5ZXJzZW50cnkgVjEuMCcKYXNzZXJ0IGMuZ2V0KCdsb2dvJyk9PSdhc3NldHMvbGF5ZXJzZW50cnktbG9nby5zdmcnCmFzc2VydCBjLmdldCgndXNlckNhcmQnLHt9KS5nZXQoJ2VuYWJsZWQnKSBpcyBGYWxzZQpQWQpkb25lCnN5c3RlbWN0bCBkaXNhYmxlIC0tbm93IGNsb3Vkc3RhY2stYWdlbnQgPi9kZXYvbnVsbCAyPiYxIHx8IHRydWUKc3lzdGVtY3RsIHJlc3RhcnQgY2xvdWRzdGFjay1tYW5hZ2VtZW50CmNvZGU9JycKZm9yIGkgaW4gJChzZXEgMSA3Mik7IGRvCiAgY29kZT0iJChjdXJsIC1zUyAtbyAvZGV2L251bGwgLXcgJyV7aHR0cF9jb2RlfScgLS1tYXgtdGltZSA1IGh0dHA6Ly8xMjcuMC4wLjE6ODA4MC9jbGllbnQvIHx8IHRydWUpIgogIFsgIiRjb2RlIiA9IDIwMCBdICYmIGJyZWFrCiAgc2xlZXAgNQpkb25lClsgIiRjb2RlIiA9IDIwMCBdCmN1cmwgLWZzUyAtLW1heC10aW1lIDE1IGh0dHA6Ly8xMjcuMC4wLjE6ODA4MC9jbGllbnQvY29uZmlnLmpzb24gLW8gL3RtcC9sYXllcnNlbnRyeS1ydW50aW1lLWNvbmZpZy5qc29uCnB5dGhvbjMgLSAvdG1wL2xheWVyc2VudHJ5LXJ1bnRpbWUtY29uZmlnLmpzb24gPDwnUFknCmltcG9ydCBqc29uLHN5cwpjPWpzb24ubG9hZChvcGVuKHN5cy5hcmd2WzFdLGVuY29kaW5nPSd1dGYtOCcpKQpjaGVja3M9ewonYXBwVGl0bGUnOmMuZ2V0KCdhcHBUaXRsZScpPT0nTGF5ZXJzZW50cnknLAonbG9naW5UaXRsZSc6Yy5nZXQoJ2xvZ2luVGl0bGUnKT09J0xheWVyc2VudHJ5JywKJ2Zvb3Rlcic6Yy5nZXQoJ2Zvb3RlcicpPT0nTGF5ZXJzZW50cnkgVjEuMCcsCid1c2VyQ2FyZCc6Yy5nZXQoJ3VzZXJDYXJkJyx7fSkuZ2V0KCdlbmFibGVkJykgaXMgRmFsc2UsCidhcGlkb2NzJzpjLmdldCgnYXBpZG9jcycpIGlzIEZhbHNlLAonbm90aWZ5TGF0ZXN0Q1NWZXJzaW9uJzpjLmdldCgnbm90aWZ5TGF0ZXN0Q1NWZXJzaW9uJykgaXMgRmFsc2UsCidsb2dvJzpjLmdldCgnbG9nbycpPT0nYXNzZXRzL2xheWVyc2VudHJ5LWxvZ28uc3ZnJywKJ21pbmlsb2dvJzpjLmdldCgnbWluaWxvZ28nKT09J2Fzc2V0cy9sYXllcnNlbnRyeS1pY29uLnN2ZycKfQpwcmludChqc29uLmR1bXBzKGNoZWNrcyxzb3J0X2tleXM9VHJ1ZSkpCmFzc2VydCBhbGwoY2hlY2tzLnZhbHVlcygpKQpQWQpybSAtZiAvdG1wL2xheWVyc2VudHJ5LXJ1bnRpbWUtY29uZmlnLmpzb24KZm9yIGFzc2V0IGluIGxheWVyc2VudHJ5LWxvZ28uc3ZnIGxheWVyc2VudHJ5LWljb24uc3ZnOyBkbwogIGE9IiQoY3VybCAtc1MgLW8gL2Rldi9udWxsIC13ICcle2h0dHBfY29kZX0nIC0tbWF4LXRpbWUgMTUgImh0dHA6Ly8xMjcuMC4wLjE6ODA4MC9jbGllbnQvYXNzZXRzLyRhc3NldCIpIgogIFsgIiRhIiA9IDIwMCBdCmRvbmUKZ3JlcCAtUnFzIC0taW5jbHVkZT0nKi5qcycgJ0RCYWFTJyAvdXNyL3NoYXJlL2Nsb3Vkc3RhY2stdWkgJiYgZWNobyBEQkFBU19DT01QSUxFRD1QQVNTCmdyZXAgLVJxcyAtLWluY2x1ZGU9JyouanMnICdBUGFhUycgL3Vzci9zaGFyZS9jbG91ZHN0YWNrLXVpICYmIGVjaG8gQVBBQVNfQ09NUElMRUQ9UEFTUwplY2hvICJIVFRQPSRjb2RlIgplY2hvICJBR0VOVF9TVEFURT0kKHN5c3RlbWN0bCBpcy1hY3RpdmUgY2xvdWRzdGFjay1hZ2VudCAyPi9kZXYvbnVsbCB8fCB0cnVlKSIKZWNobyAiQUdFTlRfRU5BQkxFRD0kKHN5c3RlbWN0bCBpcy1lbmFibGVkIGNsb3Vkc3RhY2stYWdlbnQgMj4vZGV2L251bGwgfHwgdHJ1ZSkiCmVjaG8gUlVOVElNRV9CUkFORElOR19SRUxPQURfQ09NUExFVEUK'
+            $local=Join-Path $env:RUNNER_TEMP 'layersentry-branding-reload.sh';[IO.File]::WriteAllBytes($local,[Convert]::FromBase64String($b64)); & scp.exe -i $key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o ConnectTimeout=10 $local 'root@10.10.10.14:/tmp/layersentry-branding-reload.sh';if($LASTEXITCODE -ne 0){throw 'SCP failed.'}
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh 'chmod 700 /tmp/layersentry-branding-reload.sh && /tmp/layersentry-branding-reload.sh; rc=$?; rm -f /tmp/layersentry-branding-reload.sh; exit $rc' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'reload.txt');$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -ne 0){throw "Reload failed $rc."}
+            if(-not(Select-String (Join-Path $evidence 'reload.txt') -Pattern 'RUNTIME_BRANDING_RELOAD_COMPLETE' -Quiet)){throw 'Completion marker missing.'}
+          }finally{if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old};Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue}
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-runtime-branding-reload-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-runtime-branding-reload\**
+          if-no-files-found: warn
+          retention-days: 30
