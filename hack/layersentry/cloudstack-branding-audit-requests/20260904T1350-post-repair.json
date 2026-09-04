@@ -1,0 +1,6 @@
+{
+  "operation": "AUDIT_LAYERSENTRY_LIVE_BRANDING",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_BRANDING_AUDIT",
+  "expectedAddress": "10.10.10.14",
+  "reason": "Post-repair verification of the actually served Layersentry UI, runtime config, logo assets, DBaaS/APaaS and onboarding markers."
+}
