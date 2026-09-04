@@ -1,0 +1,6 @@
+{
+  "operation": "AUDIT_LAYERSENTRY_LIVE_BRANDING",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_BRANDING_AUDIT",
+  "expectedAddress": "10.10.10.14",
+  "reason": "User reports that the live CloudStack UI still shows Apache CloudStack branding instead of Layersentry after installation."
+}
