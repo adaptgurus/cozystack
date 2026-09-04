@@ -1,0 +1,126 @@
+name: LayerSentry CloudStack Guest Log
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-log-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-guest-log
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Read latest Layersentry guest logs safely
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-guest-log'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-log-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected one diagnostic request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'READ_LAYERSENTRY_CLOUDSTACK_GUEST_LOG') { throw 'Unexpected operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_READ_ONLY_DIAGNOSTIC') { throw 'Authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Address mismatch.' }
+
+          $vms = @(Get-VM)
+          if ($vms.Count -ne 1) { throw "Expected exactly one Hyper-V VM; found $($vms.Count)." }
+          $vm = $vms[0]
+          if ($vm.State -ne 'Running') { throw 'Only VM is not running.' }
+
+          $key = Join-Path $env:RUNNER_TEMP 'layersentry-log-ephemeral-ed25519'
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-log-$env:GITHUB_RUN_ID"
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0) { throw 'ssh-keygen failed.' }
+
+          $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched = Join-Path $env:RUNNER_TEMP 'invoke-cloudstack-log-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patched -Value ($helper.Replace($needle, "`$allowedNames = @('$escapedVm')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "cloudstack-log-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $requestPath = Join-Path $env:RUNNER_TEMP 'cloudstack-log-bootstrap.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $requestPath -Encoding UTF8
+          & $patched -RequestPath $requestPath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready = $false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old = $ErrorActionPreference; $ErrorActionPreference='Continue'
+              $probe = & ssh.exe @ssh 'printf READY' 2>&1; $rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if ($rc -eq 0 -and (($probe -join '') -match 'READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
+
+            $remote = "echo =====LATEST_RESUME_LOG=====; L=`$(ls -1t /var/log/layersentry-rocky9-resume-*.log 2>/dev/null | head -1); echo LOG=`$L; if [ -n `"`$L`" ]; then tail -n 500 `"`$L`"; fi; echo =====NPM_LOG=====; N=`$(ls -1t /root/.npm/_logs/*-debug-0.log 2>/dev/null | head -1); echo NPM_LOG=`$N; if [ -n `"`$N`" ]; then tail -n 300 `"`$N`"; fi; echo =====PACKAGE_STATE=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent mysql-server; echo =====DB_STATE=====; systemctl is-active mysqld || true; mysql --protocol=socket -uroot -NBe 'SHOW DATABASES' 2>&1 || true"
+            $old = $ErrorActionPreference; $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-log.txt')
+            $rc=$LASTEXITCODE; $ErrorActionPreference=$old
+            if ($rc -ne 0) { throw "Guest log command exited $rc." }
+          }
+          finally {
+            if ($ready) {
+              $safeComment=$comment.Replace("'","")
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-guest-log-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-guest-log\**
+          if-no-files-found: warn
+          retention-days: 30
