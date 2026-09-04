@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1.0",
+  "operation": "RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM_V3",
+  "authorization": "USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "installerCommit": "d38dba2660c7777c6d3ae7992c8ce5b3d68019e6",
+  "scope": "single existing Rocky Linux 9 VM only",
+  "reason": "continue after proven UI build and DB initialization; fix SIGPIPE 141 in UI-root discovery",
+  "allowDatabaseInitializationIfMissing": true,
+  "allowManagementServiceConfiguration": true,
+  "allowUiBuildAndDeployment": true,
+  "allowEphemeralSshBootstrap": true,
+  "allowNetworkBridgeChanges": false,
+  "allowStorageDestructiveChanges": false,
+  "allowVmDeletion": false,
+  "productionReleaseApprovalImplied": false
+}
