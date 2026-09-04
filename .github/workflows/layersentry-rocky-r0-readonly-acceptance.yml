@@ -57,7 +57,7 @@ jobs:
           ) | Set-Content -LiteralPath (Join-Path $evidence 'ssh-reachability.txt') -Encoding UTF8
           if (-not $port.TcpTestSucceeded) { throw 'Rocky SSH endpoint is not reachable from the runner.' }
 
-          $script = Get-Content -LiteralPath 'hack/layersentry/collect-rocky-r0-readonly.sh' -Raw -Encoding UTF8
+          $script = (Get-Content -LiteralPath 'hack/layersentry/collect-rocky-r0-readonly.sh' -Raw -Encoding UTF8).Replace("`r`n", "`n")
           $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
           $remoteCommand = "printf '%s' '$encoded' | base64 -d | bash"
           $knownHosts = Join-Path $env:RUNNER_TEMP "layersentry-rocky-known-hosts-$env:GITHUB_RUN_ID"
