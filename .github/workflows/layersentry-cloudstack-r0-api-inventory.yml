@@ -100,7 +100,25 @@ jobs:
             }
             catch {
               $exceptionType = $_.Exception.GetType().FullName
-              throw "Read-only CloudStack API command $Command failed ($exceptionType)."
+              $apiErrorCode = $null
+              try {
+                if ($null -ne $_.Exception.Response) {
+                  $stream = $_.Exception.Response.GetResponseStream()
+                  $reader = New-Object IO.StreamReader($stream)
+                  try {
+                    $errorResponse = $reader.ReadToEnd() | ConvertFrom-Json
+                    $apiErrorCode = $errorResponse.errorresponse.errorcode
+                  }
+                  finally {
+                    $reader.Dispose()
+                    $stream.Dispose()
+                  }
+                }
+              }
+              catch { $apiErrorCode = $null }
+              $failure = New-Object System.Management.Automation.RuntimeException("Read-only CloudStack API command $Command failed ($exceptionType).")
+              $failure.Data['ApiErrorCode'] = $apiErrorCode
+              throw $failure
             }
           }
 
@@ -128,6 +146,30 @@ jobs:
             return @($collectionProperty.Value | Select-Object -Property $Properties)
           }
 
+          function Invoke-OptionalCloudStackReadOnlyApi {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [hashtable]$Parameters = @{}
+            )
+
+            try {
+              $payload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi $Command $Parameters) $Command
+              return [pscustomobject]@{ Status = 'AVAILABLE'; Payload = $payload; ErrorType = $null; ApiErrorCode = $null }
+            }
+            catch {
+              # Optional plugins are not installed on every CloudStack deployment. Keep
+              # evidence useful without exposing response bodies, signed URLs, or secrets.
+              $apiErrorCode = $_.Exception.Data['ApiErrorCode']
+              $status = if ($apiErrorCode -eq 431) { 'NOT_SUPPORTED' } else { 'FAILED' }
+              return [pscustomobject]@{
+                Status = $status
+                Payload = $null
+                ErrorType = $_.Exception.GetType().FullName
+                ApiErrorCode = $apiErrorCode
+              }
+            }
+          }
+
           $capabilities = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listCapabilities') 'listCapabilities'
           $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
           $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
@@ -135,10 +177,10 @@ jobs:
           $hostsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listHosts' @{ listall = 'true'; type = 'Routing' }) 'listHosts'
           $storagePayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listStoragePools' @{ listall = 'true' }) 'listStoragePools'
           $imageStoresPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listImageStores' @{ listall = 'true' }) 'listImageStores'
-          $repositoriesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listBackupRepositories' @{ listall = 'true' }) 'listBackupRepositories'
-          $offeringsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listBackupOfferings' @{ listall = 'true' }) 'listBackupOfferings'
+          $repositoriesObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackupRepositories' @{ listall = 'true' }
+          $offeringsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackupOfferings' @{ listall = 'true' }
           $virtualMachinesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVirtualMachines' @{ listall = 'true'; details = 'min' }) 'listVirtualMachines'
-          $jobsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listAsyncJobs' @{ listall = 'true'; pagesize = '100' }) 'listAsyncJobs'
+          $jobsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listAsyncJobs' @{ listall = 'true'; pagesize = '100' }
 
           $configurationNames = @(
             'backup.framework.enabled'
@@ -166,11 +208,16 @@ jobs:
             Hosts = Select-InventoryItems $hostsPayload 'host' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'hypervisor', 'hypervisorversion', 'state', 'resourcestate', 'hahost')
             PrimaryStorage = Select-InventoryItems $storagePayload 'storagepool' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'type', 'scope', 'state', 'capacityiops', 'overprovisionfactor')
             ImageStores = Select-InventoryItems $imageStoresPayload 'imagestore' @('id', 'name', 'zoneid', 'zonename', 'protocol', 'readonly', 'scope')
-            BackupRepositories = Select-InventoryItems $repositoriesPayload 'backuprepository' @('id', 'name', 'zoneid', 'zonename', 'provider', 'crosszoneinstancecreation')
-            BackupOfferings = Select-InventoryItems $offeringsPayload 'backupoffering' @('id', 'name', 'provider', 'zoneid', 'zonename', 'allowuserdrivenbackups')
+            BackupApiObservations = [ordered]@{
+              listBackupRepositories = [ordered]@{ Status = $repositoriesObservation.Status; ErrorType = $repositoriesObservation.ErrorType; ApiErrorCode = $repositoriesObservation.ApiErrorCode }
+              listBackupOfferings = [ordered]@{ Status = $offeringsObservation.Status; ErrorType = $offeringsObservation.ErrorType; ApiErrorCode = $offeringsObservation.ApiErrorCode }
+            }
+            AsyncJobsApiObservation = [ordered]@{ Status = $jobsObservation.Status; ErrorType = $jobsObservation.ErrorType; ApiErrorCode = $jobsObservation.ApiErrorCode }
+            BackupRepositories = if ($repositoriesObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $repositoriesObservation.Payload 'backuprepository' @('id', 'name', 'zoneid', 'zonename', 'provider', 'crosszoneinstancecreation') } else { @() }
+            BackupOfferings = if ($offeringsObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $offeringsObservation.Payload 'backupoffering' @('id', 'name', 'provider', 'zoneid', 'zonename', 'allowuserdrivenbackups') } else { @() }
             BackupConfigurations = $configurations
             VirtualMachines = Select-InventoryItems $virtualMachinesPayload 'virtualmachine' @('id', 'name', 'displayname', 'zoneid', 'zonename', 'state', 'hypervisor', 'haenable', 'account', 'domainid', 'domain')
-            RecentAsyncJobs = Select-InventoryItems $jobsPayload 'asyncjobs' @('jobid', 'cmd', 'jobstatus', 'created', 'completed', 'account', 'domainid')
+            RecentAsyncJobs = if ($jobsObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $jobsObservation.Payload 'asyncjobs' @('jobid', 'cmd', 'jobstatus', 'created', 'completed', 'account', 'domainid') } else { @() }
           }
 
           $jsonPath = Join-Path $evidence 'inventory.json'
@@ -184,6 +231,9 @@ jobs:
             "KVM_HOST_COUNT=$(@($inventory.Hosts | Where-Object { $_.hypervisor -eq 'KVM' }).Count)"
             "BACKUP_REPOSITORY_COUNT=$(@($inventory.BackupRepositories).Count)"
             "BACKUP_OFFERING_COUNT=$(@($inventory.BackupOfferings).Count)"
+            "BACKUP_REPOSITORIES_API_STATUS=$($inventory.BackupApiObservations.listBackupRepositories.Status)"
+            "BACKUP_OFFERINGS_API_STATUS=$($inventory.BackupApiObservations.listBackupOfferings.Status)"
+            "ASYNC_JOBS_API_STATUS=$($inventory.AsyncJobsApiObservation.Status)"
             "VM_COUNT=$(@($inventory.VirtualMachines).Count)"
             'MUTATION_PERFORMED=false'
             'READ_ONLY_AUTHENTICATED_API_INVENTORY_COMPLETE'
