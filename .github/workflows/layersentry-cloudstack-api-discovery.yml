@@ -1,0 +1,116 @@
+name: LayerSentry CloudStack API Discovery
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-api-discovery-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-api-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Discover fresh CloudStack API state and Basic SG offering
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-api-discovery'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-api-discovery-requests/*.json') |
+              ForEach-Object {[string]$_} |
+              Where-Object {-not [string]::IsNullOrWhiteSpace($_)}
+          )
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one API discovery request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'DISCOVER_LAYERSENTRY_CLOUDSTACK_API'){throw 'Unsupported operation.'}
+          if([string]$r.authorization -ne 'USER_AUTHORIZED_READ_ONLY_CLOUDSTACK_API_DISCOVERY'){throw 'Authorization missing.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          if([string]$r.discoveryCommit -ne 'ef49b7da42fc7e811d7bf7d6de4282d499ebdec2'){throw 'Discovery helper commit mismatch.'}
+
+          $vms=@(Get-VM)
+          if($vms.Count -ne 1){throw "Safety stop: expected one Hyper-V VM; found $($vms.Count)."}
+          $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed.'}
+          $nic=Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1
+          if([string]$nic.MacAddressSpoofing -ne 'On' -or [string]$nic.SwitchName -ne 'Cozystack-NAT'){throw 'Hyper-V network safety gate failed.'}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-api-discovery-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-api-discovery-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-api-discovery-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper allow-list guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="api-discovery-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'api-discovery-console.json'
+          $req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              $p=& ssh.exe @ssh 'printf API_DISCOVERY_READY' 2>&1;$rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if($rc -eq 0 -and (($p-join '') -match 'API_DISCOVERY_READY')){$ready=$true;break}
+              Start-Sleep 5
+            }
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+
+            $url='https://raw.githubusercontent.com/adaptgurus/cozystack/ef49b7da42fc7e811d7bf7d6de4282d499ebdec2/hack/layersentry/cloudstack-api-discovery.py'
+            $remote="set -e; test `"`$(hostname -f)`" = layersentry.lab.example; test `"`$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if(`$i==`"src`"){print `$(i+1);exit}}')`" = 10.10.10.14; systemctl is-active --quiet cloudstack-management; curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json | grep -q Layersentry; curl -fsSL --retry 4 --retry-all-errors '$url' -o /tmp/cloudstack-api-discovery.py; chmod 700 /tmp/cloudstack-api-discovery.py; python3 /tmp/cloudstack-api-discovery.py; rc=`$?; rm -f /tmp/cloudstack-api-discovery.py; exit `$rc"
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1|Tee-Object -FilePath (Join-Path $evidence 'api-discovery.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh "echo =====PORTS=====; ss -lntp | grep -E ':8080|:8096' || true; echo =====ADMIN_DB=====; mysql --protocol=socket -uroot -NBe `"SELECT username,state FROM cloud.user WHERE username='admin';`" 2>&1 || true; echo =====TOPOLOGY=====; mysql --protocol=socket -uroot -NBe `"SELECT CONCAT('zones=',COUNT(*)) FROM cloud.data_center; SELECT CONCAT('pods=',COUNT(*)) FROM cloud.host_pod_ref; SELECT CONCAT('clusters=',COUNT(*)) FROM cloud.cluster; SELECT CONCAT('hosts=',COUNT(*)) FROM cloud.host;`" 2>&1 || true" 2>&1|Tee-Object -FilePath (Join-Path $evidence 'failure.txt')
+              $ErrorActionPreference=$old
+              throw "CloudStack API discovery exited $rc."
+            }
+            if(-not(Select-String (Join-Path $evidence 'api-discovery.txt') -Pattern 'DISCOVERY_COMPLETE' -Quiet)){throw 'Discovery completion marker missing.'}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'console')
+          }finally{
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload API discovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-api-discovery-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-api-discovery\**
+          if-no-files-found: warn
+          retention-days: 30
