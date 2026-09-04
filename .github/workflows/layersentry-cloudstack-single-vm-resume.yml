@@ -99,32 +99,51 @@ jobs:
           $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consoleRequestPath -Encoding UTF8
           & $patched -RequestPath $consoleRequestPath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
 
-          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','ConnectTimeout=10','root@10.10.10.14')
-          $sshReady = $false
-          for ($attempt=1; $attempt -le 12; $attempt++) {
-            $probe = & ssh.exe @ssh 'printf RUNNER_SSH_READY' 2>&1
-            if ($LASTEXITCODE -eq 0 -and (($probe -join '') -match 'RUNNER_SSH_READY')) { $sshReady=$true; break }
-            Start-Sleep -Seconds 5
-          }
-          if (-not $sshReady) {
-            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'bootstrap-failed-console')
-            throw 'Ephemeral SSH bootstrap failed; console is probably not at an authenticated root shell.'
-          }
-          Write-Host 'Ephemeral key-based SSH established; no password was stored in GitHub.'
-
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $sshEstablished = $false
           try {
+            for ($attempt=1; $attempt -le 12; $attempt++) {
+              $oldPreference = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
+              $probe = & ssh.exe @ssh 'printf RUNNER_SSH_READY' 2>&1
+              $probeExit = $LASTEXITCODE
+              $ErrorActionPreference = $oldPreference
+              if ($probeExit -eq 0 -and (($probe -join '') -match 'RUNNER_SSH_READY')) { $sshEstablished=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $sshEstablished) {
+              & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'bootstrap-failed-console')
+              throw 'Ephemeral SSH bootstrap failed; console is probably not at an authenticated root shell.'
+            }
+            Write-Host 'Ephemeral key-based SSH established; no password was stored in GitHub.'
+
+            # Remove the orphaned public key from the prior interrupted bootstrap attempt.
+            & ssh.exe @ssh "sed -i '/layersentry-runner-33846280033`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+
             $installerUrl = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/aeda25d62cfe047bb62202eea17aa4f87554a2c2/install-layersentry-rocky9-resume.sh'
             $remoteInstall = "curl -fsSL '$installerUrl' -o /root/install-layersentry-rocky9-resume.sh && chmod 700 /root/install-layersentry-rocky9-resume.sh && bash -n /root/install-layersentry-rocky9-resume.sh && /root/install-layersentry-rocky9-resume.sh"
+            $oldPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-stdout.txt')
-            if ($LASTEXITCODE -ne 0) { throw "Remote recovery exited $LASTEXITCODE." }
+            $remoteExit = $LASTEXITCODE
+            $ErrorActionPreference = $oldPreference
+            if ($remoteExit -ne 0) { throw "Remote recovery exited $remoteExit." }
 
             $remoteEvidence = "echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent; echo =====JAVA-KVM=====; java -version 2>&1 | head -3; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 resumed installation completed' /var/log/layersentry-rocky9-resume-*.log | tail -1 || true"
+            $oldPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             & ssh.exe @ssh $remoteEvidence 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-final-evidence.txt')
+            $ErrorActionPreference = $oldPreference
             & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
           }
           finally {
-            $safeComment = $comment.Replace("'", "")
-            & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+            if ($sshEstablished) {
+              $safeComment = $comment.Replace("'", "")
+              $oldPreference = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference = $oldPreference
+            }
             Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
           }
