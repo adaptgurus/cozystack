@@ -1,0 +1,7 @@
+{
+  "operation": "VERIFY_LAYERSENTRY_SERVED_UI",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_LAYERSENTRY_UI_VERIFY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "productCommit": "7a500324ffec725012bcd089fae5f54c0e56de5e"
+}
