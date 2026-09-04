@@ -1,0 +1,9 @@
+{
+  "operation": "REPAIR_LAYERSENTRY_FULL_BRANDING",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_FULL_BRANDING_REPAIR",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "repairCommit": "12051c9f122494b3e820e541f4045276b9e39b8d",
+  "reason": "User reports live UI still displays Apache CloudStack logo, onboarding content and API Docs instead of Layersentry."
+}
