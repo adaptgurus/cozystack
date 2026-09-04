@@ -1,0 +1,9 @@
+{
+  "operation": "REPAIR_LAYERSENTRY_SERVED_MANAGEMENT_WEBAPP",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_SERVED_UI_REPAIR",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "repairCommit": "27c4726d1eb63b419dffeb37cc6e725159166a47",
+  "purpose": "Deploy the already-built Layersentry UI into the actual CloudStack management webapp path defined by the EL9 RPM layout, update /etc/cloudstack/management/config.json, preserve backend WEB-INF/META-INF, verify runtime config/assets/DBaaS/APaaS/onboarding, and keep the agent disabled until cloudbr0 is configured."
+}
