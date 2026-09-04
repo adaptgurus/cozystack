@@ -1,0 +1,10 @@
+{
+  "operation": "DEPLOY_LAYERSENTRY_CUSTOMER_UI",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "productRepairCommit": "49dbbeafe6e02c0797dac8d675e89ec440e44437",
+  "uiCommit": "9ad724eb76843d40d6a883c0a0ab47a75ceed449",
+  "requestedAt": "2026-09-04T17:55:00+05:30",
+  "purpose": "Deploy LayerSentry V1 UI with obsolete DBaaS/APaaS placeholder routes and service catalog removed, while preserving CloudStack backend functionality and existing customer branding/terminology."
+}
