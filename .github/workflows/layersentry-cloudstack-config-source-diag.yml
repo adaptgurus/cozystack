@@ -1,0 +1,84 @@
+name: LayerSentry CloudStack Config Source Diagnostic
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-config-source-diag-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-config-source-diag
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Diagnose active UI config source
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-config-source-diag'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-config-source-diag-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected one diagnostic request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'DIAGNOSE_CLOUDSTACK_UI_CONFIG_SOURCE' -or [string]$r.authorization -ne 'USER_AUTHORIZED_READ_ONLY_DIAGNOSTIC'){throw 'Authorization mismatch.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          $vms=@(Get-VM); if($vms.Count -ne 1){throw "Expected one VM; found $($vms.Count)."}; $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-config-diag-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-config-diag-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-config-diag-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="config-diag-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'config-diag-console.json';$req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){$old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf CONFIG_DIAG_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'CONFIG_DIAG_READY')){$ready=$true;break};Start-Sleep 5}
+            if(-not $ready){throw 'SSH bootstrap failed.'}
+            & scp.exe -i $key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o ConnectTimeout=10 'hack/layersentry/cloudstack-config-source-diag.sh' 'root@10.10.10.14:/tmp/cloudstack-config-source-diag.sh'
+            if($LASTEXITCODE -ne 0){throw 'SCP failed.'}
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh 'chmod 700 /tmp/cloudstack-config-source-diag.sh && /tmp/cloudstack-config-source-diag.sh; rc=$?; rm -f /tmp/cloudstack-config-source-diag.sh; exit $rc' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'diagnostic.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){throw "Diagnostic failed $rc."}
+          }finally{
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-config-source-diag-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-config-source-diag\**
+          if-no-files-found: warn
+          retention-days: 30
