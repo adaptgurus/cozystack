@@ -1,0 +1,128 @@
+name: LayerSentry CloudStack Local Storage Preparation
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-storage-prep-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-storage-prep
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Prepare local NFS primary and secondary storage
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-storage-prep'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-storage-prep-requests/*.json') |
+              ForEach-Object {[string]$_} |
+              Where-Object {-not [string]::IsNullOrWhiteSpace($_)}
+          )
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one storage-preparation request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'PREPARE_LAYERSENTRY_LOCAL_NFS_STORAGE'){throw 'Unsupported operation.'}
+          if([string]$r.authorization -ne 'USER_AUTHORIZED_LOCAL_POC_STORAGE_PREPARATION'){throw 'Authorization missing.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          if([string]$r.storageScriptCommit -ne '47c3bfb90df8e1d55067c7f14f5cce88e5bdc9a5'){throw 'Storage script commit mismatch.'}
+
+          $vms=@(Get-VM)
+          if($vms.Count -ne 1){throw "Safety stop: expected one Hyper-V VM; found $($vms.Count)."}
+          $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed.'}
+          $nic=Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1
+          if([string]$nic.MacAddressSpoofing -ne 'On'){throw 'MAC spoofing is not enabled.'}
+          if([string]$nic.SwitchName -ne 'Cozystack-NAT'){throw "Unexpected Hyper-V switch: $($nic.SwitchName)"}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-storage-prep-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-storage-prep-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-storage-prep-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper allow-list guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="storage-prep-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'storage-prep-console.json'
+          $req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              $p=& ssh.exe @ssh 'printf STORAGE_PREP_READY' 2>&1;$rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if($rc -eq 0 -and (($p-join '') -match 'STORAGE_PREP_READY')){$ready=$true;break}
+              Start-Sleep 5
+            }
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+
+            & scp.exe -i $key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o ConnectTimeout=10 'hack/layersentry/prepare-cloudstack-poc-storage.sh' 'root@10.10.10.14:/root/prepare-cloudstack-poc-storage.sh'
+            if($LASTEXITCODE -ne 0){throw 'Failed to copy storage preparation script.'}
+
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh 'chmod 700 /root/prepare-cloudstack-poc-storage.sh && bash -n /root/prepare-cloudstack-poc-storage.sh && /root/prepare-cloudstack-poc-storage.sh' 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'storage-prep.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh "L=`$(ls -1t /var/log/layersentry-storage-prep-*.log 2>/dev/null|head -1); echo LOG=`$L; test -z `"`$L`" || tail -n 700 `"`$L`"; echo =====SERVICES=====; systemctl is-active nfs-server rpcbind cloudstack-management cloudstack-agent || true; echo =====EXPORTS=====; exportfs -v || true; echo =====DISK=====; df -hT / /export/primary /export/secondary 2>&1 || true" 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'failure-evidence.txt')
+              $ErrorActionPreference=$old
+              throw "Storage preparation exited $rc."
+            }
+            if(-not(Select-String (Join-Path $evidence 'storage-prep.txt') -Pattern '\[100%\] Layersentry local NFS storage preparation completed' -Quiet)){throw 'Storage completion marker missing.'}
+
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh "echo =====FINAL=====; exportfs -v; df -hT /export/primary /export/secondary; find /export/secondary/template/tmpl -maxdepth 5 -type f -name template.properties -o -name '*.qcow2' 2>/dev/null | head -20; echo =====AGENT=====; systemctl is-active cloudstack-agent || true; systemctl is-enabled cloudstack-agent || true; echo =====MANAGEMENT=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' http://127.0.0.1:8080/client/" 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'final-evidence.txt')
+            $ErrorActionPreference=$old
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }finally{
+            if($ready){
+              $safe=$comment.Replace("'","")
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload storage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-storage-prep-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-storage-prep\**
+          if-no-files-found: warn
+          retention-days: 30
