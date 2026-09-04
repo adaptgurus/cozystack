@@ -1,0 +1,194 @@
+name: LayerSentry CloudStack R0 API Inventory
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_endpoint:
+        description: CloudStack API endpoint, including /client/api
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-r0-api-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Read-only authenticated CloudStack inventory
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      CLOUDSTACK_API_ENDPOINT: ${{ inputs.api_endpoint }}
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Collect sanitized read-only API inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or
+              [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)) {
+            throw 'Required CloudStack API credentials are unavailable. Configure the scoped LayerSentry API key and secret as repository or environment secrets.'
+          }
+
+          $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if ($endpoint.Scheme -notin @('http', 'https')) {
+            throw 'The CloudStack API endpoint must use http or https.'
+          }
+          if (-not $endpoint.AbsolutePath.EndsWith('/client/api')) {
+            throw 'The CloudStack API endpoint must end with /client/api.'
+          }
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-r0-api-inventory'
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          function ConvertTo-Rfc3986 {
+            param([Parameter(Mandatory = $true)][string]$Value)
+            return [Uri]::EscapeDataString($Value).Replace('%7E', '~')
+          }
+
+          function Invoke-CloudStackReadOnlyApi {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [hashtable]$Parameters = @{}
+            )
+
+            $query = [ordered]@{
+              apikey = $env:CLOUDSTACK_API_KEY
+              command = $Command
+              response = 'json'
+            }
+            foreach ($name in $Parameters.Keys) {
+              $query[[string]$name] = [string]$Parameters[$name]
+            }
+
+            $pairs = @(
+              $query.GetEnumerator() |
+                Sort-Object { ([string]$_.Key).ToLowerInvariant() } |
+                ForEach-Object {
+                  '{0}={1}' -f (ConvertTo-Rfc3986 ([string]$_.Key)), (ConvertTo-Rfc3986 ([string]$_.Value))
+                }
+            )
+            $canonical = (($pairs -join '&').ToLowerInvariant())
+            $hmac = New-Object System.Security.Cryptography.HMACSHA1
+            try {
+              $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY)
+              $signature = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))
+            }
+            finally {
+              $hmac.Dispose()
+            }
+
+            $uri = '{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri, ($pairs -join '&'), (ConvertTo-Rfc3986 $signature)
+            try {
+              return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 20 -ErrorAction Stop
+            }
+            catch {
+              $exceptionType = $_.Exception.GetType().FullName
+              throw "Read-only CloudStack API command $Command failed ($exceptionType)."
+            }
+          }
+
+          function Get-ResponsePayload {
+            param(
+              [Parameter(Mandatory = $true)][object]$Response,
+              [Parameter(Mandatory = $true)][string]$Command
+            )
+            $propertyName = "$($Command.ToLowerInvariant())response"
+            $property = $Response.PSObject.Properties[$propertyName]
+            if ($null -eq $property) {
+              throw "CloudStack response for $Command did not contain $propertyName."
+            }
+            return $property.Value
+          }
+
+          function Select-InventoryItems {
+            param(
+              [Parameter(Mandatory = $true)][object]$Payload,
+              [Parameter(Mandatory = $true)][string]$Collection,
+              [Parameter(Mandatory = $true)][string[]]$Properties
+            )
+            $collectionProperty = $Payload.PSObject.Properties[$Collection]
+            if ($null -eq $collectionProperty) { return @() }
+            return @($collectionProperty.Value | Select-Object -Property $Properties)
+          }
+
+          $capabilities = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listCapabilities') 'listCapabilities'
+          $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
+          $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
+          $clustersPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listClusters' @{ listall = 'true' }) 'listClusters'
+          $hostsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listHosts' @{ listall = 'true'; type = 'Routing' }) 'listHosts'
+          $storagePayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listStoragePools' @{ listall = 'true' }) 'listStoragePools'
+          $imageStoresPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listImageStores' @{ listall = 'true' }) 'listImageStores'
+          $repositoriesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listBackupRepositories' @{ listall = 'true' }) 'listBackupRepositories'
+          $offeringsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listBackupOfferings' @{ listall = 'true' }) 'listBackupOfferings'
+          $virtualMachinesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVirtualMachines' @{ listall = 'true'; details = 'min' }) 'listVirtualMachines'
+          $jobsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listAsyncJobs' @{ listall = 'true'; pagesize = '100' }) 'listAsyncJobs'
+
+          $configurationNames = @(
+            'backup.framework.enabled'
+            'backup.framework.provider.plugin'
+            'backup.framework.sync.interval'
+          )
+          $configurations = @()
+          foreach ($configurationName in $configurationNames) {
+            $payload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listConfigurations' @{ name = $configurationName }) 'listConfigurations'
+            $configurations += Select-InventoryItems $payload 'configuration' @('name', 'value', 'scope', 'zonename')
+          }
+
+          $inventory = [ordered]@{
+            EvidenceClass = 'R0_READ_ONLY_AUTHENTICATED_API'
+            RunId = $env:GITHUB_RUN_ID
+            Repository = $env:GITHUB_REPOSITORY
+            Commit = $env:GITHUB_SHA
+            CapturedUtc = [DateTime]::UtcNow.ToString('o')
+            Endpoint = '{0}://{1}{2}' -f $endpoint.Scheme, $endpoint.Authority, $endpoint.AbsolutePath
+            MutationPerformed = $false
+            Capabilities = $capabilities
+            Zones = Select-InventoryItems $zonesPayload 'zone' @('id', 'name', 'networktype', 'allocationstate', 'localstorageenabled')
+            Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate')
+            Clusters = Select-InventoryItems $clustersPayload 'cluster' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'hypervisortype', 'allocationstate', 'managedstate')
+            Hosts = Select-InventoryItems $hostsPayload 'host' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'hypervisor', 'hypervisorversion', 'state', 'resourcestate', 'hahost')
+            PrimaryStorage = Select-InventoryItems $storagePayload 'storagepool' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'type', 'scope', 'state', 'capacityiops', 'overprovisionfactor')
+            ImageStores = Select-InventoryItems $imageStoresPayload 'imagestore' @('id', 'name', 'zoneid', 'zonename', 'protocol', 'readonly', 'scope')
+            BackupRepositories = Select-InventoryItems $repositoriesPayload 'backuprepository' @('id', 'name', 'zoneid', 'zonename', 'provider', 'crosszoneinstancecreation')
+            BackupOfferings = Select-InventoryItems $offeringsPayload 'backupoffering' @('id', 'name', 'provider', 'zoneid', 'zonename', 'allowuserdrivenbackups')
+            BackupConfigurations = $configurations
+            VirtualMachines = Select-InventoryItems $virtualMachinesPayload 'virtualmachine' @('id', 'name', 'displayname', 'zoneid', 'zonename', 'state', 'hypervisor', 'haenable', 'account', 'domainid', 'domain')
+            RecentAsyncJobs = Select-InventoryItems $jobsPayload 'asyncjobs' @('jobid', 'cmd', 'jobstatus', 'created', 'completed', 'account', 'domainid')
+          }
+
+          $jsonPath = Join-Path $evidence 'inventory.json'
+          $summaryPath = Join-Path $evidence 'summary.txt'
+          $inventory | ConvertTo-Json -Depth 12 | Set-Content -Path $jsonPath -Encoding UTF8
+          @(
+            'LAYERSENTRY_CLOUDSTACK_R0_API_INVENTORY'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "ZONE_COUNT=$(@($inventory.Zones).Count)"
+            "KVM_HOST_COUNT=$(@($inventory.Hosts | Where-Object { $_.hypervisor -eq 'KVM' }).Count)"
+            "BACKUP_REPOSITORY_COUNT=$(@($inventory.BackupRepositories).Count)"
+            "BACKUP_OFFERING_COUNT=$(@($inventory.BackupOfferings).Count)"
+            "VM_COUNT=$(@($inventory.VirtualMachines).Count)"
+            'MUTATION_PERFORMED=false'
+            'READ_ONLY_AUTHENTICATED_API_INVENTORY_COMPLETE'
+          ) | Set-Content -Path $summaryPath -Encoding UTF8
+          Get-Content -LiteralPath $summaryPath
+
+      - name: Upload sanitized API inventory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-r0-api-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-r0-api-inventory\**
+          if-no-files-found: error
+          retention-days: 30
