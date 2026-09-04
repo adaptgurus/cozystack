@@ -51,7 +51,7 @@ jobs:
           if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
           if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Target FQDN mismatch.' }
           if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'CloudStack version mismatch.' }
-          if ([string]$request.installerCommit -ne 'aeda25d62cfe047bb62202eea17aa4f87554a2c2') { throw 'Installer commit mismatch.' }
+          if ([string]$request.installerCommit -ne '6617de6ee417c8970d9085431a8aa62de9698b2d') { throw 'Installer commit mismatch.' }
 
           $vms = @(Get-VM)
           if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
@@ -117,19 +117,26 @@ jobs:
             }
             Write-Host 'Ephemeral key-based SSH established; no password was stored in GitHub.'
 
-            # Remove the orphaned public key from the prior interrupted bootstrap attempt.
+            # Clean any key left by the earliest interrupted bootstrap iteration.
             & ssh.exe @ssh "sed -i '/layersentry-runner-33846280033`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
 
-            $installerUrl = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/aeda25d62cfe047bb62202eea17aa4f87554a2c2/install-layersentry-rocky9-resume.sh'
-            $remoteInstall = "curl -fsSL '$installerUrl' -o /root/install-layersentry-rocky9-resume.sh && chmod 700 /root/install-layersentry-rocky9-resume.sh && bash -n /root/install-layersentry-rocky9-resume.sh && /root/install-layersentry-rocky9-resume.sh"
+            $installerUrl = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/6617de6ee417c8970d9085431a8aa62de9698b2d/install-layersentry-rocky9-resume-v2.sh'
+            $remoteInstall = "curl -fsSL '$installerUrl' -o /root/install-layersentry-rocky9-resume-v2.sh && chmod 700 /root/install-layersentry-rocky9-resume-v2.sh && bash -n /root/install-layersentry-rocky9-resume-v2.sh && /root/install-layersentry-rocky9-resume-v2.sh"
             $oldPreference = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
-            & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-stdout.txt')
+            & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-v2-stdout.txt')
             $remoteExit = $LASTEXITCODE
             $ErrorActionPreference = $oldPreference
-            if ($remoteExit -ne 0) { throw "Remote recovery exited $remoteExit." }
+            if ($remoteExit -ne 0) {
+              $failureEvidence = "echo =====LATEST_V2_LOG=====; L=`$(ls -1t /var/log/layersentry-rocky9-resume-v2-*.log 2>/dev/null | head -1); echo LOG=`$L; if [ -n `"`$L`" ]; then tail -n 700 `"`$L`"; fi; echo =====LATEST_NPM_LOG=====; N=`$(ls -1t /root/.npm/_logs/*-debug-0.log 2>/dev/null | head -1); echo NPM_LOG=`$N; if [ -n `"`$N`" ]; then tail -n 350 `"`$N`"; fi; echo =====SERVICE_STATE=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true"
+              $oldPreference = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
+              & ssh.exe @ssh $failureEvidence 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-failure-evidence.txt')
+              $ErrorActionPreference = $oldPreference
+              throw "Remote recovery v2 exited $remoteExit."
+            }
 
-            $remoteEvidence = "echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent; echo =====JAVA-KVM=====; java -version 2>&1 | head -3; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 resumed installation completed' /var/log/layersentry-rocky9-resume-*.log | tail -1 || true"
+            $remoteEvidence = "echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent mysql-server; echo =====JAVA-KVM=====; java -version 2>&1 | head -3; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 Rocky Linux 9 recovery v2 completed' /var/log/layersentry-rocky9-resume-v2-*.log | tail -1 || true"
             $oldPreference = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             & ssh.exe @ssh $remoteEvidence 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-final-evidence.txt')
