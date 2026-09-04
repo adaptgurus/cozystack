@@ -43,8 +43,8 @@ jobs:
           if([string]$r.operation -ne 'DEPLOY_LAYERSENTRY_CUSTOMER_UI'){throw 'Unsupported operation.'}
           if([string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY'){throw 'Authorization missing.'}
           if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
-          if([string]$r.productRepairCommit -ne '75b993753055868a4e7ce448eea3526f96ae1cc8'){throw 'Product repair commit mismatch.'}
-          if([string]$r.uiCommit -ne '0361a0cccb9956b4c57f62dfbf091b01d0fa9f3c'){throw 'UI commit mismatch.'}
+          if([string]$r.productRepairCommit -ne '49dbbeafe6e02c0797dac8d675e89ec440e44437'){throw 'Product repair commit mismatch.'}
+          if([string]$r.uiCommit -ne '9ad724eb76843d40d6a883c0a0ab47a75ceed449'){throw 'UI commit mismatch.'}
 
           $vms=@(Get-VM)
           if($vms.Count -ne 1){throw "Expected exactly one Hyper-V VM; found $($vms.Count)."}
@@ -89,7 +89,7 @@ jobs:
             & ssh.exe @ssh 'echo =====BUILD-RUNTIME=====; node --version 2>/dev/null || true; npm --version 2>/dev/null || true' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'preflight.txt')
             $ErrorActionPreference=$old
 
-            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/75b993753055868a4e7ce448eea3526f96ae1cc8/install-layersentry-rocky9-served-ui-repair.sh'
+            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/49dbbeafe6e02c0797dac8d675e89ec440e44437/install-layersentry-rocky9-served-ui-repair.sh'
             $remote="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 '$scriptUrl' -o /root/install-layersentry-rocky9-served-ui-repair.sh && chmod 700 /root/install-layersentry-rocky9-served-ui-repair.sh && bash -n /root/install-layersentry-rocky9-served-ui-repair.sh && /root/install-layersentry-rocky9-served-ui-repair.sh"
             $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
             & ssh.exe @ssh $remote 2>&1|Tee-Object -FilePath (Join-Path $evidence 'deploy.txt')
@@ -101,6 +101,7 @@ jobs:
               $ErrorActionPreference=$old
               throw "Customer UI deployment exited $rc."
             }
+            if(-not(Select-String (Join-Path $evidence 'deploy.txt') -Pattern 'V1_PLACEHOLDERS=ABSENT' -Quiet)){throw 'V1 placeholder-removal verification marker missing.'}
             if(-not(Select-String (Join-Path $evidence 'deploy.txt') -Pattern '\[100%\] Layersentry V1.0 served-UI branding verified' -Quiet)){throw 'Deployment completion marker missing.'}
 
             $verify='/root/install-layersentry-rocky9-served-ui-repair.sh --verify-only'
@@ -110,6 +111,7 @@ jobs:
             $ErrorActionPreference=$old
             if($rc -ne 0){throw "Read-only runtime verification exited $rc."}
             if(-not(Select-String (Join-Path $evidence 'verify.txt') -Pattern 'TERMINOLOGY=PASS' -Quiet)){throw 'Customer terminology verification marker missing.'}
+            if(-not(Select-String (Join-Path $evidence 'verify.txt') -Pattern 'V1_PLACEHOLDERS=ABSENT' -Quiet)){throw 'Read-only V1 placeholder-removal marker missing.'}
             if(-not(Select-String (Join-Path $evidence 'verify.txt') -Pattern '\[100%\] Layersentry V1.0 served-UI branding verified' -Quiet)){throw 'Runtime verification completion marker missing.'}
 
             & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
