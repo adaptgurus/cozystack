@@ -116,7 +116,7 @@ jobs:
         shell: bash
         working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
         env:
-          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           set -euo pipefail
           rm -rf node_modules
@@ -126,7 +126,7 @@ jobs:
         shell: bash
         working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
         env:
-          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           set -euo pipefail
           npm run lint -- --no-fix
@@ -136,7 +136,7 @@ jobs:
         shell: bash
         working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
         env:
-          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           set -euo pipefail
           npm run test:unit -- --runInBand
@@ -145,7 +145,7 @@ jobs:
         shell: bash
         working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
         env:
-          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           set -euo pipefail
           npm run build
