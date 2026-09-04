@@ -43,8 +43,8 @@ jobs:
           if([string]$r.operation -ne 'DEPLOY_LAYERSENTRY_CUSTOMER_UI'){throw 'Unsupported operation.'}
           if([string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY'){throw 'Authorization missing.'}
           if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
-          if([string]$r.productRepairCommit -ne '27ce0193f8cb82bf4b02a4e0365e53ef762b68e7'){throw 'Product repair commit mismatch.'}
-          if([string]$r.uiCommit -ne 'b448226098ff3e53163445eadfb9483d58eb02fa'){throw 'UI commit mismatch.'}
+          if([string]$r.productRepairCommit -ne '75b993753055868a4e7ce448eea3526f96ae1cc8'){throw 'Product repair commit mismatch.'}
+          if([string]$r.uiCommit -ne '0361a0cccb9956b4c57f62dfbf091b01d0fa9f3c'){throw 'UI commit mismatch.'}
 
           $vms=@(Get-VM)
           if($vms.Count -ne 1){throw "Expected exactly one Hyper-V VM; found $($vms.Count)."}
@@ -85,7 +85,11 @@ jobs:
             }
             if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
 
-            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/27ce0193f8cb82bf4b02a4e0365e53ef762b68e7/install-layersentry-rocky9-served-ui-repair.sh'
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh 'echo =====BUILD-RUNTIME=====; node --version 2>/dev/null || true; npm --version 2>/dev/null || true' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'preflight.txt')
+            $ErrorActionPreference=$old
+
+            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/75b993753055868a4e7ce448eea3526f96ae1cc8/install-layersentry-rocky9-served-ui-repair.sh'
             $remote="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 '$scriptUrl' -o /root/install-layersentry-rocky9-served-ui-repair.sh && chmod 700 /root/install-layersentry-rocky9-served-ui-repair.sh && bash -n /root/install-layersentry-rocky9-served-ui-repair.sh && /root/install-layersentry-rocky9-served-ui-repair.sh"
             $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
             & ssh.exe @ssh $remote 2>&1|Tee-Object -FilePath (Join-Path $evidence 'deploy.txt')
