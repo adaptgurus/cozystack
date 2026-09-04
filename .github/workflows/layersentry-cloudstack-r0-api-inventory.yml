@@ -7,6 +7,12 @@ on:
         description: CloudStack API endpoint, including /client/api
         required: true
         type: string
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-cloudstack-r0-api-inventory.yml
+      - hack/layersentry/cloudstack-r0-api-inventory-requests/*.json
 
 permissions:
   contents: read
@@ -21,7 +27,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 15
     env:
-      CLOUDSTACK_API_ENDPOINT: ${{ inputs.api_endpoint }}
+      CLOUDSTACK_API_ENDPOINT: ${{ inputs.api_endpoint || 'http://10.10.10.14:8080/client/api' }}
       CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
       CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
 
