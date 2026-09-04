@@ -1,0 +1,9 @@
+{
+  "operation": "DISCOVER_LAYERSENTRY_CLOUDSTACK_API",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_CLOUDSTACK_API_DISCOVERY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "discoveryCommit": "ef49b7da42fc7e811d7bf7d6de4282d499ebdec2",
+  "purpose": "Retry the same read-only CloudStack API discovery after removing the PowerShell-to-SSH compound quoting defect. The prior attempt stopped before the discovery helper executed and made no VM or CloudStack changes."
+}
