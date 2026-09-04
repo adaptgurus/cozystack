@@ -1,0 +1,289 @@
+name: LayerSentry DR R0 Live Inventory
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-dr-r0-live-inventory.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-dr-r0-live-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Read-only Hyper-V and CloudStack reachability inventory
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Collect immutable read-only inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-dr-r0-live-inventory'
+          if (Test-Path -LiteralPath $evidence) {
+            Remove-Item -LiteralPath $evidence -Recurse -Force
+          }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          function Get-PropertyValue {
+            param(
+              [AllowNull()][object]$Object,
+              [Parameter(Mandatory = $true)][string]$Name
+            )
+            if ($null -eq $Object) { return $null }
+            $property = $Object.PSObject.Properties[$Name]
+            if ($null -eq $property) { return $null }
+            return $property.Value
+          }
+
+          function To-GiB {
+            param([AllowNull()][object]$Bytes)
+            if ($null -eq $Bytes) { return $null }
+            return [math]::Round(([double]$Bytes / 1GB), 2)
+          }
+
+          function Test-TcpPort {
+            param(
+              [Parameter(Mandatory = $true)][string]$Address,
+              [Parameter(Mandatory = $true)][int]$Port,
+              [int]$TimeoutMs = 2500
+            )
+            $client = New-Object System.Net.Sockets.TcpClient
+            try {
+              $async = $client.BeginConnect($Address, $Port, $null, $null)
+              if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+                return $false
+              }
+              $client.EndConnect($async)
+              return $true
+            }
+            catch {
+              return $false
+            }
+            finally {
+              $client.Close()
+            }
+          }
+
+          function Test-HttpGet {
+            param([Parameter(Mandatory = $true)][string]$Uri)
+            $result = [ordered]@{
+              Uri = $Uri
+              Reachable = $false
+              StatusCode = $null
+              ContentType = $null
+              ErrorType = $null
+            }
+            try {
+              $response = Invoke-WebRequest -Uri $Uri -Method Get -UseBasicParsing -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction Stop
+              $result.Reachable = $true
+              $result.StatusCode = [int]$response.StatusCode
+              $result.ContentType = [string]$response.Headers['Content-Type']
+            }
+            catch {
+              $result.ErrorType = $_.Exception.GetType().FullName
+              if ($_.Exception.Response) {
+                try { $result.StatusCode = [int]$_.Exception.Response.StatusCode } catch {}
+                try { $result.ContentType = [string]$_.Exception.Response.ContentType } catch {}
+                $result.Reachable = $true
+              }
+            }
+            return [pscustomobject]$result
+          }
+
+          $computerSystem = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+          $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+          $vmHost = Get-VMHost -ErrorAction Stop
+          $vmms = Get-Service vmms -ErrorAction Stop
+
+          $hostVolumes = @(
+            Get-Volume -ErrorAction SilentlyContinue |
+              Where-Object { $_.DriveLetter } |
+              ForEach-Object {
+                [pscustomobject]@{
+                  Drive = "$($_.DriveLetter):"
+                  FileSystem = [string]$_.FileSystem
+                  HealthStatus = [string]$_.HealthStatus
+                  SizeGiB = To-GiB $_.Size
+                  FreeGiB = To-GiB $_.SizeRemaining
+                }
+              }
+          )
+
+          $switches = @(
+            Get-VMSwitch -ErrorAction Stop |
+              ForEach-Object {
+                [pscustomobject]@{
+                  Name = $_.Name
+                  SwitchType = [string]$_.SwitchType
+                  NetAdapterInterfaceDescription = [string]$_.NetAdapterInterfaceDescription
+                  AllowManagementOS = Get-PropertyValue $_ 'AllowManagementOS'
+                }
+              }
+          )
+
+          $allVMs = @(Get-VM -ErrorAction Stop | Sort-Object Name)
+          $vmInventory = @()
+          $candidateAddresses = New-Object System.Collections.Generic.HashSet[string]
+
+          foreach ($vm in $allVMs) {
+            $processor = Get-VMProcessor -VMName $vm.Name -ErrorAction Stop
+            $memory = Get-VMMemory -VMName $vm.Name -ErrorAction Stop
+
+            $disks = @(
+              Get-VMHardDiskDrive -VMName $vm.Name -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $vhd = $null
+                  $inspectionError = $null
+                  if ($_.Path) {
+                    try { $vhd = Get-VHD -Path $_.Path -ErrorAction Stop }
+                    catch { $inspectionError = $_.Exception.GetType().FullName }
+                  }
+                  [pscustomobject]@{
+                    ControllerType = [string]$_.ControllerType
+                    ControllerNumber = $_.ControllerNumber
+                    ControllerLocation = $_.ControllerLocation
+                    Path = $_.Path
+                    VhdFormat = if ($vhd) { [string]$vhd.VhdFormat } else { $null }
+                    VhdType = if ($vhd) { [string]$vhd.VhdType } else { $null }
+                    VirtualSizeGiB = if ($vhd) { To-GiB $vhd.Size } else { $null }
+                    FileSizeGiB = if ($vhd) { To-GiB $vhd.FileSize } else { $null }
+                    ParentPath = if ($vhd) { $vhd.ParentPath } else { $null }
+                    InspectionErrorType = $inspectionError
+                  }
+                }
+            )
+
+            $nics = @(
+              Get-VMNetworkAdapter -VMName $vm.Name -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $addresses = @($_.IPAddresses | Where-Object {
+                    $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and
+                    $_ -notmatch '^169\.254\.' -and
+                    $_ -ne '127.0.0.1'
+                  })
+                  foreach ($address in $addresses) { [void]$candidateAddresses.Add([string]$address) }
+                  [pscustomobject]@{
+                    Name = $_.Name
+                    SwitchName = $_.SwitchName
+                    Status = [string]$_.Status
+                    MacAddress = $_.MacAddress
+                    MacAddressSpoofing = [string]$_.MacAddressSpoofing
+                    IPAddresses = $addresses
+                  }
+                }
+            )
+
+            $vmInventory += [pscustomobject]@{
+              Name = $vm.Name
+              Id = [string]$vm.Id
+              State = [string]$vm.State
+              Status = [string]$vm.Status
+              Generation = $vm.Generation
+              Version = [string]$vm.Version
+              ProcessorCount = $processor.Count
+              ExposeVirtualizationExtensions = [bool]$processor.ExposeVirtualizationExtensions
+              DynamicMemoryEnabled = [bool]$memory.DynamicMemoryEnabled
+              StartupMemoryGiB = To-GiB $memory.Startup
+              MinimumMemoryGiB = To-GiB $memory.Minimum
+              MaximumMemoryGiB = To-GiB $memory.Maximum
+              HardDisks = $disks
+              NetworkAdapters = $nics
+              CheckpointCount = @(Get-VMSnapshot -VMName $vm.Name -ErrorAction SilentlyContinue).Count
+            }
+          }
+
+          # 10.10.10.14 is a historical LayerSentry management target only; probe it,
+          # but do not assume it is authoritative if live inventory reports otherwise.
+          [void]$candidateAddresses.Add('10.10.10.14')
+
+          $probes = @()
+          foreach ($address in @($candidateAddresses | Sort-Object)) {
+            $tcp8080 = Test-TcpPort -Address $address -Port 8080
+            $tcp8443 = Test-TcpPort -Address $address -Port 8443
+            $tcp443 = Test-TcpPort -Address $address -Port 443
+
+            $httpClient = $null
+            $httpApi = $null
+            if ($tcp8080) {
+              $httpClient = Test-HttpGet -Uri "http://$address`:8080/client/"
+              $httpApi = Test-HttpGet -Uri "http://$address`:8080/client/api?command=listCapabilities&response=json"
+            }
+
+            $probes += [pscustomobject]@{
+              Address = $address
+              Tcp8080 = $tcp8080
+              Tcp8443 = $tcp8443
+              Tcp443 = $tcp443
+              ClientGet = $httpClient
+              UnauthenticatedListCapabilitiesGet = $httpApi
+            }
+          }
+
+          $inventory = [ordered]@{
+            EvidenceClass = 'R0_READ_ONLY'
+            RunId = $env:GITHUB_RUN_ID
+            Repository = $env:GITHUB_REPOSITORY
+            Commit = $env:GITHUB_SHA
+            RunnerName = $env:RUNNER_NAME
+            CapturedUtc = [DateTime]::UtcNow.ToString('o')
+            Host = [ordered]@{
+              ComputerName = $env:COMPUTERNAME
+              Manufacturer = [string]$computerSystem.Manufacturer
+              Model = [string]$computerSystem.Model
+              LogicalProcessors = [int]$computerSystem.NumberOfLogicalProcessors
+              TotalPhysicalMemoryGiB = To-GiB $computerSystem.TotalPhysicalMemory
+              OsCaption = [string]$operatingSystem.Caption
+              OsVersion = [string]$operatingSystem.Version
+              LastBootUtc = ([Management.ManagementDateTimeConverter]::ToDateTime($operatingSystem.LastBootUpTime)).ToUniversalTime().ToString('o')
+              VmmsStatus = [string]$vmms.Status
+              HyperV = [ordered]@{
+                VirtualHardDiskPath = [string]$vmHost.VirtualHardDiskPath
+                VirtualMachinePath = [string]$vmHost.VirtualMachinePath
+                LogicalProcessorCount = Get-PropertyValue $vmHost 'LogicalProcessorCount'
+                MemoryCapacityGiB = To-GiB (Get-PropertyValue $vmHost 'MemoryCapacity')
+              }
+              Volumes = $hostVolumes
+              Switches = $switches
+            }
+            VirtualMachines = $vmInventory
+            CloudStackReachabilityProbes = $probes
+            MutationPerformed = $false
+          }
+
+          $jsonPath = Join-Path $evidence 'inventory.json'
+          $textPath = Join-Path $evidence 'summary.txt'
+          $inventory | ConvertTo-Json -Depth 12 | Set-Content -Path $jsonPath -Encoding UTF8
+
+          @(
+            'LAYERSENTRY_DR_R0_LIVE_INVENTORY'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "RUNNER=$env:RUNNER_NAME"
+            "HOST=$env:COMPUTERNAME"
+            "VM_COUNT=$($allVMs.Count)"
+            "VMMS=$($vmms.Status)"
+            "MUTATION_PERFORMED=false"
+            'READ_ONLY_INVENTORY_COMPLETE'
+          ) | Set-Content -Path $textPath -Encoding UTF8
+
+          Get-Content $textPath
+
+      - name: Upload R0 inventory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dr-r0-live-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-dr-r0-live-inventory\**
+          if-no-files-found: error
+          retention-days: 30
