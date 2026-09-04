@@ -1,0 +1,101 @@
+name: LayerSentry CloudStack API Discovery v2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-api-discovery-v2-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-api-discovery-v2
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Run read-only CloudStack API discovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-api-discovery-v2'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-api-discovery-v2-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected one v2 API discovery request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'DISCOVER_LAYERSENTRY_CLOUDSTACK_API_V2' -or [string]$r.authorization -ne 'USER_AUTHORIZED_READ_ONLY_CLOUDSTACK_API_DISCOVERY'){throw 'Authorization mismatch.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.discoveryCommit -ne 'ef49b7da42fc7e811d7bf7d6de4282d499ebdec2'){throw 'Target/helper mismatch.'}
+
+          $vms=@(Get-VM); if($vms.Count -ne 1){throw "Expected one Hyper-V VM; found $($vms.Count)."}; $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed.'}
+          $nic=Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1
+          if([string]$nic.MacAddressSpoofing -ne 'On' -or [string]$nic.SwitchName -ne 'Cozystack-NAT'){throw 'Hyper-V network safety gate failed.'}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-api-v2-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-api-v2-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-api-v2-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')";$escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="api-v2-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'api-v2-console.json';$req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $scp=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){$old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf API_V2_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'API_V2_READY')){$ready=$true;break};Start-Sleep 5}
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+
+            & scp.exe @scp 'hack/layersentry/cloudstack-api-discovery.py' 'root@10.10.10.14:/tmp/cloudstack-api-discovery.py'
+            if($LASTEXITCODE -ne 0){throw 'SCP of discovery helper failed.'}
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh 'python3 /tmp/cloudstack-api-discovery.py' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'api-discovery.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){throw "API discovery helper exited $rc."}
+            if(-not(Select-String (Join-Path $evidence 'api-discovery.txt') -Pattern 'DISCOVERY_COMPLETE' -Quiet)){throw 'Completion marker missing.'}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'console')
+          }finally{
+            if($ready){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh 'rm -f /tmp/cloudstack-api-discovery.py' 2>&1|Out-Null
+              $safe=$comment.Replace("'","")
+              & ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload API discovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-api-discovery-v2-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-api-discovery-v2\**
+          if-no-files-found: warn
+          retention-days: 30
