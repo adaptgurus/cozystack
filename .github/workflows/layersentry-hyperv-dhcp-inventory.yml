@@ -1,0 +1,74 @@
+name: LayerSentry Hyper-V DHCP Scope Inventory
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/hyperv-dhcp-inventory-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-hyperv-dhcp-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Read DHCP scopes, exclusions, reservations and leases
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/hyperv-dhcp-inventory-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one DHCP inventory request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'INVENTORY_HYPERV_DHCP_SCOPE' -or [string]$r.authorization -ne 'USER_AUTHORIZED_READ_ONLY_NETWORK_INVENTORY'){throw 'Authorization mismatch.'}
+          if([string]$r.expectedNetwork -ne '10.10.10.0/24'){throw 'Network mismatch.'}
+
+          $out=Join-Path $env:RUNNER_TEMP 'layersentry-hyperv-dhcp-inventory.txt'
+          '===== DHCP SERVICE ====='|Set-Content $out -Encoding UTF8
+          Get-Service DHCPServer|Format-List Name,Status,StartType,DisplayName|Out-String|Add-Content $out -Encoding UTF8
+          '===== DHCP SERVER MODULE ====='|Add-Content $out -Encoding UTF8
+          if(-not(Get-Command Get-DhcpServerv4Scope -ErrorAction SilentlyContinue)){
+            Import-Module DhcpServer -ErrorAction SilentlyContinue
+          }
+          if(Get-Command Get-DhcpServerv4Scope -ErrorAction SilentlyContinue){
+            $scopes=@(Get-DhcpServerv4Scope -ErrorAction Stop)
+            $scopes|Format-Table ScopeId,SubnetMask,Name,State,StartRange,EndRange,LeaseDuration -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+            foreach($s in $scopes){
+              "===== SCOPE $($s.ScopeId) OPTIONS ====="|Add-Content $out -Encoding UTF8
+              Get-DhcpServerv4OptionValue -ScopeId $s.ScopeId -ErrorAction SilentlyContinue|Format-Table OptionId,Name,Type,Value -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+              "===== SCOPE $($s.ScopeId) EXCLUSIONS ====="|Add-Content $out -Encoding UTF8
+              Get-DhcpServerv4ExclusionRange -ScopeId $s.ScopeId -ErrorAction SilentlyContinue|Format-Table ScopeId,StartRange,EndRange -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+              "===== SCOPE $($s.ScopeId) RESERVATIONS ====="|Add-Content $out -Encoding UTF8
+              Get-DhcpServerv4Reservation -ScopeId $s.ScopeId -ErrorAction SilentlyContinue|Format-Table ScopeId,IPAddress,ClientId,Name,Type -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+              "===== SCOPE $($s.ScopeId) LEASES ====="|Add-Content $out -Encoding UTF8
+              Get-DhcpServerv4Lease -ScopeId $s.ScopeId -AllLeases -ErrorAction SilentlyContinue|Sort-Object IPAddress|Format-Table IPAddress,ScopeId,ClientId,HostName,AddressState,LeaseExpiryTime -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+            }
+            '===== SERVER OPTIONS ====='|Add-Content $out -Encoding UTF8
+            Get-DhcpServerv4OptionValue -ErrorAction SilentlyContinue|Format-Table OptionId,Name,Type,Value -AutoSize|Out-String|Add-Content $out -Encoding UTF8
+          } else {
+            'DhcpServer PowerShell module unavailable.'|Add-Content $out -Encoding UTF8
+            netsh dhcp server show scope 2>&1|Out-String|Add-Content $out -Encoding UTF8
+          }
+          Get-Content $out
+
+      - name: Upload DHCP inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-hyperv-dhcp-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-hyperv-dhcp-inventory.txt
+          if-no-files-found: error
+          retention-days: 30
