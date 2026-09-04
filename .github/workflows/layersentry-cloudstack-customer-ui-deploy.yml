@@ -99,12 +99,14 @@ jobs:
             }
             if(-not(Select-String (Join-Path $evidence 'deploy.txt') -Pattern '\[100%\] Layersentry V1.0 served-UI branding verified' -Quiet)){throw 'Deployment completion marker missing.'}
 
-            $proof="echo =====IDENTITY=====; hostname -f; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 15 http://127.0.0.1:8080/client/; echo; echo =====CONFIG=====; curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json | python3 -c 'import json,sys; c=json.load(sys.stdin); print({k:c.get(k) for k in [\"appTitle\",\"brandLocked\",\"footer\",\"logo\",\"minilogo\",\"apidocs\",\"notifyLatestCSVersion\"]}); print(\"userCard.enabled=\"+str(c.get(\"userCard\",{}).get(\"enabled\")))'; echo =====COMPILED=====; for s in 'Infrastructure group name' 'Management network gateway' 'Datacenter site' 'DBaaS' 'APaaS'; do grep -Rqs --include='*.js' \"`$s\" /usr/share/cloudstack-management/webapp && echo \"`$s=PASS\" || echo \"`$s=FAIL\"; done; echo =====ASSETS=====; for a in layersentry-logo.svg layersentry-icon.svg; do c=`$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1:8080/client/assets/`$a); echo `$a=`$c; done; echo =====SERVICE=====; systemctl is-active cloudstack-management"
+            $verify='/root/install-layersentry-rocky9-served-ui-repair.sh --verify-only'
             $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
-            & ssh.exe @ssh $proof 2>&1|Tee-Object -FilePath (Join-Path $evidence 'runtime-evidence.txt')
+            & ssh.exe @ssh $verify 2>&1|Tee-Object -FilePath (Join-Path $evidence 'verify.txt')
             $rc=$LASTEXITCODE
             $ErrorActionPreference=$old
-            if($rc -ne 0){throw "Runtime evidence command exited $rc."}
+            if($rc -ne 0){throw "Read-only runtime verification exited $rc."}
+            if(-not(Select-String (Join-Path $evidence 'verify.txt') -Pattern 'TERMINOLOGY=PASS' -Quiet)){throw 'Customer terminology verification marker missing.'}
+            if(-not(Select-String (Join-Path $evidence 'verify.txt') -Pattern '\[100%\] Layersentry V1.0 served-UI branding verified' -Quiet)){throw 'Runtime verification completion marker missing.'}
 
             & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
           }
