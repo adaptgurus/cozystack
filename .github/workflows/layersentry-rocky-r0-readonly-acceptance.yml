@@ -57,29 +57,43 @@ jobs:
           ) | Set-Content -LiteralPath (Join-Path $evidence 'ssh-reachability.txt') -Encoding UTF8
           if (-not $port.TcpTestSucceeded) { throw 'Rocky SSH endpoint is not reachable from the runner.' }
 
-          if (-not (Get-Module -ListAvailable -Name Posh-SSH)) {
-            throw 'Posh-SSH is not installed on the self-hosted runner; refusing insecure command-line password handling.'
-          }
-          Import-Module Posh-SSH -ErrorAction Stop
-          $securePassword = ConvertTo-SecureString $env:ROCKY_PASSWORD -AsPlainText -Force
-          $credential = New-Object System.Management.Automation.PSCredential($env:ROCKY_USERNAME, $securePassword)
-          $session = $null
+          $script = Get-Content -LiteralPath 'hack/layersentry/collect-rocky-r0-readonly.sh' -Raw -Encoding UTF8
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
+          $remoteCommand = "printf '%s' '$encoded' | base64 -d | bash"
+          $knownHosts = Join-Path $env:RUNNER_TEMP "layersentry-rocky-known-hosts-$env:GITHUB_RUN_ID"
+          $askPass = Join-Path $env:RUNNER_TEMP "layersentry-rocky-askpass-$env:GITHUB_RUN_ID.cmd"
+          @('@echo off', 'echo %ROCKY_PASSWORD%') | Set-Content -LiteralPath $askPass -Encoding ASCII
+          $env:SSH_ASKPASS = $askPass
+          $env:SSH_ASKPASS_REQUIRE = 'force'
+          $env:DISPLAY = 'layersentry-noninteractive'
           try {
-            $session = New-SSHSession -ComputerName $env:ROCKY_HOST -Credential $credential -AcceptKey -ConnectionTimeout 15 -ErrorAction Stop
-            $script = Get-Content -LiteralPath 'hack/layersentry/collect-rocky-r0-readonly.sh' -Raw -Encoding UTF8
-            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
-            $command = "printf '%s' '$encoded' | base64 -d | bash"
-            $result = Invoke-SSHCommand -SessionId $session.SessionId -Command $command -TimeOut 60 -ErrorAction Stop
-            if ($result.ExitStatus -ne 0) { throw "Rocky read-only inventory exited $($result.ExitStatus)." }
-            $output = @($result.Output | ForEach-Object { [string]$_ })
+            $sshArguments = @(
+              '-o', 'BatchMode=no',
+              '-o', 'PreferredAuthentications=password',
+              '-o', 'PubkeyAuthentication=no',
+              '-o', 'StrictHostKeyChecking=accept-new',
+              '-o', "UserKnownHostsFile=$knownHosts",
+              '-o', 'LogLevel=ERROR',
+              '-o', 'ConnectTimeout=15',
+              "$($env:ROCKY_USERNAME)@$($env:ROCKY_HOST)",
+              $remoteCommand
+            )
+            $oldPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $output = @(& ssh.exe @sshArguments 2>&1 | ForEach-Object { [string]$_ })
+            $sshExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $oldPreference
+            if ($sshExitCode -ne 0) { throw "Rocky read-only inventory exited $sshExitCode." }
             if ($output -notcontains 'READ_ONLY_ROCKY_R0_INVENTORY_COMPLETE') { throw 'Rocky inventory completion marker is missing.' }
             if ($output -notcontains 'MUTATION_PERFORMED=false') { throw 'Rocky inventory mutation marker is missing.' }
             $output | Set-Content -LiteralPath (Join-Path $evidence 'rocky-inventory.txt') -Encoding UTF8
           }
           finally {
-            if ($null -ne $session) { Remove-SSHSession -SessionId $session.SessionId | Out-Null }
-            $credential = $null
-            $securePassword = $null
+            Remove-Item -LiteralPath $askPass -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $knownHosts -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:SSH_ASKPASS -ErrorAction SilentlyContinue
+            Remove-Item Env:SSH_ASKPASS_REQUIRE -ErrorAction SilentlyContinue
+            Remove-Item Env:DISPLAY -ErrorAction SilentlyContinue
           }
 
           @(
