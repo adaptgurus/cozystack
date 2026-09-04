@@ -1,0 +1,172 @@
+name: LayerSentry CloudStack Live Branding Audit
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-branding-audit-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-branding-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact audit request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Audit the only Hyper-V VM
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-branding-audit'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-branding-audit-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one branding audit request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'AUDIT_LAYERSENTRY_LIVE_BRANDING') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_READ_ONLY_BRANDING_AUDIT') { throw 'Authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
+
+          $vms = @(Get-VM)
+          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
+          $vm = $vms[0]
+          if ($vm.State -ne 'Running') { throw "Only VM '$($vm.Name)' is not running." }
+          Write-Host "Branding audit target: $($vm.Name)"
+
+          $key = Join-Path $env:RUNNER_TEMP 'layersentry-brand-audit-ed25519'
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-brand-audit-$env:GITHUB_RUN_ID"
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0) { throw 'ssh-keygen failed.' }
+
+          $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched = Join-Path $env:RUNNER_TEMP 'invoke-brand-audit-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patched -Value ($helper.Replace($needle, "`$allowedNames = @('$escapedVm')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "brand-audit-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $consolePath = Join-Path $env:RUNNER_TEMP 'brand-audit-console.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+          & $patched -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              $probe=& ssh.exe @ssh 'printf BRAND_AUDIT_READY' 2>&1; $rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if ($rc -eq 0 -and (($probe -join '') -match 'BRAND_AUDIT_READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
+
+            $remote = @'
+set -u
+printf '%s\n' '=====IDENTITY====='
+hostname -f || true
+ip -4 -br addr || true
+printf '%s\n' '=====HTTP====='
+curl -sS -o /tmp/ls-http-index.html -w 'INDEX_HTTP_%{http_code}\n' --max-time 15 http://127.0.0.1:8080/client/ || true
+curl -sS -o /tmp/ls-http-config.json -w 'CONFIG_HTTP_%{http_code}\n' --max-time 15 http://127.0.0.1:8080/client/config.json || true
+sha256sum /tmp/ls-http-index.html /tmp/ls-http-config.json 2>/dev/null || true
+printf '%s\n' '=====HTTP_CONFIG====='
+cat /tmp/ls-http-config.json 2>/dev/null || true
+printf '\n%s\n' '=====HTTP_INDEX_MARKERS====='
+grep -aioE 'Layersentry|Apache CloudStack|apachecloudstack|DBaaS|APaaS' /tmp/ls-http-index.html 2>/dev/null | sort -u || true
+printf '%s\n' '=====HTTP_JS_MARKERS====='
+for p in $(grep -oE 'src="[^"]+\.js"' /tmp/ls-http-index.html 2>/dev/null | sed -E 's/^src="//;s/"$//' | head -n 25); do
+  case "$p" in
+    http://*|https://*) u="$p" ;;
+    /*) u="http://127.0.0.1:8080$p" ;;
+    *) u="http://127.0.0.1:8080/client/$p" ;;
+  esac
+  printf 'JS %s -> ' "$p"
+  curl -sS --max-time 20 "$u" 2>/dev/null | grep -aoE 'Layersentry|DBaaS|APaaS|apachecloudstack|Apache CloudStack' | sort -u | tr '\n' ',' || true
+  printf '\n'
+done
+printf '%s\n' '=====RPM_UI_FILES====='
+rpm -ql cloudstack-ui 2>/dev/null || true
+printf '%s\n' '=====CANDIDATE_INDEXES====='
+find /usr/share /var/lib /opt /etc/cloudstack -maxdepth 7 -type f -name index.html 2>/dev/null | grep -E 'cloudstack|client|ui' | sort -u | head -n 100 || true
+printf '%s\n' '=====CANDIDATE_HASHES_AND_MARKERS====='
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  d=$(dirname "$f")
+  printf 'INDEX=%s\n' "$f"
+  sha256sum "$f" 2>/dev/null || true
+  [ -r "$d/config.json" ] && { sha256sum "$d/config.json"; grep -aioE 'Layersentry|Apache CloudStack|apachecloudstack|DBaaS|APaaS' "$d/config.json" | sort -u || true; }
+  if [ -d "$d/js" ]; then
+    printf 'JS_MARKERS='; grep -RhaoE --include='*.js' 'Layersentry|DBaaS|APaaS|apachecloudstack|Apache CloudStack' "$d/js" 2>/dev/null | sort -u | tr '\n' ',' || true; printf '\n'
+  fi
+done < <(find /usr/share /var/lib /opt /etc/cloudstack -maxdepth 7 -type f -name index.html 2>/dev/null | grep -E 'cloudstack|client|ui' | sort -u | head -n 100)
+printf '%s\n' '=====MANAGEMENT_SERVICE====='
+systemctl cat cloudstack-management 2>/dev/null | sed -n '1,240p' || true
+printf '%s\n' '=====PORTS====='
+ss -ltnp | grep -E ':8080|:8096|:8250|:8443|:9090' || true
+'@
+            $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'branding-audit.txt')
+            $rc=$LASTEXITCODE; $ErrorActionPreference=$old
+            if ($rc -ne 0) { throw "Branding audit command exited $rc." }
+          }
+          finally {
+            if ($ready) {
+              $safeComment=$comment.Replace("'","")
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload branding audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-branding-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-branding-audit\**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
