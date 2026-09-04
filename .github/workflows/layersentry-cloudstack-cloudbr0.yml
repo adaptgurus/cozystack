@@ -1,0 +1,175 @@
+name: LayerSentry CloudStack cloudbr0 Migration
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-cloudbr0-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-cloudbr0
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Migrate eth0 to cloudbr0 with automatic rollback
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-cloudbr0'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-cloudbr0-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one cloudbr0 request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'MIGRATE_LAYERSENTRY_ETH0_TO_CLOUDBR0'){throw 'Unsupported operation.'}
+          if([string]$r.authorization -ne 'USER_AUTHORIZED_ROLLBACK_PROTECTED_NETWORK_MIGRATION'){throw 'Authorization missing.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          if([string]$r.scriptCommit -ne 'c5e0a53ca1830e80c0c23b0c19213e1e0038c1a5'){throw 'Migration script commit mismatch.'}
+
+          $vms=@(Get-VM)
+          if($vms.Count -ne 1){throw "Safety stop: expected one Hyper-V VM; found $($vms.Count)."}
+          $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed.'}
+          $nic=Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1
+          if([string]$nic.MacAddressSpoofing -ne 'On'){throw 'MAC spoofing is not enabled.'}
+          if([string]$nic.SwitchName -ne 'Cozystack-NAT'){throw "Unexpected Hyper-V switch: $($nic.SwitchName)"}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-cloudbr0-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-cloudbr0-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-cloudbr0-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="cloudbr0-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'cloudbr0-console.json';$req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=5','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){$old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf CLOUDBR0_BOOTSTRAP_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'CLOUDBR0_BOOTSTRAP_READY')){$ready=$true;break};Start-Sleep 5}
+            if(-not $ready){throw 'Initial ephemeral SSH bootstrap failed.'}
+
+            $url='https://raw.githubusercontent.com/adaptgurus/cozystack/c5e0a53ca1830e80c0c23b0c19213e1e0038c1a5/hack/layersentry/configure-cloudbr0-safe.sh'
+            $prepare="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 '$url' -o /root/configure-cloudbr0-safe.sh && chmod 700 /root/configure-cloudbr0-safe.sh && bash -n /root/configure-cloudbr0-safe.sh && systemd-run --unit=layersentry-cloudbr0-apply --collect --no-block /root/configure-cloudbr0-safe.sh"
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $prepare 2>&1|Tee-Object -FilePath (Join-Path $evidence 'apply-launch.txt')
+            $launchRc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($launchRc -ne 0){throw "Failed to launch bridge migration: $launchRc"}
+
+            # The existing SSH flow may drop while eth0 becomes a bridge port. Poll
+            # for a fresh session well inside the 180-second guest rollback window.
+            $returned=$false
+            for($i=1;$i -le 30;$i++){
+              Start-Sleep 5
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              $p=& ssh.exe @ssh 'printf CLOUDBR0_SSH_RETURNED' 2>&1;$rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if($rc -eq 0 -and (($p-join '') -match 'CLOUDBR0_SSH_RETURNED')){$returned=$true;break}
+            }
+
+            if(-not $returned){
+              Write-Host 'Bridge did not return before validation deadline; leaving automatic rollback armed.'
+              Start-Sleep 70
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh 'echo =====POST_ROLLBACK=====; ip -4 -br addr; ip route; nmcli -f NAME,TYPE,DEVICE connection show --active; systemctl status layersentry-cloudbr0-rollback.service --no-pager || true' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'post-rollback.txt')
+              $ErrorActionPreference=$old
+              & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'rollback-console')
+              throw 'cloudbr0 validation failed; guest rollback was allowed to execute.'
+            }
+
+            $verify=@'
+set -Eeuo pipefail
+ip -4 -br addr
+ip route
+nmcli -f NAME,TYPE,DEVICE,AUTOCONNECT connection show
+bridge link show
+ip -4 address show dev cloudbr0 | grep -F 'inet 10.10.10.14/24'
+! ip -4 address show dev eth0 | grep -q 'inet '
+ip route show default | grep -E 'default via 10.10.10.1 dev cloudbr0( |$)'
+bridge link show | grep -E 'eth0.*master cloudbr0'
+ping -c 3 -W 2 10.10.10.1
+curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json | grep -q Layersentry
+curl -fsS --max-time 15 http://10.10.10.14:8080/client/config.json | grep -q Layersentry
+systemctl is-active --quiet cloudstack-management
+echo RUNNER_NETWORK_VALIDATION=PASS
+'@
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $verify 2>&1|Tee-Object -FilePath (Join-Path $evidence 'network-validation.txt')
+            $verifyRc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($verifyRc -ne 0){
+              Write-Host 'Runner validation failed; leaving automatic rollback armed.'
+              Start-Sleep 70
+              throw "Runner network validation failed with exit $verifyRc."
+            }
+
+            # Only after the independent runner can reconnect and validate the live
+            # bridge do we cancel the rollback timer.
+            $finalize=@'
+set -Eeuo pipefail
+systemctl stop layersentry-cloudbr0-rollback.timer 2>/dev/null || true
+systemctl reset-failed layersentry-cloudbr0-rollback.service 2>/dev/null || true
+virsh net-destroy default >/dev/null 2>&1 || true
+virsh net-autostart default --disable >/dev/null 2>&1 || true
+systemctl enable cloudstack-agent >/dev/null 2>&1 || true
+systemctl start cloudstack-agent >/dev/null 2>&1 || true
+sleep 5
+echo =====FINAL_NETWORK=====
+ip -4 -br addr
+ip route
+bridge link show
+nmcli -f NAME,TYPE,DEVICE,AUTOCONNECT connection show --active
+echo =====AGENT=====
+systemctl is-active cloudstack-agent || true
+systemctl is-enabled cloudstack-agent || true
+systemctl --no-pager --full status cloudstack-agent || true
+journalctl -u cloudstack-agent -n 100 --no-pager || true
+echo =====LIBVIRT_NETWORKS=====
+virsh net-list --all || true
+echo CLOUDBR0_MIGRATION_COMPLETE
+'@
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $finalize 2>&1|Tee-Object -FilePath (Join-Path $evidence 'final.txt')
+            $finalRc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($finalRc -ne 0){throw "Final bridge state collection failed: $finalRc"}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }finally{
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload bridge evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudbr0-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudbr0\**
+          if-no-files-found: warn
+          retention-days: 30
