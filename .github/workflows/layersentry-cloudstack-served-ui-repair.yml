@@ -1,0 +1,97 @@
+name: LayerSentry CloudStack Served UI Repair
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-served-ui-repair-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-served-ui-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Repair the actually served CloudStack management webapp
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-served-ui-repair'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force|Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-served-ui-repair-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one served-UI repair request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.operation -ne 'REPAIR_LAYERSENTRY_SERVED_MANAGEMENT_WEBAPP'){throw 'Unsupported operation.'}
+          if([string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_SERVED_UI_REPAIR'){throw 'Authorization missing.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          if([string]$r.repairCommit -ne '27c4726d1eb63b419dffeb37cc6e725159166a47'){throw 'Repair commit mismatch.'}
+          $vms=@(Get-VM); if($vms.Count -ne 1){throw "Expected one Hyper-V VM; found $($vms.Count)."}; $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed.'}
+          if([string](Get-VMNetworkAdapter -VMName $vm.Name|Select-Object -First 1).MacAddressSpoofing -ne 'On'){throw 'MAC spoofing is not enabled.'}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-served-ui-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-served-ui-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $src=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-served-ui-console.ps1'
+          $helper=Get-Content $src -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard missing.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="served-ui-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'served-ui-console.json';$req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){$old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf SERVED_UI_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'SERVED_UI_READY')){$ready=$true;break};Start-Sleep 5}
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+            $url='https://raw.githubusercontent.com/adaptgurus/cozystack/27c4726d1eb63b419dffeb37cc6e725159166a47/hack/layersentry/repair-cloudstack-served-ui.sh'
+            $remote="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 '$url' -o /root/repair-cloudstack-served-ui.sh && chmod 700 /root/repair-cloudstack-served-ui.sh && bash -n /root/repair-cloudstack-served-ui.sh && /root/repair-cloudstack-served-ui.sh"
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1|Tee-Object -FilePath (Join-Path $evidence 'repair.txt')
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            if($rc -ne 0){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+              & ssh.exe @ssh "L=`$(ls -1t /var/log/layersentry-served-ui-repair-*.log 2>/dev/null|head -1); echo LOG=`$L; test -z `"`$L`" || tail -n 600 `"`$L`"; systemctl is-active cloudstack-management cloudstack-agent || true; ls -l /usr/share/cloudstack-management/webapp/config.json /etc/cloudstack/management/config.json 2>&1 || true" 2>&1|Tee-Object -FilePath (Join-Path $evidence 'failure.txt')
+              $ErrorActionPreference=$old
+              throw "Served UI repair exited $rc."
+            }
+            if(-not(Select-String (Join-Path $evidence 'repair.txt') -Pattern '\[100%\] Layersentry served management UI repair completed' -Quiet)){throw 'Completion marker missing.'}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }finally{
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-served-ui-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-served-ui-repair\**
+          if-no-files-found: warn
+          retention-days: 30
