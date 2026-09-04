@@ -35,9 +35,7 @@ jobs:
           Import-Module Hyper-V -ErrorAction Stop
 
           $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-single-vm-resume'
-          if (Test-Path -LiteralPath $evidence) {
-            Remove-Item -LiteralPath $evidence -Recurse -Force
-          }
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
           New-Item -Path $evidence -ItemType Directory -Force | Out-Null
 
           [string[]]$changed = @(
@@ -45,58 +43,33 @@ jobs:
               ForEach-Object { [string]$_ } |
               Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
           )
-          if ($LASTEXITCODE -ne 0) {
-            throw "git diff-tree failed with $LASTEXITCODE"
-          }
-          if ($changed.Count -ne 1) {
-            throw "Expected one recovery request; found $($changed.Count)."
-          }
+          if ($LASTEXITCODE -ne 0) { throw "git diff-tree failed with $LASTEXITCODE" }
+          if ($changed.Count -ne 1) { throw "Expected one recovery request; found $($changed.Count)." }
           $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
-          if ([string]$request.operation -ne 'RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM') {
-            throw "Unsupported operation: $($request.operation)"
-          }
-          if ([string]$request.authorization -ne 'USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY') {
-            throw 'Explicit recovery authorization is missing.'
-          }
-          if ([string]$request.expectedAddress -ne '10.10.10.14') {
-            throw 'Target address validation failed.'
-          }
-          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') {
-            throw 'Target FQDN validation failed.'
-          }
-          if ([string]$request.cloudstackVersion -ne '4.22.1.1') {
-            throw 'CloudStack version validation failed.'
-          }
-          if ([string]$request.installerCommit -ne 'aeda25d62cfe047bb62202eea17aa4f87554a2c2') {
-            throw 'Installer commit validation failed.'
-          }
+          if ([string]$request.operation -ne 'RESUME_LAYERSENTRY_CLOUDSTACK_SINGLE_HYPERV_VM') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_SINGLE_VM_INSTALLATION_RECOVERY') { throw 'Recovery authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
+          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Target FQDN mismatch.' }
+          if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'CloudStack version mismatch.' }
+          if ([string]$request.installerCommit -ne 'aeda25d62cfe047bb62202eea17aa4f87554a2c2') { throw 'Installer commit mismatch.' }
 
           $vms = @(Get-VM)
-          if ($vms.Count -ne 1) {
-            throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)."
-          }
+          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
           $vm = $vms[0]
-          if ($vm.State -ne 'Running') {
-            throw "Only VM $($vm.Name) is not running."
-          }
+          if ($vm.State -ne 'Running') { throw "Only VM $($vm.Name) is not running." }
           $cpu = Get-VMProcessor -VMName $vm.Name
-          if (-not [bool]$cpu.ExposeVirtualizationExtensions) {
-            throw 'Nested virtualization is not exposed on the only VM.'
-          }
+          if (-not [bool]$cpu.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed.' }
           $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
-          if ([string]$nic.MacAddressSpoofing -ne 'On') {
-            throw 'MAC address spoofing is not enabled on the only VM.'
-          }
+          if ([string]$nic.MacAddressSpoofing -ne 'On') { throw 'MAC spoofing is not enabled.' }
           Write-Host "Only VM approved: $($vm.Name)"
 
           $key = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-ephemeral-ed25519'
           Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
           $comment = "layersentry-runner-$env:GITHUB_RUN_ID"
-          & ssh-keygen.exe -q -t ed25519 -N '' -C $comment -f $key
-          if ($LASTEXITCODE -ne 0) {
-            throw 'ssh-keygen failed.'
-          }
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed.' }
 
           $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
           $patched = Join-Path $env:RUNNER_TEMP 'invoke-cloudstack-single-vm-console.ps1'
@@ -104,65 +77,46 @@ jobs:
           $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
           $escapedVm = $vm.Name.Replace("'", "''")
           $replacement = "`$allowedNames = @('$escapedVm')"
-          if (-not $helper.Contains($needle)) {
-            throw 'Expected VM allow-list guard not found in console helper.'
-          }
-          $helper = $helper.Replace($needle, $replacement)
-          Set-Content -LiteralPath $patched -Value $helper -Encoding UTF8
+          if (-not $helper.Contains($needle)) { throw 'Expected VM allow-list guard not found in console helper.' }
+          Set-Content -LiteralPath $patched -Value ($helper.Replace($needle, $replacement)) -Encoding UTF8
 
           $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
-          if ($pub -notmatch '^ssh-ed25519\s+') {
-            throw 'Unexpected public key format.'
-          }
+          if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected public key format.' }
           $bootstrapCommand = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
           $consoleRequest = [ordered]@{
             requestId = "cloudstack-bootstrap-$env:GITHUB_RUN_ID"
             delayAfterSeconds = 3
-            targets = @(
-              [ordered]@{
-                vm = $vm.Name
-                actions = @(
-                  [ordered]@{ kind = 'key'; code = 13 },
-                  [ordered]@{ kind = 'text'; value = $bootstrapCommand },
-                  [ordered]@{ kind = 'key'; code = 13 }
-                )
-              }
-            )
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind = 'key'; code = 13 },
+                [ordered]@{ kind = 'text'; value = $bootstrapCommand },
+                [ordered]@{ kind = 'key'; code = 13 }
+              )
+            })
           }
           $consoleRequestPath = Join-Path $env:RUNNER_TEMP 'cloudstack-console-bootstrap.json'
           $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consoleRequestPath -Encoding UTF8
           & $patched -RequestPath $consoleRequestPath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
 
-          $ssh = @(
-            '-i', $key,
-            '-o', 'BatchMode=yes',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=NUL',
-            '-o', 'ConnectTimeout=10',
-            'root@10.10.10.14'
-          )
-
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','ConnectTimeout=10','root@10.10.10.14')
           $sshReady = $false
-          for ($attempt = 1; $attempt -le 12; $attempt++) {
+          for ($attempt=1; $attempt -le 12; $attempt++) {
             $probe = & ssh.exe @ssh 'printf RUNNER_SSH_READY' 2>&1
-            if ($LASTEXITCODE -eq 0 -and (($probe -join '') -match 'RUNNER_SSH_READY')) {
-              $sshReady = $true
-              break
-            }
+            if ($LASTEXITCODE -eq 0 -and (($probe -join '') -match 'RUNNER_SSH_READY')) { $sshReady=$true; break }
             Start-Sleep -Seconds 5
           }
           if (-not $sshReady) {
             & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'bootstrap-failed-console')
-            throw 'Ephemeral SSH bootstrap failed; console was likely not at an authenticated root shell.'
+            throw 'Ephemeral SSH bootstrap failed; console is probably not at an authenticated root shell.'
           }
+          Write-Host 'Ephemeral key-based SSH established; no password was stored in GitHub.'
 
           try {
             $installerUrl = 'https://raw.githubusercontent.com/adaptgurus/cloudstack/aeda25d62cfe047bb62202eea17aa4f87554a2c2/install-layersentry-rocky9-resume.sh'
             $remoteInstall = "curl -fsSL '$installerUrl' -o /root/install-layersentry-rocky9-resume.sh && chmod 700 /root/install-layersentry-rocky9-resume.sh && bash -n /root/install-layersentry-rocky9-resume.sh && /root/install-layersentry-rocky9-resume.sh"
             & ssh.exe @ssh $remoteInstall 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'resume-stdout.txt')
-            if ($LASTEXITCODE -ne 0) {
-              throw "Remote recovery exited $LASTEXITCODE."
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Remote recovery exited $LASTEXITCODE." }
 
             $remoteEvidence = "echo =====IDENTITY=====; hostname -f; ip -4 -br addr; ip route; echo =====PACKAGES=====; rpm -q cloudstack-management cloudstack-ui cloudstack-agent; echo =====JAVA-KVM=====; java -version 2>&1 | head -3; ls -l /dev/kvm; lsmod | grep kvm || true; echo =====SERVICES=====; systemctl is-active mysqld cloudstack-management cloudstack-agent || true; echo =====HTTP=====; curl -sS -o /dev/null -w 'HTTP_%{http_code}' --max-time 10 http://127.0.0.1:8080/client/ || true; echo; echo =====LIBVIRT=====; virsh -c qemu:///system list --all || true; echo =====COMPLETION=====; grep -F '[100%] Layersentry V1.0 resumed installation completed' /var/log/layersentry-rocky9-resume-*.log | tail -1 || true"
             & ssh.exe @ssh $remoteEvidence 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'guest-final-evidence.txt')
