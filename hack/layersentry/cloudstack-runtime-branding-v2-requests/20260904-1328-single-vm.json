@@ -1,0 +1,9 @@
+{
+  "operation": "APPLY_LAYERSENTRY_RUNTIME_BRANDING_V2",
+  "authorization": "USER_AUTHORIZED_LAYERSENTRY_RUNTIME_BRANDING",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "brandingCommit": "eed2fc1b2b65a3e01e261f39a02167b513d41ab2",
+  "purpose": "Apply the committed Layersentry V1.0 runtime configuration, verify logo/config/catalog delivery over HTTP, and stop the unconfigured CloudStack agent restart loop before network bridge configuration."
+}
