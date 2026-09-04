@@ -1,0 +1,9 @@
+{
+  "operation": "DISCOVER_LAYERSENTRY_CLOUDSTACK_API_V2",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_CLOUDSTACK_API_DISCOVERY",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "discoveryCommit": "ef49b7da42fc7e811d7bf7d6de4282d499ebdec2",
+  "purpose": "Execute only the read-only Python discovery helper after eliminating all multi-word remote preflight quoting. Previous two attempts made no CloudStack or VM configuration changes."
+}
