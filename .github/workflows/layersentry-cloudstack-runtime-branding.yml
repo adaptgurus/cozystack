@@ -1,0 +1,204 @@
+name: LayerSentry CloudStack Runtime Branding
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-runtime-branding-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-runtime-branding
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Apply verified Layersentry runtime branding
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $evidence = Join-Path $env:RUNNER_TEMP 'layersentry-cloudstack-runtime-branding'
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-runtime-branding-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one runtime-branding request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -ne 'APPLY_LAYERSENTRY_RUNTIME_BRANDING') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_RUNTIME_BRANDING') { throw 'Authorization missing.' }
+          if ([string]$request.expectedAddress -ne '10.10.10.14') { throw 'Target address mismatch.' }
+          if ([string]$request.expectedFqdn -ne 'layersentry.lab.example') { throw 'Target FQDN mismatch.' }
+          if ([string]$request.cloudstackVersion -ne '4.22.1.1') { throw 'CloudStack version mismatch.' }
+          if ([string]$request.brandingCommit -ne 'eed2fc1b2b65a3e01e261f39a02167b513d41ab2') { throw 'Branding commit mismatch.' }
+
+          $vms = @(Get-VM)
+          if ($vms.Count -ne 1) { throw "Safety stop: expected exactly one Hyper-V VM; found $($vms.Count)." }
+          $vm = $vms[0]
+          if ($vm.State -ne 'Running') { throw "Only VM '$($vm.Name)' is not running." }
+          $cpu = Get-VMProcessor -VMName $vm.Name
+          if (-not [bool]$cpu.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed.' }
+          $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
+          if ([string]$nic.MacAddressSpoofing -ne 'On') { throw 'MAC spoofing is not enabled.' }
+
+          $key = Join-Path $env:RUNNER_TEMP 'layersentry-runtime-branding-ed25519'
+          Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-runtime-branding-$env:GITHUB_RUN_ID"
+          $keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          & cmd.exe /d /s /c $keygenCommand
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed.' }
+
+          $source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patchedHelper = Join-Path $env:RUNNER_TEMP 'invoke-layersentry-runtime-branding-console.ps1'
+          $helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          $escapedVm = $vm.Name.Replace("'", "''")
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$escapedVm')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "runtime-branding-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $vm.Name
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $consolePath = Join-Path $env:RUNNER_TEMP 'layersentry-runtime-branding-console.json'
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+          & $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              $probe=& ssh.exe @ssh 'printf RUNTIME_BRANDING_READY' 2>&1; $rc=$LASTEXITCODE
+              $ErrorActionPreference=$old
+              if ($rc -eq 0 -and (($probe -join '') -match 'RUNTIME_BRANDING_READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
+
+            $remote = @'
+set -Eeuo pipefail
+COMMIT='eed2fc1b2b65a3e01e261f39a02167b513d41ab2'
+BASE="https://raw.githubusercontent.com/adaptgurus/cloudstack/${COMMIT}/ui"
+TMP="$(mktemp -d /var/tmp/layersentry-runtime-branding.XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 "$BASE/public/config.json" -o "$TMP/config.json"
+python3 -m json.tool "$TMP/config.json" >/dev/null
+python3 - "$TMP/config.json" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1],encoding='utf-8'))
+assert c['appTitle']=='Layersentry'
+assert c['loginTitle']=='Layersentry'
+assert c['footer']=='Layersentry V1.0'
+assert c['userCard']['enabled'] is False
+assert c['apidocs'] is False
+assert c['notifyLatestCSVersion'] is False
+assert c['logo']=='assets/layersentry-logo.svg'
+assert c['minilogo']=='assets/layersentry-icon.svg'
+PY
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="/var/backups/layersentry/${STAMP}/runtime-branding"
+install -d -m 0700 "$BACKUP"
+for f in /etc/cloudstack/ui/config.json /usr/share/cloudstack-ui/config.json; do
+  if [ -e "$f" ] || [ -L "$f" ]; then cp -aL "$f" "$BACKUP/$(echo "$f" | tr '/' '_')"; fi
+done
+for asset in layersentry-logo.svg layersentry-icon.svg; do
+  if [ ! -s "/usr/share/cloudstack-ui/assets/$asset" ]; then
+    curl -fsSL --retry 4 --retry-all-errors "$BASE/public/assets/$asset" -o "$TMP/$asset"
+    install -D -m 0644 "$TMP/$asset" "/usr/share/cloudstack-ui/assets/$asset"
+  fi
+done
+install -m 0644 "$TMP/config.json" /etc/cloudstack/ui/config.json
+install -m 0644 "$TMP/config.json" /usr/share/cloudstack-ui/config.json
+restorecon -RF /etc/cloudstack/ui /usr/share/cloudstack-ui >/dev/null 2>&1 || true
+systemctl disable --now cloudstack-agent >/dev/null 2>&1 || true
+systemctl is-active --quiet cloudstack-management
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 http://127.0.0.1:8080/client/)"
+[ "$CODE" = 200 ]
+curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json -o "$TMP/runtime.json"
+python3 - "$TMP/runtime.json" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1],encoding='utf-8'))
+checks={
+'appTitle':c.get('appTitle')=='Layersentry',
+'loginTitle':c.get('loginTitle')=='Layersentry',
+'footer':c.get('footer')=='Layersentry V1.0',
+'userCard':c.get('userCard',{}).get('enabled') is False,
+'apidocs':c.get('apidocs') is False,
+'notifyLatestCSVersion':c.get('notifyLatestCSVersion') is False,
+'logo':c.get('logo')=='assets/layersentry-logo.svg',
+'minilogo':c.get('minilogo')=='assets/layersentry-icon.svg'
+}
+print(json.dumps(checks,sort_keys=True))
+assert all(checks.values())
+PY
+for asset in layersentry-logo.svg layersentry-icon.svg; do
+  C="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "http://127.0.0.1:8080/client/assets/$asset")"
+  [ "$C" = 200 ] || { echo "asset $asset HTTP $C"; exit 1; }
+done
+UIROOT=/usr/share/cloudstack-ui
+grep -Rqs --include='*.js' 'DBaaS' "$UIROOT" && echo DBAAS_COMPILED=PASS
+grep -Rqs --include='*.js' 'APaaS' "$UIROOT" && echo APAAS_COMPILED=PASS
+echo "BACKUP=$BACKUP"
+echo "HTTP=$CODE"
+echo "AGENT_STATE=$(systemctl is-active cloudstack-agent 2>/dev/null || true)"
+echo "AGENT_ENABLED=$(systemctl is-enabled cloudstack-agent 2>/dev/null || true)"
+echo RUNTIME_BRANDING_COMPLETE
+'@
+            $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+            & ssh.exe @ssh $remote 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'runtime-branding.txt')
+            $rc=$LASTEXITCODE; $ErrorActionPreference=$old
+            if ($rc -ne 0) { throw "Runtime branding exited $rc." }
+            if (-not (Select-String -LiteralPath (Join-Path $evidence 'runtime-branding.txt') -Pattern 'RUNTIME_BRANDING_COMPLETE' -Quiet)) { throw 'Completion marker missing.' }
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          }
+          finally {
+            if ($ready) {
+              $safeComment=$comment.Replace("'","")
+              $old=$ErrorActionPreference; $ErrorActionPreference='Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference=$old
+            }
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload runtime branding evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-cloudstack-runtime-branding-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-cloudstack-runtime-branding\**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
