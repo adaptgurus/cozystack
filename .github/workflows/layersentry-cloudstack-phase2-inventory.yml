@@ -58,20 +58,21 @@ jobs:
           $nic = Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1
           if ([string]$nic.MacAddressSpoofing -ne 'On') { throw 'MAC spoofing is not enabled.' }
 
-          '===== HYPER-V VM =====' | Set-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-VM -Name $vm.Name | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== PROCESSOR =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-VMProcessor -VMName $vm.Name | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== VM NIC =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-VMNetworkAdapter -VMName $vm.Name | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== VM VLAN =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-VMNetworkAdapterVlan -VMName $vm.Name | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== VSWITCHES =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-VMSwitch | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== HOST IPV4 =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-NetIPAddress -AddressFamily IPv4 | Sort-Object InterfaceAlias,IPAddress | Format-Table -AutoSize | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          '===== HOST NAT =====' | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
-          Get-NetNat -ErrorAction SilentlyContinue | Format-List * | Out-String | Add-Content -LiteralPath (Join-Path $evidence 'hyperv-host.txt') -Encoding UTF8
+          $hostFile = Join-Path $evidence 'hyperv-host.txt'
+          '===== HYPER-V VM =====' | Set-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-VM -Name $vm.Name | Format-List Name,State,ProcessorCount,MemoryAssigned,Uptime,Path | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== PROCESSOR =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-VMProcessor -VMName $vm.Name | Format-List VMName,Count,ExposeVirtualizationExtensions,CompatibilityForMigrationEnabled | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== VM NIC =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-VMNetworkAdapter -VMName $vm.Name | Format-List VMName,Name,SwitchName,MacAddress,MacAddressSpoofing,Status,IPAddresses | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== VM VLAN =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-VMNetworkAdapterVlan -VMName $vm.Name | Format-List * | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== VSWITCHES =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-VMSwitch | Format-List Name,SwitchType,NetAdapterInterfaceDescription,AllowManagementOS | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== HOST IPV4 =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-NetIPAddress -AddressFamily IPv4 | Sort-Object InterfaceAlias,IPAddress | Format-Table InterfaceAlias,IPAddress,PrefixLength -AutoSize | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          '===== HOST NAT =====' | Add-Content -LiteralPath $hostFile -Encoding UTF8
+          Get-NetNat -ErrorAction SilentlyContinue | Format-List Name,InternalIPInterfaceAddressPrefix,Active | Out-String | Add-Content -LiteralPath $hostFile -Encoding UTF8
 
           $key = Join-Path $env:RUNNER_TEMP 'layersentry-phase2-inventory-ed25519'
           Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
@@ -122,66 +123,8 @@ jobs:
             if (-not $ready) { throw 'Ephemeral SSH bootstrap failed.' }
 
             $guestScript = Join-Path $env:RUNNER_TEMP 'layersentry-phase2-inventory.sh'
-            @'
-#!/usr/bin/env bash
-set -u
-section(){ printf '\n===== %s =====\n' "$1"; }
-section IDENTITY
-hostnamectl
-hostname -f
-cat /etc/rocky-release
-uname -a
-section NETWORK
-ip -4 -br addr
-ip -d link show
-ip route
-cat /etc/resolv.conf
-nmcli -f NAME,UUID,TYPE,DEVICE,AUTOCONNECT connection show
-nmcli -f GENERAL.CONNECTION,GENERAL.DEVICE,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show eth0
-nmcli -f connection.id,connection.interface-name,connection.autoconnect,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,ipv4.ignore-auto-dns connection show eth0
-section BRIDGES
-ip -d link show type bridge 2>/dev/null || true
-bridge link 2>/dev/null || true
-bridge vlan show 2>/dev/null || true
-virsh net-list --all 2>/dev/null || true
-section STORAGE
-lsblk -e7 -o NAME,KNAME,SIZE,TYPE,FSTYPE,FSVER,MOUNTPOINTS,UUID,PKNAME
-findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS
-df -hT
-pvs 2>/dev/null || true
-vgs 2>/dev/null || true
-lvs -a -o lv_name,vg_name,lv_size,lv_attr,data_percent,metadata_percent 2>/dev/null || true
-section PACKAGES
-rpm -q cloudstack-management cloudstack-ui cloudstack-agent mysql-server java-17-openjdk qemu-kvm libvirt libvirt-client nfs-utils firewalld 2>&1 || true
-section SERVICES
-systemctl is-active mysqld cloudstack-management cloudstack-agent virtqemud firewalld 2>&1 || true
-systemctl is-enabled mysqld cloudstack-management cloudstack-agent virtqemud firewalld 2>&1 || true
-section CLOUDSTACK_HTTP
-curl -sS -D - -o /tmp/layersentry-client-index.html --max-time 15 http://127.0.0.1:8080/client/ | sed -n '1,20p' || true
-printf '\n--- runtime config.json ---\n'
-curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json 2>&1 || true
-section CLOUDSTACK_DB_COUNTS
-mysql --protocol=socket -uroot -NBe "SELECT 'zones',COUNT(*) FROM cloud.data_center; SELECT 'pods',COUNT(*) FROM cloud.host_pod_ref; SELECT 'clusters',COUNT(*) FROM cloud.cluster; SELECT 'hosts',COUNT(*) FROM cloud.host; SELECT 'primary_storage',COUNT(*) FROM cloud.storage_pool;" 2>&1 || true
-section CLOUDSTACK_AGENT
-systemctl --no-pager --full status cloudstack-agent 2>&1 || true
-journalctl -u cloudstack-agent -n 160 --no-pager 2>&1 || true
-section MANAGEMENT
-systemctl --no-pager --full status cloudstack-management 2>&1 || true
-journalctl -u cloudstack-management -n 80 --no-pager 2>&1 || true
-section KVM
-ls -l /dev/kvm 2>&1 || true
-lsmod | grep kvm || true
-virsh -c qemu:///system version 2>&1 || true
-virsh -c qemu:///system list --all 2>&1 || true
-virt-host-validate qemu 2>&1 || true
-section FIREWALL
-firewall-cmd --get-active-zones 2>&1 || true
-firewall-cmd --list-all 2>&1 || true
-section UI_PACKAGE_ROOT
-rpm -ql cloudstack-ui | grep -E '/(index.html|config.json)$' 2>&1 || true
-section COMPLETE
-echo PHASE2_INVENTORY_COMPLETE
-'@ | Set-Content -LiteralPath $guestScript -Encoding ASCII
+            $guestB64 = 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLXUKc2VjdGlvbigpeyBwcmludGYgJ1xuPT09PT0gJXMgPT09PT1cbicgIiQxIjsgfQpzZWN0aW9uIElERU5USVRZCmhvc3RuYW1lY3RsCmhvc3RuYW1lIC1mCmNhdCAvZXRjL3JvY2t5LXJlbGVhc2UKdW5hbWUgLWEKc2VjdGlvbiBORVRXT1JLCmlwIC00IC1iciBhZGRyCmlwIC1kIGxpbmsgc2hvdwppcCByb3V0ZQpjYXQgL2V0Yy9yZXNvbHYuY29uZgpubWNsaSAtZiBOQU1FLFVVSUQsVFlQRSxERVZJQ0UsQVVUT0NPTk5FQ1QgY29ubmVjdGlvbiBzaG93Cm5tY2xpIC1mIEdFTkVSQUwuQ09OTkVDVElPTixHRU5FUkFMLkRFVklDRSxJUDQuQUREUkVTUyxJUDQuR0FURVdBWSxJUDQuRE5TIGRldmljZSBzaG93IGV0aDAKbm1jbGkgLWYgY29ubmVjdGlvbi5pZCxjb25uZWN0aW9uLmludGVyZmFjZS1uYW1lLGNvbm5lY3Rpb24uYXV0b2Nvbm5lY3QsaXB2NC5tZXRob2QsaXB2NC5hZGRyZXNzZXMsaXB2NC5nYXRld2F5LGlwdjQuZG5zLGlwdjQuaWdub3JlLWF1dG8tZG5zIGNvbm5lY3Rpb24gc2hvdyBldGgwCnNlY3Rpb24gQlJJREdFUwppcCAtZCBsaW5rIHNob3cgdHlwZSBicmlkZ2UgMj4vZGV2L251bGwgfHwgdHJ1ZQpicmlkZ2UgbGluayAyPi9kZXYvbnVsbCB8fCB0cnVlCmJyaWRnZSB2bGFuIHNob3cgMj4vZGV2L251bGwgfHwgdHJ1ZQp2aXJzaCBuZXQtbGlzdCAtLWFsbCAyPi9kZXYvbnVsbCB8fCB0cnVlCnNlY3Rpb24gU1RPUkFHRQpsc2JsayAtZTcgLW8gTkFNRSxLTkFNRSxTSVpFLFRZUEUsRlNUWVBFLEZTVkVSLE1PVU5UUE9JTlRTLFVVSUQsUEtOQU1FCmZpbmRtbnQgLW8gVEFSR0VULFNPVVJDRSxGU1RZUEUsT1BUSU9OUwpkZiAtaFQKcHZzIDI+L2Rldi9udWxsIHx8IHRydWUKdmdzIDI+L2Rldi9udWxsIHx8IHRydWUKbHZzIC1hIC1vIGx2X25hbWUsdmdfbmFtZSxsdl9zaXplLGx2X2F0dHIsZGF0YV9wZXJjZW50LG1ldGFkYXRhX3BlcmNlbnQgMj4vZGV2L251bGwgfHwgdHJ1ZQpzZWN0aW9uIFBBQ0tBR0VTCnJwbSAtcSBjbG91ZHN0YWNrLW1hbmFnZW1lbnQgY2xvdWRzdGFjay11aSBjbG91ZHN0YWNrLWFnZW50IG15c3FsLXNlcnZlciBqYXZhLTE3LW9wZW5qZGsgcWVtdS1rdm0gbGlidmlydCBsaWJ2aXJ0LWNsaWVudCBuZnMtdXRpbHMgZmlyZXdhbGxkIDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIFNFUlZJQ0VTCnN5c3RlbWN0bCBpcy1hY3RpdmUgbXlzcWxkIGNsb3Vkc3RhY2stbWFuYWdlbWVudCBjbG91ZHN0YWNrLWFnZW50IHZpcnRxZW11ZCBmaXJld2FsbGQgMj4mMSB8fCB0cnVlCnN5c3RlbWN0bCBpcy1lbmFibGVkIG15c3FsZCBjbG91ZHN0YWNrLW1hbmFnZW1lbnQgY2xvdWRzdGFjay1hZ2VudCB2aXJ0cWVtdWQgZmlyZXdhbGxkIDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIENMT1VEU1RBQ0tfSFRUUApjdXJsIC1zUyAtRCAtIC1vIC90bXAvbGF5ZXJzZW50cnktY2xpZW50LWluZGV4Lmh0bWwgLS1tYXgtdGltZSAxNSBodHRwOi8vMTI3LjAuMC4xOjgwODAvY2xpZW50LyB8IHNlZCAtbiAnMSwyMHAnIHx8IHRydWUKcHJpbnRmICdcbi0tLSBydW50aW1lIGNvbmZpZy5qc29uIC0tLVxuJwpjdXJsIC1mc1MgLS1tYXgtdGltZSAxNSBodHRwOi8vMTI3LjAuMC4xOjgwODAvY2xpZW50L2NvbmZpZy5qc29uIDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIENMT1VEU1RBQ0tfREJfQ09VTlRTCm15c3FsIC0tcHJvdG9jb2w9c29ja2V0IC11cm9vdCAtTkJlICJTRUxFQ1QgJ3pvbmVzJyxDT1VOVCgqKSBGUk9NIGNsb3VkLmRhdGFfY2VudGVyOyBTRUxFQ1QgJ3BvZHMnLENPVU5UKCopIEZST00gY2xvdWQuaG9zdF9wb2RfcmVmOyBTRUxFQ1QgJ2NsdXN0ZXJzJyxDT1VOVCgqKSBGUk9NIGNsb3VkLmNsdXN0ZXI7IFNFTEVDVCAnaG9zdHMnLENPVU5UKCopIEZST00gY2xvdWQuaG9zdDsgU0VMRUNUICdwcmltYXJ5X3N0b3JhZ2UnLENPVU5UKCopIEZST00gY2xvdWQuc3RvcmFnZV9wb29sOyIgMj4mMSB8fCB0cnVlCnNlY3Rpb24gQ0xPVURTVEFDS19BR0VOVApzeXN0ZW1jdGwgLS1uby1wYWdlciAtLWZ1bGwgc3RhdHVzIGNsb3Vkc3RhY2stYWdlbnQgMj4mMSB8fCB0cnVlCmpvdXJuYWxjdGwgLXUgY2xvdWRzdGFjay1hZ2VudCAtbiAxNjAgLS1uby1wYWdlciAyPiYxIHx8IHRydWUKc2VjdGlvbiBNQU5BR0VNRU5UCnN5c3RlbWN0bCAtLW5vLXBhZ2VyIC0tZnVsbCBzdGF0dXMgY2xvdWRzdGFjay1tYW5hZ2VtZW50IDI+JjEgfHwgdHJ1ZQpqb3VybmFsY3RsIC11IGNsb3Vkc3RhY2stbWFuYWdlbWVudCAtbiA4MCAtLW5vLXBhZ2VyIDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIEtWTQpscyAtbCAvZGV2L2t2bSAyPiYxIHx8IHRydWUKbHNtb2QgfCBncmVwIGt2bSB8fCB0cnVlCnZpcnNoIC1jIHFlbXU6Ly8vc3lzdGVtIHZlcnNpb24gMj4mMSB8fCB0cnVlCnZpcnNoIC1jIHFlbXU6Ly8vc3lzdGVtIGxpc3QgLS1hbGwgMj4mMSB8fCB0cnVlCnZpcnQtaG9zdC12YWxpZGF0ZSBxZW11IDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIEZJUkVXQUxMCmZpcmV3YWxsLWNtZCAtLWdldC1hY3RpdmUtem9uZXMgMj4mMSB8fCB0cnVlCmZpcmV3YWxsLWNtZCAtLWxpc3QtYWxsIDI+JjEgfHwgdHJ1ZQpzZWN0aW9uIFVJX1BBQ0tBR0VfUk9PVApycG0gLXFsIGNsb3Vkc3RhY2stdWkgfCBncmVwIC1FICcvKGluZGV4Lmh0bWx8Y29uZmlnLmpzb24pJCcgMj4mMSB8fCB0cnVlCnNlY3Rpb24gQ09NUExFVEUKZWNobyBQSEFTRTJfSU5WRU5UT1JZX0NPTVBMRVRFCg=='
+            [IO.File]::WriteAllBytes($guestScript,[Convert]::FromBase64String($guestB64))
 
             & scp.exe @scp $guestScript 'root@10.10.10.14:/tmp/layersentry-phase2-inventory.sh'
             if ($LASTEXITCODE -ne 0) { throw 'Failed to copy guest inventory script.' }
