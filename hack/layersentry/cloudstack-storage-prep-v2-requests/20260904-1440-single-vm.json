@@ -1,0 +1,10 @@
+{
+  "operation": "PREPARE_LAYERSENTRY_LOCAL_NFS_STORAGE_V2",
+  "authorization": "USER_AUTHORIZED_LOCAL_POC_STORAGE_PREPARATION",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "cloudstackVersion": "4.22.1.1",
+  "network": "10.10.10.0/24",
+  "storageScriptCommit": "47c3bfb90df8e1d55067c7f14f5cce88e5bdc9a5",
+  "purpose": "Retry the storage-preparation phase from the immutable raw GitHub source after the first Windows checkout converted the shell script to CRLF before SCP. The failed attempt stopped at bash syntax validation and made no storage changes."
+}
