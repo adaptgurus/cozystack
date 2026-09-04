@@ -43,8 +43,8 @@ jobs:
           if([string]$r.operation -ne 'DEPLOY_LAYERSENTRY_CUSTOMER_UI'){throw 'Unsupported operation.'}
           if([string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_CUSTOMER_UI_DEPLOY'){throw 'Authorization missing.'}
           if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
-          if([string]$r.productRepairCommit -ne '49dbbeafe6e02c0797dac8d675e89ec440e44437'){throw 'Product repair commit mismatch.'}
-          if([string]$r.uiCommit -ne '9ad724eb76843d40d6a883c0a0ab47a75ceed449'){throw 'UI commit mismatch.'}
+          if([string]$r.productRepairCommit -ne '85031bd2e394c16c631b6e493ced1af87c19fbd3'){throw 'Product repair commit mismatch.'}
+          if([string]$r.uiCommit -ne '6ce76d6c241629086ffcad794093dbdd5f2dd5ba'){throw 'UI commit mismatch.'}
 
           $vms=@(Get-VM)
           if($vms.Count -ne 1){throw "Expected exactly one Hyper-V VM; found $($vms.Count)."}
@@ -89,7 +89,7 @@ jobs:
             & ssh.exe @ssh 'echo =====BUILD-RUNTIME=====; node --version 2>/dev/null || true; npm --version 2>/dev/null || true' 2>&1|Tee-Object -FilePath (Join-Path $evidence 'preflight.txt')
             $ErrorActionPreference=$old
 
-            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/49dbbeafe6e02c0797dac8d675e89ec440e44437/install-layersentry-rocky9-served-ui-repair.sh'
+            $scriptUrl='https://raw.githubusercontent.com/adaptgurus/cloudstack/85031bd2e394c16c631b6e493ced1af87c19fbd3/install-layersentry-rocky9-served-ui-repair.sh'
             $remote="curl -fsSL --retry 4 --retry-all-errors --connect-timeout 15 --max-time 120 '$scriptUrl' -o /root/install-layersentry-rocky9-served-ui-repair.sh && chmod 700 /root/install-layersentry-rocky9-served-ui-repair.sh && bash -n /root/install-layersentry-rocky9-served-ui-repair.sh && /root/install-layersentry-rocky9-served-ui-repair.sh"
             $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
             & ssh.exe @ssh $remote 2>&1|Tee-Object -FilePath (Join-Path $evidence 'deploy.txt')
