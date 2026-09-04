@@ -1,0 +1,95 @@
+name: LayerSentry CloudStack Runtime Branding v2
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-runtime-branding-v2-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-runtime-branding-v2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout runner helpers
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Apply verified Layersentry runtime branding
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $evidence=Join-Path $env:RUNNER_TEMP 'layersentry-runtime-branding-v2'
+          if(Test-Path $evidence){Remove-Item $evidence -Recurse -Force}
+          New-Item $evidence -ItemType Directory -Force | Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-runtime-branding-v2-requests/*.json') | ForEach-Object {[string]$_} | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one branding request.'}
+          $r=Get-Content $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if([string]$r.operation -ne 'APPLY_LAYERSENTRY_RUNTIME_BRANDING_V2'){throw 'Unsupported operation.'}
+          if([string]$r.authorization -ne 'USER_AUTHORIZED_LAYERSENTRY_RUNTIME_BRANDING'){throw 'Authorization missing.'}
+          if([string]$r.expectedAddress -ne '10.10.10.14' -or [string]$r.expectedFqdn -ne 'layersentry.lab.example'){throw 'Target mismatch.'}
+          if([string]$r.brandingCommit -ne 'eed2fc1b2b65a3e01e261f39a02167b513d41ab2'){throw 'Branding commit mismatch.'}
+
+          $vms=@(Get-VM); if($vms.Count -ne 1){throw "Expected one VM; found $($vms.Count)."}; $vm=$vms[0]
+          if($vm.State -ne 'Running'){throw 'Only VM is not running.'}
+          if(-not [bool](Get-VMProcessor -VMName $vm.Name).ExposeVirtualizationExtensions){throw 'Nested virtualization not exposed.'}
+          if([string](Get-VMNetworkAdapter -VMName $vm.Name | Select-Object -First 1).MacAddressSpoofing -ne 'On'){throw 'MAC spoofing not enabled.'}
+
+          $key=Join-Path $env:RUNNER_TEMP 'layersentry-branding-v2-ed25519'
+          Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-branding-v2-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if($LASTEXITCODE -ne 0){throw 'ssh-keygen failed.'}
+          $source=(Resolve-Path 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP 'invoke-branding-v2-console.ps1'
+          $helper=Get-Content $source -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"; $escaped=$vm.Name.Replace("'","''")
+          if(-not $helper.Contains($needle)){throw 'Console helper guard not found.'}
+          Set-Content $patched ($helper.Replace($needle,"`$allowedNames = @('$escaped')")) -Encoding UTF8
+          $pub=(Get-Content "$key.pub" -Raw -Encoding ASCII).Trim()
+          $bootstrap="install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $req=[ordered]@{requestId="branding-v2-bootstrap-$env:GITHUB_RUN_ID";delayAfterSeconds=3;targets=@([ordered]@{vm=$vm.Name;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13})})}
+          $cp=Join-Path $env:RUNNER_TEMP 'branding-v2-console.json'; $req|ConvertTo-Json -Depth 10|Set-Content $cp -Encoding UTF8
+          & $patched -RequestPath $cp -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10','root@10.10.10.14')
+          $ready=$false
+          try{
+            for($i=1;$i -le 12;$i++){ $old=$ErrorActionPreference;$ErrorActionPreference='Continue';$p=& ssh.exe @ssh 'printf BRANDING_V2_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old;if($rc -eq 0 -and (($p-join '') -match 'BRANDING_V2_READY')){$ready=$true;break};Start-Sleep 5 }
+            if(-not $ready){throw 'Ephemeral SSH bootstrap failed.'}
+            $remotePath='/tmp/layersentry-runtime-branding-v2.sh'
+            $b64='IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLUVldW8gcGlwZWZhaWwKQ09NTUlUPSdlZWQyZmMxYjJiNjVhM2UwMWUyNjFmMzlhMDIxNjdiNTEzZDQxYWIyJwpCQVNFPSJodHRwczovL3Jhdy5naXRodWJ1c2VyY29udGVudC5jb20vYWRhcHRndXJ1cy9jbG91ZHN0YWNrLyR7Q09NTUlUfS91aSIKVE1QPSIkKG1rdGVtcCAtZCAvdmFyL3RtcC9sYXllcnNlbnRyeS1ydW50aW1lLWJyYW5kaW5nLlhYWFhYWCkiCnRyYXAgJ3JtIC1yZiAiJFRNUCInIEVYSVQKCmN1cmwgLWZzU0wgLS1yZXRyeSA0IC0tcmV0cnktYWxsLWVycm9ycyAtLWNvbm5lY3QtdGltZW91dCAxNSAtLW1heC10aW1lIDEyMCBcCiAgIiRCQVNFL3B1YmxpYy9jb25maWcuanNvbiIgLW8gIiRUTVAvY29uZmlnLmpzb24iCnB5dGhvbjMgLW0ganNvbi50b29sICIkVE1QL2NvbmZpZy5qc29uIiA+L2Rldi9udWxsCnB5dGhvbjMgLSAiJFRNUC9jb25maWcuanNvbiIgPDwnUFknCmltcG9ydCBqc29uLHN5cwpjPWpzb24ubG9hZChvcGVuKHN5cy5hcmd2WzFdLGVuY29kaW5nPSd1dGYtOCcpKQphc3NlcnQgY1snYXBwVGl0bGUnXT09J0xheWVyc2VudHJ5Jwphc3NlcnQgY1snbG9naW5UaXRsZSddPT0nTGF5ZXJzZW50cnknCmFzc2VydCBjWydmb290ZXInXT09J0xheWVyc2VudHJ5IFYxLjAnCmFzc2VydCBjWyd1c2VyQ2FyZCddWydlbmFibGVkJ10gaXMgRmFsc2UKYXNzZXJ0IGNbJ2FwaWRvY3MnXSBpcyBGYWxzZQphc3NlcnQgY1snbm90aWZ5TGF0ZXN0Q1NWZXJzaW9uJ10gaXMgRmFsc2UKYXNzZXJ0IGNbJ2xvZ28nXT09J2Fzc2V0cy9sYXllcnNlbnRyeS1sb2dvLnN2ZycKYXNzZXJ0IGNbJ21pbmlsb2dvJ109PSdhc3NldHMvbGF5ZXJzZW50cnktaWNvbi5zdmcnClBZCgpTVEFNUD0iJChkYXRlICslWSVtJWQtJUglTSVTKSIKQkFDS1VQPSIvdmFyL2JhY2t1cHMvbGF5ZXJzZW50cnkvJHtTVEFNUH0vcnVudGltZS1icmFuZGluZyIKaW5zdGFsbCAtZCAtbSAwNzAwICIkQkFDS1VQIgpmb3IgZiBpbiAvZXRjL2Nsb3Vkc3RhY2svdWkvY29uZmlnLmpzb24gL3Vzci9zaGFyZS9jbG91ZHN0YWNrLXVpL2NvbmZpZy5qc29uOyBkbwogIGlmIFsgLWUgIiRmIiBdIHx8IFsgLUwgIiRmIiBdOyB0aGVuCiAgICBjcCAtYUwgIiRmIiAiJEJBQ0tVUC8kKGVjaG8gIiRmIiB8IHRyICcvJyAnXycpIgogIGZpCmRvbmUKCmZvciBhc3NldCBpbiBsYXllcnNlbnRyeS1sb2dvLnN2ZyBsYXllcnNlbnRyeS1pY29uLnN2ZzsgZG8KICBpZiBbICEgLXMgIi91c3Ivc2hhcmUvY2xvdWRzdGFjay11aS9hc3NldHMvJGFzc2V0IiBdOyB0aGVuCiAgICBjdXJsIC1mc1NMIC0tcmV0cnkgNCAtLXJldHJ5LWFsbC1lcnJvcnMgIiRCQVNFL3B1YmxpYy9hc3NldHMvJGFzc2V0IiAtbyAiJFRNUC8kYXNzZXQiCiAgICBpbnN0YWxsIC1EIC1tIDA2NDQgIiRUTVAvJGFzc2V0IiAiL3Vzci9zaGFyZS9jbG91ZHN0YWNrLXVpL2Fzc2V0cy8kYXNzZXQiCiAgZmkKZG9uZQoKaW5zdGFsbCAtbSAwNjQ0ICIkVE1QL2NvbmZpZy5qc29uIiAvZXRjL2Nsb3Vkc3RhY2svdWkvY29uZmlnLmpzb24KaW5zdGFsbCAtbSAwNjQ0ICIkVE1QL2NvbmZpZy5qc29uIiAvdXNyL3NoYXJlL2Nsb3Vkc3RhY2stdWkvY29uZmlnLmpzb24KcmVzdG9yZWNvbiAtUkYgL2V0Yy9jbG91ZHN0YWNrL3VpIC91c3Ivc2hhcmUvY2xvdWRzdGFjay11aSA+L2Rldi9udWxsIDI+JjEgfHwgdHJ1ZQoKc3lzdGVtY3RsIGRpc2FibGUgLS1ub3cgY2xvdWRzdGFjay1hZ2VudCA+L2Rldi9udWxsIDI+JjEgfHwgdHJ1ZQpzeXN0ZW1jdGwgaXMtYWN0aXZlIC0tcXVpZXQgY2xvdWRzdGFjay1tYW5hZ2VtZW50CgpDT0RFPSIkKGN1cmwgLXNTIC1vIC9kZXYvbnVsbCAtdyAnJXtodHRwX2NvZGV9JyAtLW1heC10aW1lIDE1IGh0dHA6Ly8xMjcuMC4wLjE6ODA4MC9jbGllbnQvKSIKWyAiJENPREUiID0gMjAwIF0KY3VybCAtZnNTIC0tbWF4LXRpbWUgMTUgaHR0cDovLzEyNy4wLjAuMTo4MDgwL2NsaWVudC9jb25maWcuanNvbiAtbyAiJFRNUC9ydW50aW1lLmpzb24iCnB5dGhvbjMgLSAiJFRNUC9ydW50aW1lLmpzb24iIDw8J1BZJwppbXBvcnQganNvbixzeXMKYz1qc29uLmxvYWQob3BlbihzeXMuYXJndlsxXSxlbmNvZGluZz0ndXRmLTgnKSkKY2hlY2tzPXsKJ2FwcFRpdGxlJzpjLmdldCgnYXBwVGl0bGUnKT09J0xheWVyc2VudHJ5JywKJ2xvZ2luVGl0bGUnOmMuZ2V0KCdsb2dpblRpdGxlJyk9PSdMYXllcnNlbnRyeScsCidmb290ZXInOmMuZ2V0KCdmb290ZXInKT09J0xheWVyc2VudHJ5IFYxLjAnLAondXNlckNhcmQnOmMuZ2V0KCd1c2VyQ2FyZCcse30pLmdldCgnZW5hYmxlZCcpIGlzIEZhbHNlLAonYXBpZG9jcyc6Yy5nZXQoJ2FwaWRvY3MnKSBpcyBGYWxzZSwKJ25vdGlmeUxhdGVzdENTVmVyc2lvbic6Yy5nZXQoJ25vdGlmeUxhdGVzdENTVmVyc2lvbicpIGlzIEZhbHNlLAonbG9nbyc6Yy5nZXQoJ2xvZ28nKT09J2Fzc2V0cy9sYXllcnNlbnRyeS1sb2dvLnN2ZycsCidtaW5pbG9nbyc6Yy5nZXQoJ21pbmlsb2dvJyk9PSdhc3NldHMvbGF5ZXJzZW50cnktaWNvbi5zdmcnCn0KcHJpbnQoanNvbi5kdW1wcyhjaGVja3Msc29ydF9rZXlzPVRydWUpKQphc3NlcnQgYWxsKGNoZWNrcy52YWx1ZXMoKSkKUFkKCmZvciBhc3NldCBpbiBsYXllcnNlbnRyeS1sb2dvLnN2ZyBsYXllcnNlbnRyeS1pY29uLnN2ZzsgZG8KICBDPSIkKGN1cmwgLXNTIC1vIC9kZXYvbnVsbCAtdyAnJXtodHRwX2NvZGV9JyAtLW1heC10aW1lIDE1IFwKICAgICJodHRwOi8vMTI3LjAuMC4xOjgwODAvY2xpZW50L2Fzc2V0cy8kYXNzZXQiKSIKICBbICIkQyIgPSAyMDAgXSB8fCB7IGVjaG8gImFzc2V0ICRhc3NldCBIVFRQICRDIjsgZXhpdCAxOyB9CmRvbmUKClVJUk9PVD0vdXNyL3NoYXJlL2Nsb3Vkc3RhY2stdWkKZ3JlcCAtUnFzIC0taW5jbHVkZT0nKi5qcycgJ0RCYWFTJyAiJFVJUk9PVCIgJiYgZWNobyBEQkFBU19DT01QSUxFRD1QQVNTCmdyZXAgLVJxcyAtLWluY2x1ZGU9JyouanMnICdBUGFhUycgIiRVSVJPT1QiICYmIGVjaG8gQVBBQVNfQ09NUElMRUQ9UEFTUwplY2hvICJCQUNLVVA9JEJBQ0tVUCIKZWNobyAiSFRUUD0kQ09ERSIKZWNobyAiQUdFTlRfU1RBVEU9JChzeXN0ZW1jdGwgaXMtYWN0aXZlIGNsb3Vkc3RhY2stYWdlbnQgMj4vZGV2L251bGwgfHwgdHJ1ZSkiCmVjaG8gIkFHRU5UX0VOQUJMRUQ9JChzeXN0ZW1jdGwgaXMtZW5hYmxlZCBjbG91ZHN0YWNrLWFnZW50IDI+L2Rldi9udWxsIHx8IHRydWUpIgplY2hvIFJVTlRJTUVfQlJBTkRJTkdfQ09NUExFVEUK'
+            $local=Join-Path $env:RUNNER_TEMP 'layersentry-runtime-branding-v2.sh'; [IO.File]::WriteAllBytes($local,[Convert]::FromBase64String($b64))
+            & scp.exe -i $key -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o ConnectTimeout=10 $local "root@10.10.10.14:$remotePath"
+            if($LASTEXITCODE -ne 0){throw 'SCP failed.'}
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'; & ssh.exe @ssh "chmod 700 $remotePath && $remotePath; rc=`$?; rm -f $remotePath; exit `$rc" 2>&1 | Tee-Object -FilePath (Join-Path $evidence 'runtime-branding.txt'); $rc=$LASTEXITCODE; $ErrorActionPreference=$old
+            if($rc -ne 0){throw "Runtime branding exited $rc."}
+            if(-not (Select-String (Join-Path $evidence 'runtime-branding.txt') -Pattern 'RUNTIME_BRANDING_COMPLETE' -Quiet)){throw 'Completion marker missing.'}
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($vm.Name) -OutputDirectory (Join-Path $evidence 'final-console')
+          } finally {
+            if($ready){$safe=$comment.Replace("'","");$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}
+            Remove-Item $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-runtime-branding-v2-${{ github.run_id }}
+          path: ${{ runner.temp }}\layersentry-runtime-branding-v2\**
+          if-no-files-found: warn
+          retention-days: 30
