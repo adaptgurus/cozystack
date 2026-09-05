@@ -1,0 +1,54 @@
+name: LayerSentry DR Authorize SSH Key
+
+on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [hack/layersentry/dr-authorize-ssh-actions/*.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Authorize dedicated automation key using runtime password
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_PASSWORD }}
+          DR_PRIVATE_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DR_HOST -cnotmatch '^10\.10\.10\.20$' -or $env:DR_USER -cne 'root' -or -not $env:DR_PASSWORD -or -not $env:DR_PRIVATE_KEY) { throw 'DR secret binding failed.' }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $askpass = Join-Path $env:RUNNER_TEMP "layersentry-askpass-$env:GITHUB_RUN_ID.cmd"
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.key"
+          $known = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.known_hosts"
+          try {
+            [IO.File]::WriteAllText($askpass, "@echo $($env:DR_PASSWORD)`r`n", [Text.ASCIIEncoding]::new())
+            [IO.File]::WriteAllText($key, $env:DR_PRIVATE_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+            foreach ($path in @($askpass, $key)) {
+              & icacls $path /inheritance:r /grant:r "${identity}:(R)" | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw 'Temporary credential ACL failed.' }
+            }
+            $env:SSH_ASKPASS = $askpass
+            $env:SSH_ASKPASS_REQUIRE = 'force'
+            $env:DISPLAY = 'layersentry'
+            $publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAsjoARMe7vgRx0Kk4yBhb4hTLj0Rn6DuhpkWd3DU9VP layersentry-dr-automation'
+            $remote = "umask 077; install -d -m 700 /root/.ssh; touch /root/.ssh/authorized_keys; grep -qxF '$publicKey' /root/.ssh/authorized_keys || printf '%s\n' '$publicKey' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys"
+            & ssh -o BatchMode=no -o NumberOfPasswordPrompts=1 -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" "$($env:DR_USER)@$($env:DR_HOST)" $remote
+            if ($LASTEXITCODE -ne 0) { throw 'Password bootstrap of SSH key failed.' }
+            Remove-Item Env:DR_PASSWORD
+            & ssh -o BatchMode=yes -o ConnectTimeout=8 -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" 'hostnamectl --static'
+            if ($LASTEXITCODE -ne 0) { throw 'Dedicated SSH key verification failed.' }
+          }
+          finally {
+            Remove-Item -LiteralPath $askpass,$key,$known -Force -ErrorAction SilentlyContinue
+          }
