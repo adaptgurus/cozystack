@@ -1,0 +1,4 @@
+{
+  "requestId": "20260906-checkpoint-failure",
+  "purpose": "Inspect the safe first-stage checkpoint failure without exposing installer inputs or credentials"
+}
