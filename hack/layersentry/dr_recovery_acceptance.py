@@ -127,6 +127,8 @@ def preflight(api, f):
     for zone_id in (f["source_zone_id"], f["destination_zone_id"]):
         zone = one(api, "listZones", "zone", zone_id)
         require(zone.get("allocationstate") == "Enabled", "ZONE_NOT_ENABLED")
+        if zone_id == f["destination_zone_id"]:
+            require(zone.get("networktype") == "Advanced", "BASIC_DESTINATION_NATIVE_BACKUP_NETWORK_IDS_UNSUPPORTED")
     vm = one(api, "listVirtualMachines", "virtualmachine", f["source_vm_id"])
     owner_check(vm, f)
     require(vm.get("zoneid") == f["source_zone_id"] and vm.get("hypervisor") == "KVM"

@@ -34,8 +34,8 @@ class API:
         owner = {"account": f["account"], "accountid": f["account_id"], "domainid": f["domain_id"]}
         for command, kind, resource in [
             ("listAccounts", "account", {"id": f["account_id"], "name": f["account"], "domainid": f["domain_id"], "state": "enabled"}),
-            ("listZones", "zone", {"id": f["source_zone_id"], "allocationstate": "Enabled"}),
-            ("listZones", "zone", {"id": f["destination_zone_id"], "allocationstate": "Enabled"}),
+            ("listZones", "zone", {"id": f["source_zone_id"], "allocationstate": "Enabled", "networktype": "Advanced"}),
+            ("listZones", "zone", {"id": f["destination_zone_id"], "allocationstate": "Enabled", "networktype": "Advanced"}),
             ("listVirtualMachines", "virtualmachine", {"id": f["source_vm_id"], **owner, "zoneid": f["source_zone_id"], "hypervisor": "KVM", "state": "Stopped", "nic": [{"networkid": uid(11)}]}),
             ("listNetworks", "network", {"id": uid(12), **owner, "zoneid": f["destination_zone_id"], "state": "Implemented"}),
             ("listBackupRepositories", "backuprepository", {"id": f["repository_id"], "zoneid": f["source_zone_id"], "provider": "nas", "crosszoneinstancecreation": True}),
@@ -187,6 +187,12 @@ class RecoveryTests(unittest.TestCase):
             dr.recover(self.api, self.f, self.journal, execute=True)
         self.api.rows[("listBackups", uid(14))]["backup"][0]["volumes"] = "[]"
         with self.assertRaisesRegex(dr.GateError, "BACKUP_DISK_MAPPING_MISMATCH"):
+            dr.recover(self.api, self.f, self.journal, execute=True)
+        self.assertEqual(self.api.mutations(), [])
+
+    def test_basic_destination_rejected_before_restore_submission(self):
+        self.api.rows[("listZones", self.f["destination_zone_id"])]["zone"][0]["networktype"] = "Basic"
+        with self.assertRaisesRegex(dr.GateError, "BASIC_DESTINATION_NATIVE_BACKUP_NETWORK_IDS_UNSUPPORTED"):
             dr.recover(self.api, self.f, self.journal, execute=True)
         self.assertEqual(self.api.mutations(), [])
 
