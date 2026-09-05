@@ -1,0 +1,73 @@
+name: LayerSentry DR CloudStack Management
+
+on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [hack/layersentry/dr-management-actions/*.json]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Committed action envelope below hack/layersentry/dr-management-actions/
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - shell: powershell
+        run: |
+          $errors = $null
+          $tokens = $null
+          [void][Management.Automation.Language.Parser]::ParseFile("$pwd/hack/layersentry/invoke-dr-management.ps1", [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw 'Deployment PowerShell syntax check failed.' }
+          python -m unittest discover -s hack/layersentry -p test_dr_management.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Deployment tests failed.' }
+
+  deploy:
+    needs: test
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: adaptgurus/cloudstack
+          ref: layersentry/4.22.1.1-ui
+          path: cloudstack-installer
+          persist-credentials: false
+          sparse-checkout: tools/layersentry-management
+      - name: Execute guarded deployment phase
+        shell: powershell
+        env:
+          DR_ACTION: ${{ inputs.action }}
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+          DR_SECRETS: ${{ secrets.LAYERSENTRY_DR_MANAGEMENT_SECRETS }}
+          DR_CERTIFICATE: ${{ secrets.LAYERSENTRY_DR_BACKUP_RECIPIENT_CERTIFICATE }}
+        run: '& hack/layersentry/invoke-dr-management.ps1'
+      - name: Upload allowlisted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dr-management-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dr-management-evidence-${{ github.run_id }}-${{ github.run_attempt }}/result.json
+          if-no-files-found: warn
+          retention-days: 30
