@@ -1,0 +1,249 @@
+name: LayerSentry DR CloudStack UI Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type DEPLOY-c4a2bb29457634e38a9375d5de33b04eb3a9c825-TO-10.10.10.20
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+env:
+  CLOUDSTACK_UI_COMMIT: c4a2bb29457634e38a9375d5de33b04eb3a9c825
+  EXPECTED_CONFIRMATION: DEPLOY-c4a2bb29457634e38a9375d5de33b04eb3a9c825-TO-10.10.10.20
+
+jobs:
+  authorize:
+    name: Bind exact operator authorization
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Enforce repository branch and exact confirmation
+        shell: bash
+        env:
+          SUPPLIED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REPOSITORY" == adaptgurus/cozystack ]]
+          [[ "$GITHUB_REF" == refs/heads/ops/layersentry-hyperv-inventory ]]
+          [[ "$SUPPLIED_CONFIRMATION" == "$EXPECTED_CONFIRMATION" ]]
+          echo 'Exact DR UI deployment authorization accepted.'
+
+  build:
+    name: Build exact prequalified UI on GitHub-hosted Ubuntu
+    needs: authorize
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact CloudStack UI source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: adaptgurus/cloudstack
+          ref: c4a2bb29457634e38a9375d5de33b04eb3a9c825
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify immutable source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$CLOUDSTACK_UI_COMMIT" ]]
+          [[ "$(git status --short)" == '' ]]
+
+      - name: Install pinned authoritative UI build runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.20.0
+
+      - name: Pin npm runtime version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(node --version)" == v24.20.0 ]]
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          [[ "$(npm --version)" == 11.19.0 ]]
+
+      - name: Install locked dependencies and qualify source
+        shell: bash
+        working-directory: ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          [[ "$(node --version)" == v24.20.0 ]]
+          [[ "$(npm --version)" == 11.19.0 ]]
+          npm ci --no-audit --no-fund
+          npm run lint -- --no-fix
+          npm run test:unit -- --runInBand
+
+      - name: Build and validate LayerSentry production dist
+        shell: bash
+        working-directory: ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run build
+          test -f dist/index.html
+          test -f dist/config.json
+          jq -e '
+            .appTitle == "LayerSentry" and
+            .loginTitle == "LayerSentry" and
+            .footer == "LayerSentry" and
+            .productProfile == "layersentry-kvm" and
+            .brandLocked == true and
+            .logo == "assets/layersentry-logo.svg" and
+            .minilogo == "assets/layersentry-icon.svg"
+          ' dist/config.json >/dev/null
+          grep -Rqs --include='*.js' 'LayerSentry' dist
+          grep -Rqs --include='*.js' 'layersentry-kvm' dist
+          test -z "$(find dist -type l -print -quit)"
+          test ! -e dist/WEB-INF
+          test ! -e dist/META-INF
+          git diff --exit-code
+
+      - name: Package exact deployable artifact and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/layersentry-dr-ui-artifact"
+          package_root="$RUNNER_TEMP/layersentry-dr-ui-package"
+          install -d -m 0700 "$out"
+          install -d -m 0700 "$package_root"
+          cp -a ui/dist "$package_root/ui-dist"
+          epoch="$(git show -s --format=%ct "$CLOUDSTACK_UI_COMMIT")"
+          tar --sort=name --mtime="@${epoch}" --owner=0 --group=0 --numeric-owner -C "$package_root" -cf - ui-dist | gzip -n -9 > "$out/ui-dist.tar.gz"
+          archive_sha="$(sha256sum "$out/ui-dist.tar.gz" | awk '{print $1}')"
+          printf '%s  ui-dist.tar.gz\n' "$archive_sha" > "$out/ui-dist.tar.gz.sha256"
+          jq -n \
+            --arg commit "$CLOUDSTACK_UI_COMMIT" \
+            --arg sha "$archive_sha" \
+            '{
+              schemaVersion: "1.0",
+              product: "LayerSentry",
+              component: "cloudstack-ui",
+              cloudstackUiCommit: $commit,
+              artifact: "ui-dist.tar.gz",
+              artifactSha256: $sha,
+              builtOnManagementNode: false
+            }' > "$out/build-manifest.json"
+          (cd "$out" && sha256sum --check --strict ui-dist.tar.gz.sha256)
+          [[ "$(tar -tzf "$out/ui-dist.tar.gz" | sed -n '1p')" == ui-dist/ ]]
+
+      - name: Upload prebuilt UI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-dr-cloudstack-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-ui-artifact/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  deploy:
+    name: Deploy prebuilt UI to exact DR management host
+    needs: [authorize, build]
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact deployment transport
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download exact prebuilt artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: layersentry-dr-cloudstack-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-ui-download-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Transfer and execute guarded DR deployment
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+          SUPPLIED_CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          if ($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -cne 'refs/heads/ops/layersentry-hyperv-inventory') { throw 'Repository or branch binding failed.' }
+          if ($env:SUPPLIED_CONFIRMATION -cne $env:EXPECTED_CONFIRMATION) { throw 'Exact deployment confirmation is missing.' }
+          if ($env:DR_HOST -cne '10.10.10.20' -or $env:DR_USER -cne 'root') { throw 'DR target binding failed.' }
+          if (-not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS) { throw 'Required DR SSH secrets are missing.' }
+          if ($env:GITHUB_RUN_ID -cnotmatch '^\d+$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^\d+$') { throw 'Invalid workflow run identity.' }
+
+          $runIdentity = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $artifact = Join-Path $env:RUNNER_TEMP "layersentry-dr-ui-download-$runIdentity"
+          $archive = Join-Path $artifact 'ui-dist.tar.gz'
+          $checksum = Join-Path $artifact 'ui-dist.tar.gz.sha256'
+          $manifestPath = Join-Path $artifact 'build-manifest.json'
+          $script = (Resolve-Path 'hack/layersentry/deploy-dr-cloudstack-ui.sh').ProviderPath
+          foreach ($path in @($archive, $checksum, $manifestPath, $script)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Deployment input is missing: $path" } }
+
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $properties = @($manifest.PSObject.Properties.Name | Sort-Object)
+          $expectedProperties = @('artifact','artifactSha256','builtOnManagementNode','cloudstackUiCommit','component','product','schemaVersion')
+          if (($properties -join ',') -cne ($expectedProperties -join ',')) { throw 'Build manifest has unexpected fields.' }
+          $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($manifest.schemaVersion -cne '1.0' -or $manifest.product -cne 'LayerSentry' -or $manifest.component -cne 'cloudstack-ui' -or $manifest.cloudstackUiCommit -cne $env:CLOUDSTACK_UI_COMMIT -or $manifest.artifact -cne 'ui-dist.tar.gz' -or $manifest.artifactSha256 -cne $archiveHash -or $manifest.builtOnManagementNode -ne $false) { throw 'Build manifest validation failed.' }
+
+          $private = Join-Path $env:RUNNER_TEMP "layersentry-dr-ui-private-$runIdentity"
+          $evidence = Join-Path $env:RUNNER_TEMP "layersentry-dr-ui-evidence-$runIdentity"
+          $remote = "/run/layersentry-dr-ui-$runIdentity"
+          New-Item -ItemType Directory -Path $private -ErrorAction Stop | Out-Null
+          New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & icacls $private /inheritance:r /grant:r "${identity}:(OI)(CI)(F)" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Private runtime directory ACL failed.' }
+          $key = Join-Path $private 'identity'
+          $known = Join-Path $private 'known_hosts'
+          [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($known, $env:DR_KNOWN_HOSTS.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          $env:DR_KEY = ''
+          $options = @('-o','BatchMode=yes','-o','ConnectTimeout=15','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=4','-o','StrictHostKeyChecking=yes','-o',"UserKnownHostsFile=$known",'-o','LogLevel=ERROR','-i',$key)
+          $target = 'root@10.10.10.20'
+          $remoteCreated = $false
+          try {
+            $output = & ssh @options $target "umask 077; test ! -e '$remote' && mkdir '$remote'" 2>&1
+            if ($LASTEXITCODE -ne 0) { throw 'Remote staging creation failed; SSH output withheld.' }
+            $remoteCreated = $true
+            $scpArguments = @($options) + @($archive, $checksum, $manifestPath, $script, "${target}:$remote/")
+            $output = & scp @scpArguments 2>&1
+            if ($LASTEXITCODE -ne 0) { throw 'Artifact transfer failed; SCP output withheld.' }
+            $command = "chmod 0700 '$remote/deploy-dr-cloudstack-ui.sh'; bash '$remote/deploy-dr-cloudstack-ui.sh' '$remote' '$env:CLOUDSTACK_UI_COMMIT' '$runIdentity'"
+            $output = & ssh @options $target $command 2>&1
+            $remoteExit = $LASTEXITCODE
+            $output | Set-Content -LiteralPath (Join-Path $evidence 'deployment.txt') -Encoding UTF8
+            if ($remoteExit -ne 0) { throw 'DR UI deployment failed; inspect the sanitized deployment evidence.' }
+            $joined = $output -join "`n"
+            if ($joined -cnotmatch '(?m)^LAYERSENTRY_DR_UI_DEPLOYMENT=PASS$' -or $joined -cnotmatch "(?m)^CLOUDSTACK_UI_COMMIT=$([regex]::Escape($env:CLOUDSTACK_UI_COMMIT))$" -or $joined -cnotmatch '(?m)^CLOUDSTACK_VERSION=4\.22\.1\.1$' -or $joined -cnotmatch '(?m)^RUNTIME_PRODUCT=LayerSentry$' -or $joined -cnotmatch '(?m)^RUNTIME_PROFILE=layersentry-kvm$' -or $joined -cnotmatch '(?m)^HTTP_CLIENT=200$') { throw 'Deployment completion evidence is incomplete.' }
+          }
+          finally {
+            if ($remoteCreated) {
+              $cleanupOutput = & ssh @options $target "rm -rf -- '$remote'" 2>&1
+              if ($LASTEXITCODE -ne 0) { Write-Warning "Remote staging cleanup requires follow-up at $remote." }
+            }
+            Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction SilentlyContinue
+            $env:DR_KEY = ''
+          }
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-dr-cloudstack-ui-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-ui-evidence-${{ github.run_id }}-${{ github.run_attempt }}/deployment.txt
+          if-no-files-found: warn
+          retention-days: 90
