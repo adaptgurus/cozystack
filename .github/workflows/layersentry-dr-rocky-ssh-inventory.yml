@@ -1,0 +1,54 @@
+name: LayerSentry DR Rocky SSH Inventory
+
+on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [hack/layersentry/dr-ssh-inventory-actions/*.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Read-only Rocky inventory over SSH
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DR_HOST -cnotmatch '^10\.10\.10\.20$' -or $env:DR_USER -cne 'root' -or -not $env:DR_KEY) { throw 'DR SSH secret binding failed.' }
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.key"
+          $known = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.known_hosts"
+          [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          try {
+            & icacls $key /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+            ssh-keyscan -T 5 -H $env:DR_HOST 2>$null | Set-Content -LiteralPath $known -Encoding ascii
+            if (-not (Test-Path $known) -or (Get-Item $known).Length -eq 0) { throw 'SSH host key was not reachable.' }
+            $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
+            New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
+            $command = 'hostnamectl --static; cat /etc/os-release; getenforce; systemctl is-active firewalld; systemctl is-active sshd; ip -4 -brief address; ip -4 route'
+            $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
+            if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
+            $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
+          }
+          finally {
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          }
+      - name: Upload sanitized inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dr-rocky-ssh-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}/dr-ssh-inventory-${{ github.run_id }}/inventory.txt
+          if-no-files-found: warn
+          retention-days: 30
