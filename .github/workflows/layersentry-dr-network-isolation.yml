@@ -1,6 +1,11 @@
 name: LayerSentry DR Network Isolation
 
 on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/dr-network-isolation-actions/*.json
   workflow_dispatch:
     inputs:
       request:
@@ -51,6 +56,17 @@ jobs:
           DR_PHASE: ${{ inputs.phase }}
           DR_AUTHORIZATION: ${{ inputs.authorization }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            [string[]]$changed = @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/dr-network-isolation-actions/*.json')
+            if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one DR network action envelope.' }
+            $action = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+            $fields = @('request', 'phase', 'authorization')
+            if (@($action.PSObject.Properties.Name).Count -ne $fields.Count) { throw 'Invalid action envelope fields.' }
+            $env:DR_REQUEST = [string]$action.request
+            $env:DR_PHASE = [string]$action.phase
+            $env:DR_AUTHORIZATION = [string]$action.authorization
+          }
           if($env:DR_REQUEST -cnotmatch '^hack/layersentry/dr-network-isolation-requests/[a-z0-9-]+\.json$'){throw 'Invalid request path.'}
           $evidence=Join-Path $env:RUNNER_TEMP "dr-network-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           & hack/layersentry/invoke-dr-network-isolation.ps1 -RequestPath $env:DR_REQUEST -Phase $env:DR_PHASE -Authorization $env:DR_AUTHORIZATION -EvidenceDirectory $evidence

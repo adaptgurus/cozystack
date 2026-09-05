@@ -1,0 +1,12 @@
+{
+  "requestId": "20260905-dr-rocky9-internal-v1",
+  "host": "TESTSER",
+  "vmId": "61fef4dc-44dc-43ad-a2a0-f923912a01d7",
+  "vmName": "layersentry-dr-rocky9",
+  "nicId": "Microsoft:61FEF4DC-44DC-43AD-A2A0-F923912A01D7\\8405E25A-FF3B-4B8C-9DB8-5C2D609A3CA6",
+  "currentSwitchId": "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+  "ownerRequestSha256": "659354d2f8d429ae78108394cae7a2aae675a713104bd0d663a4905230640ce3",
+  "switchName": "LayerSentry-DR-Internal",
+  "subnet": "10.10.20.0/24",
+  "gateway": "10.10.20.1"
+}
