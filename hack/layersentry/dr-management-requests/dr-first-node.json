@@ -1,6 +1,6 @@
 {
   "request_id": "dr-first-node",
-  "source_sha": "0c7f39f877cc4983b242278a5e90d586f174eb67",
+  "source_sha": "bf6d4df006ea987f83104bf11ba0c61c3d721579",
   "configuration": {
     "schema_version": 1,
     "mode": "combined",
