@@ -85,11 +85,13 @@ done
 # shellcheck disable=SC1091
 . /etc/os-release
 [[ "${ID:-}" == rocky && "${VERSION_ID:-}" == 9.* ]] || die 'Target is not Rocky Linux 9.'
-for package in cloudstack-management cloudstack-ui; do
-  observed_version=$(rpm -q --qf '%{VERSION}' "$package" 2>/dev/null || true)
-  [[ "$observed_version" == "$EXPECTED_CLOUDSTACK_VERSION" ]] || die "$package is not exact version $EXPECTED_CLOUDSTACK_VERSION."
-done
+observed_version=$(rpm -q --qf '%{VERSION}' cloudstack-management 2>/dev/null) || die 'Cannot query cloudstack-management version.'
+[[ "$observed_version" == "$EXPECTED_CLOUDSTACK_VERSION" ]] || die "cloudstack-management is not exact version $EXPECTED_CLOUDSTACK_VERSION."
 [[ -d "$SERVED_UI" && -f "$SERVED_UI/index.html" ]] || die 'CloudStack served webapp is missing.'
+# CloudStack 4.22.1.1 packaging/el8/cloud.spec includes this webapp in the
+# management RPM; the optional cloudstack-ui RPM serves a separate directory.
+observed_owner=$(rpm -qf --qf '%{NAME} %{VERSION}\n' "$SERVED_UI/index.html" 2>/dev/null) || die 'Cannot query CloudStack served webapp package ownership.'
+[[ "$observed_owner" == "cloudstack-management $EXPECTED_CLOUDSTACK_VERSION" ]] || die "CloudStack served webapp is not owned by cloudstack-management $EXPECTED_CLOUDSTACK_VERSION."
 [[ -d "$SERVED_UI/WEB-INF" && -d "$SERVED_UI/META-INF" ]] || die 'CloudStack backend WEB-INF/META-INF content is missing.'
 systemctl is-active --quiet cloudstack-management || die 'cloudstack-management must be healthy before deployment.'
 [[ -f "$ARCHIVE" && -f "$CHECKSUM" && -f "$MANIFEST" ]] || die 'The prebuilt UI bundle is incomplete.'
