@@ -243,7 +243,8 @@ jobs:
           $repositoriesObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackupRepositories' @{ listall = 'true' }
           $offeringsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackupOfferings' @{ listall = 'true' }
           $virtualMachinesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVirtualMachines' @{ listall = 'true'; details = 'min' }) 'listVirtualMachines'
-          $jobsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listAsyncJobs' @{ listall = 'true'; pagesize = '100' }
+          # BaseListCmd in 4.22.1.1 requires page and pagesize together.
+          $jobsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listAsyncJobs' @{ listall = 'true'; page = '1'; pagesize = '100' }
 
           $configurationNames = @(
             'backup.framework.enabled'

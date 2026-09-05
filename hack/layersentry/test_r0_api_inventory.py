@@ -23,6 +23,7 @@ function Invoke-RestMethod {
   param($Uri, $Method, $TimeoutSec, $MaximumRedirection, $ErrorAction)
   if ($Method -ne 'Get' -or $MaximumRedirection -ne 0) { throw 'Unsafe HTTP options' }
   $command = [regex]::Match($Uri, '[?&]command=([^&]+)').Groups[1].Value
+  if ($command -eq 'listAsyncJobs' -and ($Uri -notmatch '[?&]page=1(?:&|$)' -or $Uri -notmatch '[?&]pagesize=100(?:&|$)')) { throw 'CloudStack requires paired page and pagesize' }
   if ($env:STUB_HTTP_URL -and $command -eq 'listBackups') {
     return Microsoft.PowerShell.Utility\Invoke-RestMethod -Uri $env:STUB_HTTP_URL -ErrorAction Stop
   }
