@@ -9,6 +9,7 @@ $state = [ordered]@{
     runnerCommit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT
     status = 'TARGET_BINDING_FAILED'; beforeCaptured = $false; afterCaptured = $false
     loginPromptVerified = $false; inputAttempted = $false; usernameSent = $false; enterSent = $false
+    refreshAttempted = $false; refreshEnterSent = $false; refreshedCaptured = $false
     passwordSent = $false; guestConfigChanged = $false; mutationPerformed = $false
 }
 
@@ -40,6 +41,30 @@ function Capture-DcConsole([string]$Phase) {
     return $image
 }
 
+function Get-LoginPromptState($Ocr) {
+    $lines = @($Ocr.lines | ForEach-Object { ([string]$_.text).Trim() } | Where-Object { $_ })
+    $text = ([string]$Ocr.text) + "`n" + ($lines -join "`n")
+    if ($lines.Count -eq 0 -or $text -match '(?im)password\s*:|\[root@|root@.*[#\$]|[#\$]\s*$') { return 'UNKNOWN' }
+    if ($lines[-1] -cmatch '^layersentry\s+login:\s*$') { return 'EMPTY_LOGIN' }
+    $promptIndexes = @()
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -cmatch '^layersentry\s+login:') { $promptIndexes += $index }
+    }
+    if ($promptIndexes.Count -ne 1) { return 'UNKNOWN' }
+    $index = $promptIndexes[0]
+    $tail = $lines[$index] -creplace '^layersentry\s+login:\s*', ''
+    $following = @($tail)
+    for ($next = $index + 1; $next -lt $lines.Count; $next++) { $following += $lines[$next] }
+    $kernelLines = 0
+    foreach ($line in $following) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -cnotmatch '^\[\s*[0-9]+(?:\.[0-9]+)?\]\s+\S.*$') { return 'UNKNOWN' }
+        $kernelLines++
+    }
+    if ($kernelLines -gt 0) { return 'LOGIN_WITH_KERNEL_OUTPUT' }
+    return 'UNKNOWN'
+}
+
 try {
     if ($env:COMPUTERNAME -cne 'TESTSER') { throw 'Host mismatch.' }
     Import-Module Hyper-V -ErrorAction Stop
@@ -49,13 +74,10 @@ try {
     $before = Capture-DcConsole 'before'
     $state.status = 'LOGIN_PROMPT_NOT_VERIFIED'
     $ocr = & (Join-Path $PSScriptRoot 'read-console-ocr.ps1') -ImagePath $before | ConvertFrom-Json
-    $lines = @($ocr.lines | ForEach-Object { ([string]$_.text).Trim() } | Where-Object { $_ })
-    if ($lines.Count -eq 0 -or $lines[-1] -cnotmatch '^layersentry\s+login:\s*$' -or
-        ([string]$ocr.text) -match '(?i)password\s*:|\[root@|root@.*[#\$]' -or
-        ((Get-Date) - $captureStarted).TotalSeconds -gt 30) {
-        throw 'Fresh console is not an unambiguous empty layersentry login prompt.'
+    $promptState = Get-LoginPromptState $ocr
+    if ($promptState -eq 'UNKNOWN' -or ((Get-Date) - $captureStarted).TotalSeconds -gt 30) {
+        throw 'Fresh console login state is unknown.'
     }
-    $state.loginPromptVerified = $true
     Assert-DcIdentity
     $state.status = 'KEYBOARD_BINDING_FAILED'
     # Resolve the keyboard by immutable VM ID, not a name-only WMI lookup.
@@ -66,10 +88,29 @@ try {
     $state.status = 'LOGIN_PROMPT_EXPIRED'
     if (((Get-Date) - $captureStarted).TotalSeconds -gt 30) { throw 'Login prompt evidence expired.' }
     Assert-DcIdentity
+    if ($promptState -eq 'LOGIN_WITH_KERNEL_OUTPUT') {
+        $state.status = 'REFRESH_INPUT_OUTCOME_UNKNOWN'
+        $state.refreshAttempted = $true
+        $state.inputAttempted = $true
+        $state.mutationPerformed = $true
+        # One empty Enter may redisplay a login prompt obscured only by kernel logs.
+        $refresh = Invoke-CimMethod -InputObject $keyboards[0] -MethodName TypeKey -Arguments @{ keyCode = [uint32]13 } -ErrorAction Stop
+        if ([uint32]$refresh.ReturnValue -ne 0) { throw 'Refresh Enter was not confirmed.' }
+        $state.refreshEnterSent = $true
+        $state.status = 'REFRESHED_LOGIN_PROMPT_NOT_VERIFIED'
+        $captureStarted = Get-Date
+        $refreshed = Capture-DcConsole 'refreshed'
+        $ocr = & (Join-Path $PSScriptRoot 'read-console-ocr.ps1') -ImagePath $refreshed | ConvertFrom-Json
+        if ((Get-LoginPromptState $ocr) -ne 'EMPTY_LOGIN' -or ((Get-Date) - $captureStarted).TotalSeconds -gt 30) {
+            throw 'Refresh did not produce a fresh empty login prompt; no further input.'
+        }
+        Assert-DcIdentity
+    }
+    $state.loginPromptVerified = $true
     $state.status = 'INPUT_OUTCOME_UNKNOWN'
     $state.inputAttempted = $true
     $state.mutationPerformed = $true
-    # Only these two literal operations are authorized. Never retry either.
+    # After a strict empty-prompt check, only these two literals are authorized.
     $typed = Invoke-CimMethod -InputObject $keyboards[0] -MethodName TypeText -Arguments @{ asciiText = 'root' } -ErrorAction Stop
     if ([uint32]$typed.ReturnValue -ne 0) { throw 'Username typing was not confirmed.' }
     $state.usernameSent = $true
