@@ -5,6 +5,7 @@ The script stays standalone for transport to the Rocky management host.
 """
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import shutil
@@ -15,6 +16,7 @@ import unittest
 SCRIPT = Path(__file__).with_name('deploy-dr-cloudstack-ui.sh')
 SOURCE = SCRIPT.read_text()
 BACKEND_FUNCTION = SOURCE.split('# BEGIN BACKEND FINGERPRINT\n', 1)[1].split('# END BACKEND FINGERPRINT', 1)[0]
+CONFIG_FUNCTION = SOURCE.split('# BEGIN RUNTIME CONFIG TOOL\n', 1)[1].split('# END RUNTIME CONFIG TOOL', 1)[0]
 PREFLIGHT = SOURCE.split("die 'Target is not Rocky Linux 9.'\n", 1)[1].split(
     '\n(\n  cd "$BUNDLE"', 1)[0]
 HARNESS = r'''
@@ -212,6 +214,85 @@ BACKEND_BEFORE=$2
                         result = subprocess.run(['bash', '-c', harness + guard, 'guard-test',
                                                  str(root), before], capture_output=True, text=True, timeout=5)
                         self.assertEqual(result.returncode == 0, not changed, result.stderr)
+
+
+class RuntimeConfigurationTests(unittest.TestCase):
+    branding_keys = ('appTitle', 'productProfile', 'brandLocked', 'footer', 'loginTitle',
+                     'loginFavicon', 'loginFooter', 'resetPasswordFooter', 'logo', 'minilogo',
+                     'banner', 'favicon', 'theme', 'allowSettingTheme')
+
+    def invoke(self, operation, *paths):
+        return subprocess.run(['bash', '-c', CONFIG_FUNCTION + '\nruntime_config_tool "$@"',
+                               'config-test', operation, *map(str, paths)],
+                              capture_output=True, text=True, timeout=5)
+
+    def defaults(self):
+        return {**{key: 'artifact-branding' for key in self.branding_keys},
+                'theme': {'primary': '#0f766e'}, 'brandLocked': True, 'allowSettingTheme': False,
+                'apiBase': '/client/api', 'servers': [], 'plugins': [], 'newDefault': 'new'}
+
+    def test_custom_runtime_keys_preserved_and_branding_enforced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            defaults, existing, candidate = [root / name for name in ('defaults.json', 'existing.json', 'candidate.json')]
+            default_data = self.defaults()
+            custom = {**{key: 'old-branding' for key in self.branding_keys},
+                      'apiBase': '/custom/api', 'servers': [{'apiHost': 'https://custom.invalid'}],
+                      'plugins': [{'name': 'custom-plugin'}], 'authOptions': {'sso': True},
+                      'unknownKey': {'value': 'SECRET_CONFIG_SENTINEL'}, 'basicZoneEnabled': False}
+            defaults.write_text(json.dumps(default_data))
+            original_artifact = defaults.read_bytes()
+            existing.write_text(json.dumps(custom))
+            original_runtime = existing.read_bytes()
+            result = self.invoke('merge', defaults, existing, candidate)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+            merged = json.loads(candidate.read_text())
+            for key in self.branding_keys:
+                self.assertEqual(merged[key], default_data[key], key)
+            for key in custom.keys() - set(self.branding_keys):
+                self.assertEqual(merged[key], custom[key], key)
+            self.assertEqual(merged['newDefault'], 'new')
+            self.assertEqual(defaults.read_bytes(), original_artifact)
+            self.assertEqual(existing.read_bytes(), original_runtime)
+            self.assertNotIn('SECRET_CONFIG_SENTINEL', result.stdout + result.stderr)
+            served = root / 'served.json'
+            served.write_text(json.dumps(merged, sort_keys=True))
+            self.assertEqual(self.invoke('verify', candidate, served).returncode, 0)
+            merged['apiBase'] = '/lost/custom/api'
+            served.write_text(json.dumps(merged))
+            failed = self.invoke('verify', candidate, served)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertNotIn('SECRET_CONFIG_SENTINEL', failed.stdout + failed.stderr)
+
+    def test_invalid_existing_config_fails_without_candidate(self):
+        for invalid in ('{"secret":"SECRET_CONFIG_SENTINEL",', '[]', 'null', '{"value": NaN}'):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                defaults, existing, candidate = [root / name for name in ('defaults.json', 'existing.json', 'candidate.json')]
+                defaults.write_text(json.dumps(self.defaults()))
+                existing.write_text(invalid)
+                result = self.invoke('merge', defaults, existing, candidate)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(candidate.exists())
+                self.assertEqual(existing.read_text(), invalid)
+                self.assertNotIn('SECRET_CONFIG_SENTINEL', result.stdout + result.stderr)
+
+    def test_absent_existing_config_uses_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            defaults, existing, candidate = [root / name for name in ('defaults.json', 'absent.json', 'candidate.json')]
+            defaults.write_text(json.dumps(self.defaults()))
+            result = self.invoke('merge', defaults, existing, candidate)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(candidate.read_text()), self.defaults())
+
+    def test_config_merge_precedes_live_mutation_and_candidate_is_deployed(self):
+        merge = SOURCE.index('runtime_config_tool merge "$EXTRACTED/config.json"')
+        self.assertLess(merge, SOURCE.index('DEPLOYMENT_STARTED=true'))
+        self.assertIn('install -m 0644 -o root -g root "$CONFIG_CANDIDATE"', SOURCE)
+        self.assertIn('runtime_config_tool verify "$CONFIG_CANDIDATE" "$SERVED_CONFIG"', SOURCE)
+        self.assertIn('runtime_config_tool verify "$CONFIG_CANDIDATE" "$runtime_config"', SOURCE)
 
 
 if __name__ == '__main__':

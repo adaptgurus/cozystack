@@ -63,6 +63,58 @@ PY
 }
 # END BACKEND FINGERPRINT
 
+# BEGIN RUNTIME CONFIG TOOL
+runtime_config_tool() {
+  python3 - "$@" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+BRANDING_KEYS = (
+    'appTitle', 'productProfile', 'brandLocked', 'footer', 'loginTitle',
+    'loginFavicon', 'loginFooter', 'resetPasswordFooter', 'logo', 'minilogo',
+    'banner', 'favicon', 'theme', 'allowSettingTheme',
+)
+
+def read_object(path):
+    try:
+        def reject_constant(_value):
+            raise ValueError('non-JSON constant')
+        value = json.loads(Path(path).read_text(encoding='utf-8'), parse_constant=reject_constant)
+        if not isinstance(value, dict):
+            raise ValueError('not an object')
+        return value
+    except (OSError, ValueError):
+        raise SystemExit('Runtime configuration must be a readable JSON object') from None
+
+if sys.argv[1] == 'merge':
+    defaults_path, existing_path, candidate_path = map(Path, sys.argv[2:])
+    defaults = read_object(defaults_path)
+    existing = read_object(existing_path) if existing_path.exists() or existing_path.is_symlink() else {}
+    if not all(key in defaults for key in BRANDING_KEYS):
+        raise SystemExit('Artifact configuration is missing required branding keys')
+    merged = dict(defaults)
+    merged.update(existing)
+    merged.update({key: defaults[key] for key in BRANDING_KEYS})
+    # Exclusive creation in the private deployment stage; never modify the
+    # immutable artifact or print existing configuration values.
+    try:
+        descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(merged, stream, indent=2)
+            stream.write('\n')
+    except OSError:
+        raise SystemExit('Cannot create private runtime configuration candidate') from None
+elif sys.argv[1] == 'verify':
+    if read_object(sys.argv[2]) != read_object(sys.argv[3]):
+        raise SystemExit('Deployed runtime configuration differs from the preserved candidate')
+else:
+    raise SystemExit('Unsupported runtime configuration operation')
+PY
+}
+# END RUNTIME CONFIG TOOL
+
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die 'Deployment must run as root.'
 [[ $# -eq 3 ]] || die 'Expected bundle directory, UI commit, and run identity.'
 
@@ -79,6 +131,7 @@ MANIFEST="$BUNDLE/build-manifest.json"
 STAGE_ROOT="/usr/share/cloudstack-management/.layersentry-ui-${RUN_ID}"
 EXTRACTED="$STAGE_ROOT/extracted/ui-dist"
 CANDIDATE="$STAGE_ROOT/candidate"
+CONFIG_CANDIDATE="$STAGE_ROOT/runtime-config-candidate.json"
 STAGE_CREATED=false
 BACKUP_DIR=''
 CONFIG_WAS_PRESENT=false
@@ -224,6 +277,7 @@ assert config.get('minilogo') == 'assets/layersentry-icon.svg'
 PY
 grep -Rqs --include='*.js' 'LayerSentry' "$EXTRACTED" || die 'Compiled UI does not contain LayerSentry product branding.'
 grep -Rqs --include='*.js' 'layersentry-kvm' "$EXTRACTED" || die 'Compiled UI does not contain the LayerSentry KVM profile.'
+runtime_config_tool merge "$EXTRACTED/config.json" "$SERVED_CONFIG" "$CONFIG_CANDIDATE"
 
 rsync -aHAX --numeric-ids "$SERVED_UI/" "$CANDIDATE/"
 rsync -a --delete --exclude='/WEB-INF/' --exclude='/META-INF/' --exclude='/config.json' --chown=root:root --chmod=D755,F644 "$EXTRACTED/" "$CANDIDATE/"
@@ -247,7 +301,7 @@ DEPLOYMENT_STARTED=true
 systemctl stop cloudstack-management
 rsync -aHAX --numeric-ids --delete --exclude='/WEB-INF/' --exclude='/META-INF/' --exclude='/config.json' "$CANDIDATE/" "$SERVED_UI/"
 [[ "$(backend_fingerprint "$SERVED_UI")" == "$BACKEND_BEFORE" ]] || die 'CloudStack backend content was not preserved during deployment.'
-install -m 0644 -o root -g root "$EXTRACTED/config.json" "${SERVED_CONFIG}.new-${RUN_ID}"
+install -m 0644 -o root -g root "$CONFIG_CANDIDATE" "${SERVED_CONFIG}.new-${RUN_ID}"
 mv -fT "${SERVED_CONFIG}.new-${RUN_ID}" "$SERVED_CONFIG"
 ln -s "$SERVED_CONFIG" "$SERVED_UI/.config.json-${RUN_ID}"
 mv -fT "$SERVED_UI/.config.json-${RUN_ID}" "$SERVED_UI/config.json"
@@ -266,6 +320,9 @@ runtime_config="$STAGE_ROOT/runtime-config.json"
 runtime_logo="$STAGE_ROOT/runtime-logo.svg"
 curl -fsS --max-time 15 http://127.0.0.1:8080/client/config.json -o "$runtime_config"
 curl -fsS --max-time 15 http://127.0.0.1:8080/client/assets/layersentry-logo.svg -o "$runtime_logo"
+runtime_config_tool verify "$CONFIG_CANDIDATE" "$SERVED_CONFIG"
+runtime_config_tool verify "$CONFIG_CANDIDATE" "$runtime_config"
+printf 'RUNTIME_CONFIG_PRESERVATION=PASS\n'
 python3 - "$runtime_config" "$EXPECTED_PRODUCT" "$EXPECTED_PROFILE" <<'PY'
 import json
 import sys
