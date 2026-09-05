@@ -1,0 +1,4 @@
+{
+  "requestId": "20260906-backup-option-isolation",
+  "purpose": "Classify the mysqldump failure by option using only exit codes and discarding all database output and diagnostics"
+}
