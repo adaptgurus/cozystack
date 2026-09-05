@@ -22,7 +22,7 @@ if ($action.phase -cne 'Apply' -and $action.authorization -cne '') { throw 'Read
 $actualSha = (& git -C cloudstack-installer rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualSha -cne $request.source_sha) { throw 'Installer branch differs from the reviewed source SHA.' }
 if ($env:DR_HOST -cne '10.10.10.20' -or $env:DR_USER -cne 'root') { throw 'DR target binding failed.' }
-if (-not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS -or -not $env:DR_SECRETS -or -not $env:DR_CERTIFICATE) { throw 'Required deployment secrets are missing.' }
+if (-not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS -or -not $env:DR_PASSWORD -or -not $env:DR_CERTIFICATE) { throw 'Required deployment secrets are missing.' }
 if ($env:GITHUB_RUN_ID -cnotmatch '^\d+$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^\d+$') { throw 'Invalid run identity.' }
 $runId = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 $private = Join-Path $env:RUNNER_TEMP "dr-management-private-$runId"
@@ -41,7 +41,14 @@ try {
     New-Item -ItemType Directory -Path $bundle -ErrorAction Stop | Out-Null
     Write-PrivateText $key ($env:DR_KEY.Replace("`r", '') + "`n")
     Write-PrivateText $known ($env:DR_KNOWN_HOSTS.Replace("`r", '') + "`n")
-    Write-PrivateText (Join-Path $bundle 'secrets.json') $env:DR_SECRETS
+    $deploymentSecrets = [ordered]@{
+        db_password = $env:DR_PASSWORD
+        db_admin_password = $env:DR_PASSWORD
+        management_key = $env:DR_PASSWORD
+        database_key = $env:DR_PASSWORD
+        backup_db_password = $env:DR_PASSWORD
+    } | ConvertTo-Json -Compress
+    Write-PrivateText (Join-Path $bundle 'secrets.json') $deploymentSecrets
     Write-PrivateText (Join-Path $bundle 'recipient.pem') $env:DR_CERTIFICATE.Replace("`r", '')
     Copy-Item -LiteralPath $action.request -Destination (Join-Path $bundle 'request.json')
     Copy-Item -LiteralPath $env:DR_ACTION -Destination (Join-Path $bundle 'action.json')
@@ -49,7 +56,7 @@ try {
     foreach ($name in @('install-rocky9.py', 'bootstrap-rocky9-management.sh', 'db-backup.py')) {
         Copy-Item -LiteralPath "cloudstack-installer/tools/layersentry-management/$name" -Destination $bundle
     }
-    $env:DR_KEY = ''; $env:DR_SECRETS = ''; $env:DR_CERTIFICATE = ''
+    $deploymentSecrets = ''; $env:DR_KEY = ''; $env:DR_PASSWORD = ''; $env:DR_CERTIFICATE = ''
     $options = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'StrictHostKeyChecking=yes', '-o', "UserKnownHostsFile=$known", '-o', 'LogLevel=ERROR', '-i', $key)
     $target = 'root@10.10.10.20'
     $output = & ssh @options $target "umask 077; mkdir '$remote'" 2>&1
@@ -76,6 +83,6 @@ finally {
         Write-Warning 'Remote staging cleanup could not be confirmed.'
     } finally {
         Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction SilentlyContinue
-        $env:DR_KEY = ''; $env:DR_SECRETS = ''; $env:DR_CERTIFICATE = ''
+        $deploymentSecrets = ''; $env:DR_KEY = ''; $env:DR_PASSWORD = ''; $env:DR_CERTIFICATE = ''
     }
 }

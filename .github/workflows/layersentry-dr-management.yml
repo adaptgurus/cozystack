@@ -60,7 +60,7 @@ jobs:
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
           DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
           DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
-          DR_SECRETS: ${{ secrets.LAYERSENTRY_DR_MANAGEMENT_SECRETS }}
+          DR_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
           DR_CERTIFICATE: ${{ secrets.LAYERSENTRY_DR_BACKUP_RECIPIENT_CERTIFICATE }}
         run: '& hack/layersentry/invoke-dr-management.ps1'
       - name: Upload allowlisted evidence
