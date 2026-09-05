@@ -1,0 +1,63 @@
+name: LayerSentry DR UI Read-only Probe
+
+on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [.github/workflows/layersentry-dr-ui-readonly-probe.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Check out diagnostic source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Read-only Rocky inventory over SSH
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DR_HOST -cnotmatch '^10\.10\.10\.20$' -or $env:DR_USER -cne 'root' -or -not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS) { throw 'DR SSH secret binding failed.' }
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.key"
+          $known = Join-Path $env:RUNNER_TEMP "layersentry-dr-$env:GITHUB_RUN_ID.known_hosts"
+          [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($known, $env:DR_KNOWN_HOSTS.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            & icacls $key /inheritance:r /grant:r "${identity}:(R)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'SSH private-key ACL failed.' }
+            $out = Join-Path $env:RUNNER_TEMP "dr-ui-readonly-probe-$env:GITHUB_RUN_ID"
+            New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
+            $command = 'cat /etc/os-release; rpm -q cloudstack-management cloudstack-ui; rpm -qf /usr/share/cloudstack-management/webapp/index.html; command -v rsync; systemctl is-active cloudstack-management; curl --noproxy \* --max-time 10 -s -o /dev/null -w HTTP_CLIENT=%{http_code} http://127.0.0.1:8080/client/; echo; echo MUTATION_PERFORMED=false'
+            $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
+            if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
+            $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
+            $client = Invoke-WebRequest -UseBasicParsing -Uri 'http://10.10.10.20:8080/client/' -TimeoutSec 20
+            "RUNNER_HTTP_CLIENT=$($client.StatusCode)" | Add-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
+          }
+          finally {
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $known -Force -ErrorAction SilentlyContinue
+          }
+      - name: Upload sanitized inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dr-ui-readonly-probe-${{ github.run_id }}
+          path: ${{ runner.temp }}/dr-ui-readonly-probe-${{ github.run_id }}/
+          if-no-files-found: warn
+          retention-days: 30
