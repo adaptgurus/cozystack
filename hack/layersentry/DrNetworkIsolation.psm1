@@ -51,7 +51,8 @@ function Get-DrNetworkPreflight([object]$Request, [string]$RequestHash) {
     foreach($nat in @(Get-NetNat -ErrorAction SilentlyContinue)) { if (Test-CidrOverlap ([string]$nat.InternalIPInterfaceAddressPrefix) $Request.subnet) { throw 'DR subnet overlaps WinNAT.' } }
     # A default route overlaps every CIDR and is intentionally excluded; connected/specific routes are authoritative here.
     foreach($route in @(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object DestinationPrefix -ne '0.0.0.0/0')) {
-        if ([string]$route.InterfaceAlias -ceq $desiredAlias -and [string]$route.DestinationPrefix -ceq $Request.subnet) { continue }
+        # New-NetIPAddress creates both connected and host-local routes on this exact owned interface.
+        if ([string]$route.InterfaceAlias -ieq $desiredAlias) { continue }
         if (Test-CidrOverlap ([string]$route.DestinationPrefix) $Request.subnet) { throw 'DR subnet overlaps a host route.' }
     }
     # Hyper-V normalizes adapter identifier casing differently between -VM and -All.
