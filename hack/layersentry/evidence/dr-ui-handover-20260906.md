@@ -13,3 +13,15 @@ Merge remote script diagnostics into stdout before the Windows PowerShell transp
 Validation: Bash syntax and ShellCheck passed. Isolated prerequisite checks passed for already-installed rsync (no package mutation), missing rsync (successful provisioning), and failed provisioning (UI mutation blocked). Live Rocky verification remains pending until the next runner artifact records success. The requested exact artifact is rebuilt and qualified by the existing pinned workflow; no build occurs on the management host.
 
 Next gate: one request-driven deployment, inspect its exact run and evidence, diagnose any subsequent failure before retry, and record final source/run/artifact identity and truthful acceptance scope.
+
+## Dedicated-session handoff
+
+The user reassigned DR to another Codex session. No further deployment is dispatched by this session. Runner branch now contains prerequisite/transport/hash-verification change `c4765bfd6` and read-only probe `1d4c4ccdf`.
+
+Deployment run `33998290057` passed its hosted build and qualification but failed before UI mutation with `cloudstack-ui is not exact version 4.22.1.1`. Deployment evidence artifact name: `layersentry-dr-cloudstack-ui-evidence-33998290057-1`. The rsync provisioning block was not reached because package checks precede it.
+
+Read-only probe run `33998699769`, artifact `dr-ui-readonly-probe-33998699769`, established Rocky Linux 9.8, `cloudstack-management-4.22.1.1-1.noarch`, absent `cloudstack-ui`, and ownership of `/usr/share/cloudstack-management/webapp/index.html` by `cloudstack-management-4.22.1.1-1.noarch`. The management service is active; localhost and Windows-runner requests to `http://10.10.10.20:8080/client/` returned HTTP 200. This is existing-service evidence, not proof that requested LayerSentry UI commit is deployed. This session's direct network path to the private address timed out.
+
+Confirmed next fix: validate exact `cloudstack-management` version and its ownership of the served webapp rather than require the separate `cloudstack-ui` package. The CloudStack source `packaging/el8/cloud.spec` packages management webapp assets inside the management RPM; `cloudstack-ui` is a separate subpackage, not a management dependency. Keep backend WEB-INF/META-INF preservation and all immutable artifact/config/hash checks. Then retry once after checking current branch and in-flight workflows; the missing-rsync provisioning fix remains unverified on Rocky until reached.
+
+DR owner must record final run/artifact/digest and actual Rocky assertions. Full GUI/API/persona/browser regression and broader DR certification have not been claimed. Local source worktree for these committed changes is `/home/opc/layersentry/dr-ui-handover-fix`; another writer should use an isolated worktree. Other module work belongs to the receiving session, with conflicting lab mutations serialized with the dedicated DR owner.
