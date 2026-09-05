@@ -15,6 +15,54 @@ die() {
   exit 1
 }
 
+# BEGIN BACKEND FINGERPRINT
+# Hash regular file bytes, directory membership, and symlink targets without
+# following links outside the packaged backend. Missing optional META-INF is
+# part of the fingerprint; staging must not create it or remove an existing one.
+backend_fingerprint() {
+  python3 - "$1" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+entries = []
+def fail_walk(error):
+    raise error
+
+for name in ('WEB-INF', 'META-INF'):
+    base = root / name
+    if not base.exists() and not base.is_symlink():
+        entries.append([name, 'absent'])
+        continue
+    if base.is_symlink() or not base.is_dir():
+        raise SystemExit('Backend root must be a real directory')
+    paths = [base]
+    for directory, directories, files in os.walk(base, followlinks=False, onerror=fail_walk):
+        paths.extend(Path(directory) / child for child in directories + files)
+    for path in sorted(paths):
+        relative = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            entries.append([relative, 'link', os.readlink(path)])
+        elif stat.S_ISDIR(mode):
+            entries.append([relative, 'directory'])
+        elif stat.S_ISREG(mode):
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(block)
+            entries.append([relative, 'file', digest.hexdigest()])
+        else:
+            raise SystemExit('Unexpected special file in backend')
+print(hashlib.sha256(json.dumps(entries, separators=(',', ':')).encode()).hexdigest())
+PY
+}
+# END BACKEND FINGERPRINT
+
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die 'Deployment must run as root.'
 [[ $# -eq 3 ]] || die 'Expected bundle directory, UI commit, and run identity.'
 
@@ -92,7 +140,12 @@ observed_version=$(rpm -q --qf '%{VERSION}' cloudstack-management 2>/dev/null) |
 # management RPM; the optional cloudstack-ui RPM serves a separate directory.
 observed_owner=$(rpm -qf --qf '%{NAME} %{VERSION}\n' "$SERVED_UI/index.html" 2>/dev/null) || die 'Cannot query CloudStack served webapp package ownership.'
 [[ "$observed_owner" == "cloudstack-management $EXPECTED_CLOUDSTACK_VERSION" ]] || die "CloudStack served webapp is not owned by cloudstack-management $EXPECTED_CLOUDSTACK_VERSION."
-[[ -d "$SERVED_UI/WEB-INF" && -d "$SERVED_UI/META-INF" ]] || die 'CloudStack backend WEB-INF/META-INF content is missing.'
+# The META-INF in client/target/classes/META-INF/webapp is an outer build
+# directory, not a required directory inside the installed webapp.
+[[ -d "$SERVED_UI/WEB-INF" && ! -L "$SERVED_UI/WEB-INF" && -f "$SERVED_UI/WEB-INF/web.xml" && ! -L "$SERVED_UI/WEB-INF/web.xml" ]] || die 'Required CloudStack backend WEB-INF/web.xml is missing or unsafe.'
+backend_owner=$(rpm -qf --qf '%{NAME} %{VERSION}\n' "$SERVED_UI/WEB-INF/web.xml" 2>/dev/null) || die 'Cannot query CloudStack backend package ownership.'
+[[ "$backend_owner" == "cloudstack-management $EXPECTED_CLOUDSTACK_VERSION" ]] || die "CloudStack backend is not owned by cloudstack-management $EXPECTED_CLOUDSTACK_VERSION."
+BACKEND_BEFORE=$(backend_fingerprint "$SERVED_UI") || die 'Cannot fingerprint CloudStack backend content.'
 systemctl is-active --quiet cloudstack-management || die 'cloudstack-management must be healthy before deployment.'
 [[ -f "$ARCHIVE" && -f "$CHECKSUM" && -f "$MANIFEST" ]] || die 'The prebuilt UI bundle is incomplete.'
 
@@ -174,7 +227,7 @@ grep -Rqs --include='*.js' 'layersentry-kvm' "$EXTRACTED" || die 'Compiled UI do
 
 rsync -aHAX --numeric-ids "$SERVED_UI/" "$CANDIDATE/"
 rsync -a --delete --exclude='/WEB-INF/' --exclude='/META-INF/' --exclude='/config.json' --chown=root:root --chmod=D755,F644 "$EXTRACTED/" "$CANDIDATE/"
-[[ -d "$CANDIDATE/WEB-INF" && -d "$CANDIDATE/META-INF" ]] || die 'Staging did not preserve CloudStack backend content.'
+[[ "$(backend_fingerprint "$CANDIDATE")" == "$BACKEND_BEFORE" ]] || die 'Staging did not preserve CloudStack backend content.'
 sync
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -188,11 +241,12 @@ if [[ -e "$SERVED_CONFIG" || -L "$SERVED_CONFIG" ]]; then
   CONFIG_WAS_PRESENT=true
 fi
 install -m 0600 "$MANIFEST" "$BACKUP_DIR/deployed-build-manifest.json"
+printf '%s\n' "$BACKEND_BEFORE" >"$BACKUP_DIR/backend-before.sha256"
 
 DEPLOYMENT_STARTED=true
 systemctl stop cloudstack-management
 rsync -aHAX --numeric-ids --delete --exclude='/WEB-INF/' --exclude='/META-INF/' --exclude='/config.json' "$CANDIDATE/" "$SERVED_UI/"
-[[ -d "$SERVED_UI/WEB-INF" && -d "$SERVED_UI/META-INF" ]] || die 'CloudStack backend content was not preserved during deployment.'
+[[ "$(backend_fingerprint "$SERVED_UI")" == "$BACKEND_BEFORE" ]] || die 'CloudStack backend content was not preserved during deployment.'
 install -m 0644 -o root -g root "$EXTRACTED/config.json" "${SERVED_CONFIG}.new-${RUN_ID}"
 mv -fT "${SERVED_CONFIG}.new-${RUN_ID}" "$SERVED_CONFIG"
 ln -s "$SERVED_CONFIG" "$SERVED_UI/.config.json-${RUN_ID}"
@@ -267,6 +321,8 @@ print('EXACT_UI_FILES=PASS')
 print('HTTP_UI_ASSET_HASHES=PASS')
 PY
 
+[[ "$(backend_fingerprint "$SERVED_UI")" == "$BACKEND_BEFORE" ]] || die 'CloudStack backend content changed during final verification.'
+printf 'BACKEND_CONTENT_HASHES=PASS\n'
 DEPLOYMENT_PASSED=true
 printf 'LAYERSENTRY_DR_UI_DEPLOYMENT=PASS\n'
 printf 'CLOUDSTACK_UI_COMMIT=%s\n' "$UI_COMMIT"
