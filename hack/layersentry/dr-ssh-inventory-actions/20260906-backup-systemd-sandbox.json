@@ -1,0 +1,6 @@
+{
+  "action": "diagnose-encrypted-backup-systemd-sandbox",
+  "target": "layersentry-dr-mgmt1",
+  "change": "transient-systemd-unit-only",
+  "requested_at": "2026-09-06T00:00:00+05:30"
+}
