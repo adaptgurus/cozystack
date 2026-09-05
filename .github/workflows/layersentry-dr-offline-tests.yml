@@ -1,0 +1,138 @@
+name: LayerSentry DR Offline Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths:
+      - .github/workflows/layersentry-dr-*.yml
+      - .github/workflows/layersentry-cloudstack-r0-api-inventory.yml
+      - .github/workflows/layersentry-dc-*.yml
+      - hack/layersentry/dr_recovery_acceptance.py
+      - hack/layersentry/deploy-dr-cloudstack-ui.sh
+      - hack/layersentry/collect-dc-r0-readonly.py
+      - hack/layersentry/invoke-dc-r0-host-inventory.ps1
+      - hack/layersentry/invoke-dc-console-*.ps1
+      - hack/layersentry/capture-hyperv-console.ps1
+      - hack/layersentry/test_dr_recovery_acceptance.py
+      - hack/layersentry/test_deploy_dr_cloudstack_ui.py
+      - hack/layersentry/test_r0_api_inventory.py
+      - hack/layersentry/test_dc_r0_inventory.py
+      - hack/layersentry/test_dc_console_snapshot.py
+      - hack/layersentry/test_dc_console_begin_login.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-dr-offline-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    name: Linux source checks and isolated DR fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Python
+        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c
+        with:
+          python-version: '3.11.13'
+
+      - name: Validate preinstalled tools and install pinned YAML parser
+        run: |
+          set -euo pipefail
+          pwsh_path=$(command -v pwsh) || { echo 'Required preinstalled PowerShell is missing.' >&2; exit 1; }
+          [[ -x "$pwsh_path" ]] || exit 1
+          "$pwsh_path" -NoLogo -NoProfile -Command 'if ($PSVersionTable.PSVersion.Major -lt 7) { exit 1 }; $PSVersionTable.PSVersion.ToString()'
+          command -v shellcheck >/dev/null || { echo 'Required preinstalled ShellCheck is missing.' >&2; exit 1; }
+          shellcheck --version
+          printf 'POWERSHELL=%s\nPOWERSHELL_TEST_BINARY=%s\n' "$pwsh_path" "$pwsh_path" >> "$GITHUB_ENV"
+          python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+
+      - name: Check deployment shell and scoped workflow YAML
+        run: |
+          set -euo pipefail
+          bash -n hack/layersentry/deploy-dr-cloudstack-ui.sh
+          shellcheck hack/layersentry/deploy-dr-cloudstack-ui.sh
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          workflows = Path('.github/workflows')
+          paths = set(workflows.glob('layersentry-dr-*.yml')) | set(workflows.glob('layersentry-dc-*.yml'))
+          paths.add(workflows / 'layersentry-cloudstack-r0-api-inventory.yml')
+          for path in sorted(paths):
+              with path.open() as stream:
+                  document = yaml.safe_load(stream)
+              if not isinstance(document, dict) or not isinstance(document.get('jobs'), dict):
+                  raise SystemExit(f'Invalid workflow structure: {path}')
+          print(f'Parsed {len(paths)} scoped workflow files')
+          PY
+
+      - name: Run only scoped offline suites and reject skipped tests
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+          import unittest
+
+          test_dir = Path('hack/layersentry').resolve()
+          sys.path.insert(0, str(test_dir))
+          names = [
+              'test_dr_recovery_acceptance.py',
+              'test_deploy_dr_cloudstack_ui.py',
+              'test_r0_api_inventory.py',
+              'test_dc_r0_inventory.py',
+              'test_dc_console_snapshot.py',
+          ]
+          optional = 'test_dc_console_begin_login.py'
+          if (test_dir / optional).is_file():
+              names.append(optional)
+          else:
+              print(f'{optional}: not integrated; excluded from this source revision')
+          suite = unittest.TestSuite()
+          loader = unittest.TestLoader()
+          for name in names:
+              if not (test_dir / name).is_file():
+                  raise SystemExit(f'Required offline suite missing: {name}')
+              selected = loader.loadTestsFromName(Path(name).stem)
+              if selected.countTestCases() == 0:
+                  raise SystemExit(f'Offline suite contains no tests: {name}')
+              suite.addTests(selected)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          passed = result.wasSuccessful() and not result.skipped and result.testsRun > 0
+          report = {
+              'scope': 'OFFLINE_SOURCE_TESTS_ONLY',
+              'commit': os.environ['GITHUB_SHA'],
+              'runId': os.environ['GITHUB_RUN_ID'],
+              'suites': names, 'testsRun': result.testsRun,
+              'failures': len(result.failures), 'errors': len(result.errors),
+              'skipped': len(result.skipped), 'passed': passed,
+              'liveEnvironmentTested': False,
+          }
+          Path(os.environ['RUNNER_TEMP'], 'dr-offline-results.json').write_text(json.dumps(report, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'DR offline source tests: {result.testsRun} run, {len(result.skipped)} skipped, passed={passed}.\n\n')
+              summary.write('Isolated Linux/PowerShell fixtures only. No live CloudStack, SSH, Hyper-V or end-to-end recovery certification.\n')
+          if not passed:
+              raise SystemExit('Offline suite failed or skipped required coverage')
+          PY
+
+      - name: Upload source-test result only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dr-offline-results-${{ github.run_id }}
+          path: ${{ runner.temp }}/dr-offline-results.json
+          if-no-files-found: warn
+          retention-days: 30
