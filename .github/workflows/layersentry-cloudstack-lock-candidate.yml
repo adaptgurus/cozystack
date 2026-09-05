@@ -1,0 +1,183 @@
+name: LayerSentry CloudStack UI Lock Candidate
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-lock-candidate-requests/*.json
+      - .github/workflows/layersentry-cloudstack-lock-candidate.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-cloudstack-lock-candidate
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Regenerate and validate candidate UI lockfile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout exact request commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate one lock candidate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t requests < <(
+            git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'hack/layersentry/cloudstack-lock-candidate-requests/*.json' |
+              sed '/^[[:space:]]*$/d'
+          )
+          if (( ${#requests[@]} != 1 )); then
+            echo "Expected exactly one lock-candidate request; found ${#requests[@]}." >&2
+            exit 1
+          fi
+          request="${requests[0]}"
+          jq -e '
+            .schemaVersion == "1.0" and
+            .operation == "GENERATE_VALIDATE_CLOUDSTACK_UI_LOCK" and
+            .authorization == "REPOSITORY_BUILD_AND_TEST_ONLY" and
+            .cloudstackRepository == "adaptgurus/cloudstack" and
+            (.cloudstackCommit | test("^[a-f0-9]{40}$")) and
+            .removeStaleLockBeforeGeneration == true and
+            .validateCleanInstall == true and
+            .validateLint == true and
+            .validateUnitTests == true and
+            .validateProductionBuild == true and
+            .liveDeploymentAuthorized == false
+          ' "$request" >/dev/null
+          if grep -Ein 'password|passwd|secret|token|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|Bearer[[:space:]]' "$request"; then
+            echo 'Request must not contain credentials.' >&2
+            exit 1
+          fi
+          sha="$(jq -r '.cloudstackCommit' "$request")"
+          echo "CLOUDSTACK_SHA=$sha" >> "$GITHUB_ENV"
+          echo "REQUEST_PATH=$request" >> "$GITHUB_ENV"
+
+      - name: Fetch exact LayerSentry CloudStack source
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/cloudstack"
+          git init -q "$src"
+          git -C "$src" remote add origin https://github.com/adaptgurus/cloudstack.git
+          git -C "$src" -c protocol.version=2 fetch --depth 1 origin "$CLOUDSTACK_SHA"
+          git -C "$src" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$src" rev-parse HEAD)" = "$CLOUDSTACK_SHA"
+          echo "CLOUDSTACK_SOURCE=$src" >> "$GITHUB_ENV"
+
+      - name: Install pinned Node.js 16.20.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=16.20.2
+          archive="node-v${version}-linux-x64.tar.xz"
+          expected=874463523f26ed528634580247f403d200ba17a31adf2de98a7b124c6eb33d87
+          curl -fsS --retry 4 --retry-all-errors --connect-timeout 15 --max-time 180 \
+            "https://nodejs.org/dist/v${version}/${archive}" -o "$RUNNER_TEMP/$archive"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-v${version}-linux-x64/bin" >> "$GITHUB_PATH"
+
+      - name: Regenerate candidate lock from package manifest
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = 'v16.20.2'
+          test "$(npm --version)" = '8.19.4'
+          rm -rf node_modules
+          rm -f package-lock.json
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          test -s package-lock.json
+          jq -e '.name == "cloudstack-ui" and (.lockfileVersion >= 2)' package-lock.json >/dev/null
+          cp package-lock.json "$RUNNER_TEMP/package-lock.candidate.json"
+
+      - name: Validate clean install from candidate lock
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          rm -rf node_modules
+          npm ci --no-audit --no-fund
+
+      - name: Lint exact source with candidate lock
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run lint -- --no-fix
+
+      - name: Unit test exact source with candidate lock
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run test:unit -- --runInBand
+
+      - name: Production build exact source with candidate lock
+        shell: bash
+        working-directory: ${{ env.CLOUDSTACK_SOURCE }}/ui
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run build
+          test -f dist/index.html
+          test -f dist/config.json
+          grep -Rqs --include='*.js' 'Quick Provision' dist
+
+      - name: Build candidate evidence
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/layersentry-lock-candidate-$GITHUB_RUN_ID"
+          mkdir -p "$out"
+          if [[ -s "$RUNNER_TEMP/package-lock.candidate.json" ]]; then
+            cp "$RUNNER_TEMP/package-lock.candidate.json" "$out/package-lock.json"
+            sha256sum "$out/package-lock.json" > "$out/package-lock.json.sha256"
+          fi
+          jq -n \
+            --arg cloudstackCommit "${CLOUDSTACK_SHA:-unknown}" \
+            --arg runnerCommit "$GITHUB_SHA" \
+            --arg workflowRunId "$GITHUB_RUN_ID" \
+            --arg requestPath "${REQUEST_PATH:-unknown}" \
+            --arg conclusion "${{ job.status }}" \
+            '{
+              schemaVersion: "1.0",
+              cloudstackCommit: $cloudstackCommit,
+              runnerCommit: $runnerCommit,
+              workflowRunId: $workflowRunId,
+              requestPath: $requestPath,
+              conclusion: $conclusion,
+              liveDeploymentPerformed: false,
+              candidateOnly: true
+            }' > "$out/evidence.json"
+
+      - name: Upload candidate and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-cloudstack-lock-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/layersentry-lock-candidate-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
