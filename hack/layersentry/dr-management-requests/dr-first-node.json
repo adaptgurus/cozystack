@@ -1,0 +1,27 @@
+{
+  "request_id": "dr-first-node",
+  "source_sha": "b5d8f085e1c717ae16228aaeed7bd7495ce22b6a",
+  "configuration": {
+    "schema_version": 1,
+    "mode": "combined",
+    "initialize_database": true,
+    "hostname": "layersentry-dr-mgmt1",
+    "management_ip": "10.10.10.20",
+    "db_host": "localhost",
+    "mysql_series": "8.4",
+    "management_package": "cloudstack-management-4.22.1.1-1.noarch",
+    "java_package": "java-17-openjdk-headless-17.0.20.1.1-1.2.el9_8.x86_64",
+    "mysql_client_package": "mysql-community-client-8.4.11-1.el9.x86_64",
+    "mysql_server_package": "mysql-community-server-8.4.11-1.el9.x86_64",
+    "ui_cidr": "10.10.10.0/24",
+    "agent_cidr": "10.10.10.0/24",
+    "firewall_zone": "public",
+    "management_nodes": 1,
+    "backup_db_user": "layersentry_backup",
+    "backup_retention": 14
+  },
+  "repositories": {
+    "cloudstack.repo": "[cloudstack-4.22]\nname=CloudStack 4.22 EL9\nbaseurl=https://download.cloudstack.org/el/9/4.22/\nenabled=1\ngpgcheck=1\nsslverify=1\ngpgkey=https://download.cloudstack.org/RPM-GPG-KEY\n",
+    "mysql84.repo": "[mysql84]\nname=Oracle MySQL 8.4 LTS EL9\nbaseurl=https://repo.mysql.com/yum/mysql-8.4-community/el/9/x86_64/\nenabled=1\ngpgcheck=1\nsslverify=1\ngpgkey=https://repo.mysql.com/RPM-GPG-KEY-mysql-2025\n"
+  }
+}
