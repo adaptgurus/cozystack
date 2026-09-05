@@ -215,7 +215,10 @@ jobs:
           $archive = Join-Path $artifact 'ui-dist.tar.gz'
           $checksum = Join-Path $artifact 'ui-dist.tar.gz.sha256'
           $manifestPath = Join-Path $artifact 'build-manifest.json'
-          $script = (Resolve-Path 'hack/layersentry/deploy-dr-cloudstack-ui.sh').ProviderPath
+          $scriptSource = (Resolve-Path 'hack/layersentry/deploy-dr-cloudstack-ui.sh').ProviderPath
+          $script = Join-Path $env:RUNNER_TEMP "deploy-dr-cloudstack-ui-$runIdentity.sh"
+          $scriptText = [IO.File]::ReadAllText($scriptSource).Replace("`r`n", "`n").Replace("`r", "`n")
+          [IO.File]::WriteAllText($script, $scriptText, [Text.UTF8Encoding]::new($false))
           foreach ($path in @($archive, $checksum, $manifestPath, $script)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Deployment input is missing: $path" } }
 
           $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
