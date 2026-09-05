@@ -42,7 +42,11 @@ function Save-Journal {
     # Write/flush a new temporary file, then atomic replace. Never silently replace a request baseline.
     $temporary = "$journalPath.$([guid]::NewGuid().ToString('N')).tmp"
     [IO.File]::WriteAllText($temporary, ($script:journal | ConvertTo-Json -Depth 12))
-    if ([IO.File]::Exists($journalPath)) { [IO.File]::Replace($temporary, $journalPath, $null) }
+    if ([IO.File]::Exists($journalPath)) {
+        $backup = "$journalPath.replace-backup"
+        [IO.File]::Replace($temporary, $journalPath, $backup, $true)
+        [IO.File]::Delete($backup)
+    }
     else { [IO.File]::Move($temporary, $journalPath) }
 }
 function Get-OwnedSecondVm {
