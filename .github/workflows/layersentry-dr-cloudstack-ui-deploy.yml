@@ -217,6 +217,7 @@ jobs:
           $manifestPath = Join-Path $artifact 'build-manifest.json'
           $scriptSource = (Resolve-Path 'hack/layersentry/deploy-dr-cloudstack-ui.sh').ProviderPath
           $script = Join-Path $env:RUNNER_TEMP "deploy-dr-cloudstack-ui-$runIdentity.sh"
+          $scriptRemoteName = [IO.Path]::GetFileName($script)
           $scriptText = [IO.File]::ReadAllText($scriptSource).Replace("`r`n", "`n").Replace("`r", "`n")
           [IO.File]::WriteAllText($script, $scriptText, [Text.UTF8Encoding]::new($false))
           foreach ($path in @($archive, $checksum, $manifestPath, $script)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Deployment input is missing: $path" } }
@@ -251,7 +252,7 @@ jobs:
             $scpArguments = @($options) + @($archive, $checksum, $manifestPath, $script, "${target}:$remote/")
             $output = & scp @scpArguments 2>&1
             if ($LASTEXITCODE -ne 0) { throw 'Artifact transfer failed; SCP output withheld.' }
-            $command = "chmod 0700 '$remote/deploy-dr-cloudstack-ui.sh'; bash '$remote/deploy-dr-cloudstack-ui.sh' '$remote' '$env:CLOUDSTACK_UI_COMMIT' '$runIdentity'"
+            $command = "chmod 0700 '$remote/$scriptRemoteName'; bash '$remote/$scriptRemoteName' '$remote' '$env:CLOUDSTACK_UI_COMMIT' '$runIdentity'"
             $output = & ssh @options $target $command 2>&1
             $remoteExit = $LASTEXITCODE
             $output | Set-Content -LiteralPath (Join-Path $evidence 'deployment.txt') -Encoding UTF8
