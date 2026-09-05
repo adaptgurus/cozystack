@@ -1,0 +1,4 @@
+{
+  "requestId": "20260906-backup-failure",
+  "purpose": "Inspect the credential-redacted backup service failure and recovery-point directory after Management became active"
+}
