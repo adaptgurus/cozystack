@@ -1,0 +1,5 @@
+{
+  "request": "hack/layersentry/dr-management-requests/dr-first-node.json",
+  "phase": "Apply",
+  "authorization": "dr-first-node:Apply"
+}
