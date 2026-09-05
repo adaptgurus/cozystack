@@ -1,6 +1,11 @@
 name: LayerSentry Two Rocky VM Lab
 
 on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/two-vm-lab-actions/*.json
   workflow_dispatch:
     inputs:
       request:
@@ -43,6 +48,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - name: Run one reviewed phase
         shell: powershell
@@ -52,6 +58,16 @@ jobs:
           LAB_AUTHORIZATION: ${{ inputs.authorization }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            [string[]]$changed = @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/two-vm-lab-actions/*.json')
+            if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one two-VM action envelope.' }
+            $action = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+            $fields = @('request', 'phase', 'authorization')
+            if (@($action.PSObject.Properties.Name).Count -ne $fields.Count) { throw 'Invalid action envelope fields.' }
+            $env:LAB_REQUEST = [string]$action.request
+            $env:LAB_PHASE = [string]$action.phase
+            $env:LAB_AUTHORIZATION = [string]$action.authorization
+          }
           if ($env:LAB_REQUEST -cnotmatch '^hack/layersentry/two-vm-lab-requests/[a-z0-9-]+\.json$') { throw 'Invalid request path.' }
           $evidence = Join-Path $env:RUNNER_TEMP "two-vm-lab-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           & hack/layersentry/invoke-two-vm-lab.ps1 -RequestPath $env:LAB_REQUEST -Phase $env:LAB_PHASE -Authorization $env:LAB_AUTHORIZATION -EvidenceDirectory $evidence
