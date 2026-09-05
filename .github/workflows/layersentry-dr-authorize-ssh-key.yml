@@ -34,10 +34,10 @@ jobs:
           try {
             [IO.File]::WriteAllText($askpass, "@echo $($env:DR_PASSWORD)`r`n", [Text.ASCIIEncoding]::new())
             [IO.File]::WriteAllText($key, $env:DR_PRIVATE_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
-            foreach ($path in @($askpass, $key)) {
-              & icacls $path /inheritance:r /grant:r "${identity}:(R)" | Out-Null
-              if ($LASTEXITCODE -ne 0) { throw 'Temporary credential ACL failed.' }
-            }
+            & icacls $askpass /inheritance:r /grant:r "${identity}:(RX)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Temporary askpass ACL failed.' }
+            & icacls $key /inheritance:r /grant:r "${identity}:(R)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Temporary private-key ACL failed.' }
             $env:SSH_ASKPASS = $askpass
             $env:SSH_ASKPASS_REQUIRE = 'force'
             $env:DISPLAY = 'layersentry'
