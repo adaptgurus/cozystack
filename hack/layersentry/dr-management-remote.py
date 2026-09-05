@@ -34,9 +34,11 @@ def validate_request(request, action):
     require(isinstance(request['source_sha'], str)
             and re.fullmatch('[0-9a-f]{40}', request['source_sha']))
     require(set(action) == {'request', 'phase', 'authorization'})
-    require(action['phase'] in ('Preflight', 'Apply', 'Status'))
-    require(action['authorization'] == (request['request_id'] + ':Apply'
-                                       if action['phase'] == 'Apply' else ''))
+    require(action['phase'] in ('Preflight', 'Apply', 'Status', 'RecoverDatabaseBootstrap'))
+    expected_authorization = ({'Apply': request['request_id'] + ':Apply',
+                               'RecoverDatabaseBootstrap': request['request_id'] + ':RecoverDatabaseBootstrap'}
+                              .get(action['phase'], ''))
+    require(action['authorization'] == expected_authorization)
     config = request['configuration']
     require(isinstance(config, dict) and set(config) <= CONFIG_KEYS)
     require(config.get('management_ip') == '10.10.10.20'
@@ -134,13 +136,19 @@ def execute(bundle, result):
                 require(not receipt.is_symlink())
                 receipt.write_text(json.dumps({'fingerprint': digest, 'passed_at': int(time.time())}))
                 receipt.chmod(0o600)
-            else:
+            elif action['phase'] == 'Apply':
                 result['failure_stage'] = 'preflight_receipt'
                 require(receipt.is_file() and not receipt.is_symlink())
                 passed = json.loads(receipt.read_text())
                 validate_receipt(passed, digest, time.time())
                 result['failure_stage'] = 'apply'
                 check = subprocess.run(command + ['--action', 'apply'], capture_output=True, timeout=6600)
+                result['installer_exit_code'] = check.returncode
+                require(check.returncode == 0)
+            else:
+                result['failure_stage'] = 'database_bootstrap_recovery'
+                check = subprocess.run(command + ['--action', 'recover-database-bootstrap'],
+                                       capture_output=True, timeout=300)
                 result['installer_exit_code'] = check.returncode
                 require(check.returncode == 0)
             result['failure_stage'] = 'status'

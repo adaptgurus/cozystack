@@ -23,8 +23,10 @@ class DeploymentTests(unittest.TestCase):
                        'phase': 'Preflight', 'authorization': ''}
 
     def test_valid_phases_and_explicit_apply_authorization(self):
-        for phase in ('Preflight', 'Status', 'Apply'):
-            self.action.update(phase=phase, authorization='dr-first-node:Apply' if phase == 'Apply' else '')
+        for phase in ('Preflight', 'Status', 'Apply', 'RecoverDatabaseBootstrap'):
+            authorization = {'Apply': 'dr-first-node:Apply',
+                             'RecoverDatabaseBootstrap': 'dr-first-node:RecoverDatabaseBootstrap'}.get(phase, '')
+            self.action.update(phase=phase, authorization=authorization)
             remote.validate_request(self.request, self.action)
         self.action['authorization'] = ''
         with self.assertRaises(ValueError):

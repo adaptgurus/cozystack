@@ -13,12 +13,13 @@ if ($env:GITHUB_EVENT_NAME -eq 'push') {
 if ($env:DR_ACTION -cnotmatch '^hack/layersentry/dr-management-actions/[a-z0-9-]+\.json$') { throw 'Invalid action envelope path.' }
 $action = Get-Content -LiteralPath $env:DR_ACTION -Raw -Encoding UTF8 | ConvertFrom-Json
 if ((@($action.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'authorization,phase,request') { throw 'Invalid action envelope fields.' }
-if ($action.phase -cnotin @('Preflight', 'Apply', 'Status')) { throw 'Invalid deployment phase.' }
+if ($action.phase -cnotin @('Preflight', 'Apply', 'Status', 'RecoverDatabaseBootstrap')) { throw 'Invalid deployment phase.' }
 if ($action.request -cnotmatch '^hack/layersentry/dr-management-requests/[a-z0-9-]+\.json$') { throw 'Invalid deployment request path.' }
 $request = Get-Content -LiteralPath $action.request -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($request.request_id -cnotmatch '^[a-z0-9-]{1,64}$' -or $request.source_sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid request identity.' }
 if ($action.phase -ceq 'Apply' -and $action.authorization -cne "$($request.request_id):Apply") { throw 'Exact Apply authorization required.' }
-if ($action.phase -cne 'Apply' -and $action.authorization -cne '') { throw 'Read-only phase authorization must be empty.' }
+if ($action.phase -ceq 'RecoverDatabaseBootstrap' -and $action.authorization -cne "$($request.request_id):RecoverDatabaseBootstrap") { throw 'Exact database bootstrap recovery authorization required.' }
+if ($action.phase -cnotin @('Apply', 'RecoverDatabaseBootstrap') -and $action.authorization -cne '') { throw 'Read-only phase authorization must be empty.' }
 $actualSha = (& git -C cloudstack-installer rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualSha -cne $request.source_sha) { throw 'Installer branch differs from the reviewed source SHA.' }
 if ($env:DR_HOST -cne '10.10.10.20' -or $env:DR_USER -cne 'root') { throw 'DR target binding failed.' }
