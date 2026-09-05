@@ -65,10 +65,13 @@ Expect-Rejection { Assert-LabCapacity @capacity }
     $blocked = $false
     try { Start-LabVm '00000000-0000-0000-0000-000000000001' } catch { $blocked = $true }
     if (-not $blocked -or $script:starts -ne 1) { throw 'Low-memory start guard failed.' }
+    # Recovery may restore the measured old headroom; forward starts still require 16 GiB.
+    Start-LabVm '00000000-0000-0000-0000-000000000001' -ReserveGiB 5
+    if ($script:starts -ne 2) { throw 'Original-headroom recovery failed.' }
     $script:state = 'Saved'
     $blocked = $false
     try { Stop-LabVmGracefully '00000000-0000-0000-0000-000000000001' } catch { $blocked = $true }
     if (-not $blocked -or $script:stops -ne 1) { throw 'Unstable VM state guard failed.' }
 }
-$count += 4
+$count += 5
 Write-Output "Two-VM lab parser and behavior checks passed: $count"

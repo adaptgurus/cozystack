@@ -70,12 +70,12 @@ function Stop-LabVmGracefully {
 }
 
 function Start-LabVm {
-    param([string]$Id, [switch]$RequireHeartbeat)
+    param([string]$Id, [switch]$RequireHeartbeat, [ValidateRange(0, 128)][double]$ReserveGiB = 16)
     $vm = Get-LabVm $Id
     if ([string]$vm.State -eq 'Off') {
         $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
         $required = (Get-VMMemory -VM $vm).Startup / 1GB
-        if ($free -lt ($required + 16)) { throw 'Insufficient current memory to start VM and retain host reserve.' }
+        if ($free -lt ($required + $ReserveGiB)) { throw 'Insufficient current memory to start VM and retain host reserve.' }
         Start-VM -VM $vm -ErrorAction Stop | Out-Null
     }
     $deadline = [DateTime]::UtcNow.AddMinutes(4)

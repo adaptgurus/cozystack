@@ -70,7 +70,7 @@ try {
     if ($Phase -eq 'Preflight') {
         if ($journal) { throw 'Request already journaled; use a new request ID for a fresh plan.' }
         $preflight = Get-LabPreflight $request
-        $journal = [pscustomobject]@{ requestSha256 = $hash; host = $env:COMPUTERNAME; phase = 'Preflight'; original = $preflight.existing; secondVmId = ''; createdUtc = [DateTime]::UtcNow.ToString('o') }
+        $journal = [pscustomobject]@{ requestSha256 = $hash; host = $env:COMPUTERNAME; phase = 'Preflight'; original = $preflight.existing; originalReserveGiB = [math]::Min(16, $preflight.freeGiB); secondVmId = ''; createdUtc = [DateTime]::UtcNow.ToString('o') }
         Save-Journal
         $report.preflight = $preflight
         $report.status = 'DESIGN_DEFINED'
@@ -146,7 +146,7 @@ try {
             $nic = @(Get-VMNetworkAdapter -VM $vm | Where-Object { [string]$_.Id -eq $original.nicId })
             if ($nic.Count -ne 1) { throw 'Original NIC changed; inspect before restoring spoofing.' }
             $nic[0] | Set-VMNetworkAdapter -MacAddressSpoofing $original.spoofing
-            if ($original.state -eq 'Running') { Start-LabVm $request.existingVmId -RequireHeartbeat }
+            if ($original.state -eq 'Running') { Start-LabVm $request.existingVmId -RequireHeartbeat -ReserveGiB $journal.originalReserveGiB }
             $journal.phase = 'RolledBack'; Save-Journal
         }
         $report.status = 'PARTIAL'
