@@ -1,0 +1,65 @@
+name: LayerSentry Two Rocky VM Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: Committed JSON request path below hack/layersentry/two-vm-lab-requests/
+        required: true
+        type: string
+      phase:
+        description: Explicit phase (preflight makes no VM changes)
+        required: true
+        default: Preflight
+        type: choice
+        options: [Preflight, Resize, Create, Start, Rollback]
+      authorization:
+        description: For mutation, exact requestId:Phase from reviewed request
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Parser and mocked behavior tests (no Hyper-V mutation)
+        shell: powershell
+        run: '& hack/layersentry/test-two-vm-lab.ps1'
+  apply-phase:
+    needs: validate
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run one reviewed phase
+        shell: powershell
+        env:
+          LAB_REQUEST: ${{ inputs.request }}
+          LAB_PHASE: ${{ inputs.phase }}
+          LAB_AUTHORIZATION: ${{ inputs.authorization }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:LAB_REQUEST -cnotmatch '^hack/layersentry/two-vm-lab-requests/[a-z0-9-]+\.json$') { throw 'Invalid request path.' }
+          $evidence = Join-Path $env:RUNNER_TEMP "two-vm-lab-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & hack/layersentry/invoke-two-vm-lab.ps1 -RequestPath $env:LAB_REQUEST -Phase $env:LAB_PHASE -Authorization $env:LAB_AUTHORIZATION -EvidenceDirectory $evidence
+      - name: Upload sanitized phase evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: two-vm-lab-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/two-vm-lab-${{ github.run_id }}-${{ github.run_attempt }}/result.json
+          if-no-files-found: warn
+          retention-days: 30

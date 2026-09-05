@@ -1,0 +1,11 @@
+{
+  "requestId": "example-resize",
+  "mode": "resize-only",
+  "host": "REPLACE-HOST",
+  "existingVmId": "00000000-0000-0000-0000-000000000001",
+  "secondVmName": "layersentry-dr-lab",
+  "switchId": "00000000-0000-0000-0000-000000000002",
+  "isoPath": "",
+  "isoSha256": "",
+  "vmRoot": ""
+}
