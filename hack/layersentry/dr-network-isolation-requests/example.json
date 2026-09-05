@@ -1,0 +1,12 @@
+{
+  "requestId": "replace-with-unique-request-id",
+  "host": "TESTSER",
+  "vmId": "00000000-0000-0000-0000-000000000001",
+  "vmName": "layersentry-dr-rocky9",
+  "nicId": "00000000-0000-0000-0000-000000000002",
+  "currentSwitchId": "00000000-0000-0000-0000-000000000003",
+  "ownerRequestSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "switchName": "LayerSentry-DR-Internal",
+  "subnet": "10.10.20.0/24",
+  "gateway": "10.10.20.1"
+}

@@ -1,0 +1,64 @@
+name: LayerSentry DR Network Isolation
+
+on:
+  workflow_dispatch:
+    inputs:
+      request:
+        description: Committed request below hack/layersentry/dr-network-isolation-requests/
+        required: true
+        type: string
+      phase:
+        description: Preflight, Apply, or Rollback
+        required: true
+        type: choice
+        options: [Preflight, Apply, Rollback]
+      authorization:
+        description: Empty for Preflight; requestId:Phase otherwise
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - shell: powershell
+        run: '& hack/layersentry/test-dr-network-isolation.ps1'
+
+  isolate:
+    needs: test
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate input and invoke exact phase
+        shell: powershell
+        env:
+          DR_REQUEST: ${{ inputs.request }}
+          DR_PHASE: ${{ inputs.phase }}
+          DR_AUTHORIZATION: ${{ inputs.authorization }}
+        run: |
+          if($env:DR_REQUEST -cnotmatch '^hack/layersentry/dr-network-isolation-requests/[a-z0-9-]+\.json$'){throw 'Invalid request path.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "dr-network-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          & hack/layersentry/invoke-dr-network-isolation.ps1 -RequestPath $env:DR_REQUEST -Phase $env:DR_PHASE -Authorization $env:DR_AUTHORIZATION -EvidenceDirectory $evidence
+      - name: Upload sanitized result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dr-network-isolation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dr-network-${{ github.run_id }}-${{ github.run_attempt }}/result.json
+          if-no-files-found: warn
+          retention-days: 30
