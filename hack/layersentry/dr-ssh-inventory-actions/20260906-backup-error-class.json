@@ -1,0 +1,4 @@
+{
+  "requestId": "20260906-backup-error-class",
+  "purpose": "Classify the base mysqldump failure using allowlisted patterns while withholding native diagnostics"
+}
