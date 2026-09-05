@@ -22,7 +22,7 @@ jobs:
         env:
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
-          DR_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_PASSWORD }}
+          DR_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
           DR_PRIVATE_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
         run: |
           $ErrorActionPreference = 'Stop'
