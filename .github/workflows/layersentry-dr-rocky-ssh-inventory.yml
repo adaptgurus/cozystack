@@ -41,7 +41,9 @@ jobs:
             $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
             New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
             $probe = Get-Content -LiteralPath 'hack/layersentry/diagnose-dr-backup.sh' -Raw -Encoding UTF8
-            $result = $probe | & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" 'bash -s'
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probe))
+            $command = "echo $encoded | base64 --decode | bash"
+            $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
             if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
             $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
             Copy-Item -LiteralPath $known -Destination (Join-Path $out 'known_hosts')
