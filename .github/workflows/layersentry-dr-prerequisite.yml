@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 2
           persist-credentials: false
       - name: Install exact signed checkpoint prerequisite
         shell: powershell
