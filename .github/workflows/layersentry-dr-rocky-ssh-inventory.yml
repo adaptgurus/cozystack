@@ -36,7 +36,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'SSH private-key ACL failed.' }
             $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
             New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
-            $command = 'hostnamectl --static; cat /etc/os-release; getenforce; systemctl is-active firewalld; systemctl is-active sshd; ip -4 -brief address; ip -4 route; df -hT; rpm -qa | grep -E "^(cloudstack|mysql|percona|java-17)" | sort || true; dnf repolist --enabled; curl -fsSIL --max-time 10 https://download.cloudstack.org/centos/9/4.22/ >/dev/null && echo CLOUDSTACK_REPO_REACHABLE=true || echo CLOUDSTACK_REPO_REACHABLE=false'
+            $command = 'hostnamectl --static; cat /etc/os-release; getenforce; systemctl is-active firewalld; systemctl is-active sshd; ip -4 -brief address; ip -4 route; df -hT; rpm -qa | grep -e ^cloudstack -e ^mysql -e ^percona -e ^java-17 | sort || true; dnf repolist --enabled; curl -fsSIL --max-time 10 https://download.cloudstack.org/centos/9/4.22/ >/dev/null && echo CLOUDSTACK_REPO_REACHABLE=true || echo CLOUDSTACK_REPO_REACHABLE=false'
             $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
             if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
             $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
