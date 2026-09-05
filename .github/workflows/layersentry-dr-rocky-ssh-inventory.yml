@@ -18,6 +18,10 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 10
     steps:
+      - name: Check out diagnostic source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - name: Read-only Rocky inventory over SSH
         shell: powershell
         env:
@@ -36,8 +40,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'SSH private-key ACL failed.' }
             $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
             New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
-            $command = 'e=/tmp/layersentry-dump-error-$RANDOM; umask 077; mysqldump --defaults-extra-file=/etc/layersentry/db-backup/client.cnf --single-transaction --quick --routines --events --triggers --hex-blob --no-tablespaces --set-gtid-purged=OFF --databases cloud cloud_usage >/dev/null 2>$e; echo DUMP_RC=$?; sed -E "s/12345678/REDACTED/g; s/(using password: )[A-Za-z]+/\1REDACTED/g" $e | head -5; rm -f $e; exit 0'
-            $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
+            $probe = Get-Content -LiteralPath 'hack/layersentry/diagnose-dr-backup.sh' -Raw -Encoding UTF8
+            $result = $probe | & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" 'bash -s'
             if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
             $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
             Copy-Item -LiteralPath $known -Destination (Join-Path $out 'known_hosts')
