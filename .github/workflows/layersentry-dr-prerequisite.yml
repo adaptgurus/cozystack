@@ -29,7 +29,7 @@ jobs:
           DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $changed = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- 'hack/layersentry/dr-prerequisite-actions/*.json')
+          $changed = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dr-prerequisite-actions | Where-Object { $_ -cmatch '^hack/layersentry/dr-prerequisite-actions/[a-z0-9-]+\.json$' })
           if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected one new prerequisite authorization.' }
           $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
           if ($request.request_id -cne 'dr-tar-1-34-13-el9-8' -or $request.authorization -cne 'Install:tar-1.34-13.el9_8.x86_64') { throw 'Prerequisite authorization rejected.' }
@@ -52,4 +52,3 @@ jobs:
             Remove-Item -LiteralPath $key,$known -Force -ErrorAction SilentlyContinue
             $env:DR_KEY = ''
           }
-
