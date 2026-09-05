@@ -36,7 +36,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'SSH private-key ACL failed.' }
             $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
             New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
-            $command = 'mysqldump --version; for o in single-transaction quick hex-blob no-tablespaces set-gtid-purged routines events triggers; do mysqldump --help 2>&1 | grep -q -- "--$o"; echo OPTION_${o}_RC=$?; done; d=/etc/layersentry/db-backup/client.cnf; mysql --defaults-extra-file=$d --batch --skip-column-names -e "SELECT 1" >/dev/null 2>&1; echo DEFAULTS_LOGIN_RC=$?; exit 0'
+            $command = 'e=/tmp/layersentry-dump-error-$RANDOM; umask 077; mysqldump --defaults-extra-file=/etc/layersentry/db-backup/client.cnf --single-transaction --quick --routines --events --triggers --hex-blob --no-tablespaces --set-gtid-purged=OFF --databases cloud cloud_usage >/dev/null 2>$e; echo DUMP_RC=$?; sed -E "s/12345678/REDACTED/g; s/(using password: )[A-Za-z]+/\1REDACTED/g" $e | head -5; rm -f $e; exit 0'
             $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
             if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
             $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
