@@ -3,6 +3,12 @@ name: LayerSentry CloudStack R0 API Inventory
 on:
   workflow_dispatch:
     inputs:
+      target_profile:
+        description: Credential and endpoint binding for the disposable lab
+        required: true
+        default: dc
+        type: choice
+        options: [dc, dr]
       api_endpoint:
         description: CloudStack API endpoint, including /client/api
         required: true
@@ -28,8 +34,9 @@ jobs:
     timeout-minutes: 15
     env:
       CLOUDSTACK_API_ENDPOINT: ${{ inputs.api_endpoint || 'http://10.10.10.14:8080/client/api' }}
-      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
-      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+      TARGET_PROFILE: ${{ inputs.target_profile || 'dc' }}
+      CLOUDSTACK_API_KEY: ${{ secrets[inputs.target_profile == 'dr' && 'LAYERSENTRY_DR_CLOUDSTACK_API_KEY' || 'LAYERSENTRY_CLOUDSTACK_API_KEY'] }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets[inputs.target_profile == 'dr' && 'LAYERSENTRY_DR_CLOUDSTACK_SECRET_KEY' || 'LAYERSENTRY_CLOUDSTACK_SECRET_KEY'] }}
 
     steps:
       - name: Collect sanitized read-only API inventory
@@ -44,6 +51,11 @@ jobs:
           }
 
           $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
+          $expectedEndpoints = @{ dc = 'http://10.10.10.14:8080/client/api'; dr = 'http://10.10.10.20:8080/client/api' }
+          if (-not $expectedEndpoints.ContainsKey($env:TARGET_PROFILE) -or
+              $endpoint.AbsoluteUri -cne $expectedEndpoints[$env:TARGET_PROFILE]) {
+            throw 'API endpoint does not match the selected disposable-lab credential profile.'
+          }
           if ($endpoint.Scheme -notin @('http', 'https')) {
             throw 'The CloudStack API endpoint must use http or https.'
           }
@@ -56,6 +68,7 @@ jobs:
             Remove-Item -LiteralPath $evidence -Recurse -Force
           }
           New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+          $collectionObservations = [ordered]@{}
 
           function ConvertTo-Rfc3986 {
             param([Parameter(Mandatory = $true)][string]$Value)
@@ -67,6 +80,8 @@ jobs:
               [Parameter(Mandatory = $true)][string]$Command,
               [hashtable]$Parameters = @{}
             )
+
+            if ($Command -cnotmatch '^list[A-Za-z]+$') { throw 'Only list APIs are allowed.' }
 
             $query = [ordered]@{
               apikey = $env:CLOUDSTACK_API_KEY
@@ -96,7 +111,7 @@ jobs:
 
             $uri = '{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri, ($pairs -join '&'), (ConvertTo-Rfc3986 $signature)
             try {
-              return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 20 -ErrorAction Stop
+              return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 20 -MaximumRedirection 0 -ErrorAction Stop
             }
             catch {
               $exceptionType = $_.Exception.GetType().FullName
@@ -142,8 +157,15 @@ jobs:
               [Parameter(Mandatory = $true)][string[]]$Properties
             )
             $collectionProperty = $Payload.PSObject.Properties[$Collection]
-            if ($null -eq $collectionProperty) { return @() }
-            return @($collectionProperty.Value | Select-Object -Property $Properties)
+            $items = if ($null -eq $collectionProperty) { @() } else { @($collectionProperty.Value) }
+            $countProperty = $Payload.PSObject.Properties['count']
+            $reportedCount = if ($null -eq $countProperty) { $null } else { [long]$countProperty.Value }
+            $collectionObservations[$Collection] = [ordered]@{
+              ReturnedCount = @($items).Count
+              ReportedCount = $reportedCount
+              Truncated = ($null -ne $reportedCount -and $reportedCount -gt @($items).Count)
+            }
+            return @($items | Select-Object -Property $Properties)
           }
 
           function Invoke-OptionalCloudStackReadOnlyApi {
@@ -160,7 +182,8 @@ jobs:
               # Optional plugins are not installed on every CloudStack deployment. Keep
               # evidence useful without exposing response bodies, signed URLs, or secrets.
               $apiErrorCode = $_.Exception.Data['ApiErrorCode']
-              $status = if ($apiErrorCode -eq 431) { 'NOT_SUPPORTED' } else { 'FAILED' }
+              # 431 can mean an invalid parameter; it does not prove absent support.
+              $status = 'FAILED'
               return [pscustomobject]@{
                 Status = $status
                 Payload = $null
@@ -171,6 +194,11 @@ jobs:
           }
 
           $capabilities = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listCapabilities') 'listCapabilities'
+          $managementPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listManagementServers') 'listManagementServers'
+          $networksPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listNetworks' @{ listall = 'true' }) 'listNetworks'
+          $templatesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listTemplates' @{ templatefilter = 'all'; listall = 'true' }) 'listTemplates'
+          $providersObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackupProviders'
+          $backupsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackups' @{ listall = 'true' }
           $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
           $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
           $clustersPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listClusters' @{ listall = 'true' }) 'listClusters'
@@ -201,7 +229,13 @@ jobs:
             CapturedUtc = [DateTime]::UtcNow.ToString('o')
             Endpoint = '{0}://{1}{2}' -f $endpoint.Scheme, $endpoint.Authority, $endpoint.AbsolutePath
             MutationPerformed = $false
-            Capabilities = $capabilities
+            TargetProfile = $env:TARGET_PROFILE
+            SupportClusterUuidStatus = 'UNKNOWN'
+            CollectionScope = 'Single API page per collection; counts below expose truncation. Not a readiness certification.'
+            Capabilities = Select-InventoryItems $capabilities 'capability' @('cloudstackversion', 'kvmsnapshotenabled')
+            ManagementServers = Select-InventoryItems $managementPayload 'managementserver' @('id', 'name', 'version', 'state', 'ipaddress', 'agentscount', 'pendingjobscount')
+            Networks = Select-InventoryItems $networksPayload 'network' @('id', 'name', 'zoneid', 'state', 'type', 'networkofferingid', 'vpcid', 'cidr', 'gateway', 'broadcastdomaintype')
+            Templates = Select-InventoryItems $templatesPayload 'template' @('id', 'name', 'zoneid', 'isready', 'hypervisor', 'format', 'size', 'templatetype')
             Zones = Select-InventoryItems $zonesPayload 'zone' @('id', 'name', 'networktype', 'allocationstate', 'localstorageenabled')
             Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate')
             Clusters = Select-InventoryItems $clustersPayload 'cluster' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'hypervisortype', 'allocationstate', 'managedstate')
@@ -209,6 +243,8 @@ jobs:
             PrimaryStorage = Select-InventoryItems $storagePayload 'storagepool' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'type', 'scope', 'state', 'capacityiops', 'overprovisionfactor')
             ImageStores = Select-InventoryItems $imageStoresPayload 'imagestore' @('id', 'name', 'zoneid', 'zonename', 'protocol', 'readonly', 'scope')
             BackupApiObservations = [ordered]@{
+              listBackupProviders = [ordered]@{ Status = $providersObservation.Status; ErrorType = $providersObservation.ErrorType; ApiErrorCode = $providersObservation.ApiErrorCode }
+              listBackups = [ordered]@{ Status = $backupsObservation.Status; ErrorType = $backupsObservation.ErrorType; ApiErrorCode = $backupsObservation.ApiErrorCode }
               listBackupRepositories = [ordered]@{ Status = $repositoriesObservation.Status; ErrorType = $repositoriesObservation.ErrorType; ApiErrorCode = $repositoriesObservation.ApiErrorCode }
               listBackupOfferings = [ordered]@{ Status = $offeringsObservation.Status; ErrorType = $offeringsObservation.ErrorType; ApiErrorCode = $offeringsObservation.ApiErrorCode }
             }
@@ -216,11 +252,17 @@ jobs:
             BackupRepositories = if ($repositoriesObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $repositoriesObservation.Payload 'backuprepository' @('id', 'name', 'zoneid', 'zonename', 'provider', 'crosszoneinstancecreation') } else { @() }
             BackupOfferings = if ($offeringsObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $offeringsObservation.Payload 'backupoffering' @('id', 'name', 'provider', 'zoneid', 'zonename', 'allowuserdrivenbackups') } else { @() }
             BackupConfigurations = $configurations
+            BackupProviders = if ($providersObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $providersObservation.Payload 'providers' @('name') } else { @() }
+            Backups = if ($backupsObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $backupsObservation.Payload 'backup' @('id', 'virtualmachineid', 'zoneid', 'status', 'type', 'created', 'size', 'backupofferingid') } else { @() }
             VirtualMachines = Select-InventoryItems $virtualMachinesPayload 'virtualmachine' @('id', 'name', 'displayname', 'zoneid', 'zonename', 'state', 'hypervisor', 'haenable', 'account', 'domainid', 'domain')
             RecentAsyncJobs = if ($jobsObservation.Status -eq 'AVAILABLE') { Select-InventoryItems $jobsObservation.Payload 'asyncjobs' @('jobid', 'cmd', 'jobstatus', 'created', 'completed', 'account', 'domainid') } else { @() }
           }
 
           $jsonPath = Join-Path $evidence 'inventory.json'
+          $inventory.CollectionObservations = $collectionObservations
+          $incomplete = @($collectionObservations.Values | Where-Object { $_.Truncated }).Count -gt 0 -or
+            @($providersObservation, $backupsObservation, $repositoriesObservation, $offeringsObservation, $jobsObservation | Where-Object { $_.Status -ne 'AVAILABLE' }).Count -gt 0
+          $inventory.InventoryComplete = -not $incomplete
           $summaryPath = Join-Path $evidence 'summary.txt'
           $inventory | ConvertTo-Json -Depth 12 | Set-Content -Path $jsonPath -Encoding UTF8
           @(
@@ -236,9 +278,10 @@ jobs:
             "ASYNC_JOBS_API_STATUS=$($inventory.AsyncJobsApiObservation.Status)"
             "VM_COUNT=$(@($inventory.VirtualMachines).Count)"
             'MUTATION_PERFORMED=false'
-            'READ_ONLY_AUTHENTICATED_API_INVENTORY_COMPLETE'
+            "INVENTORY_COMPLETE=$($inventory.InventoryComplete)"
           ) | Set-Content -Path $summaryPath -Encoding UTF8
           Get-Content -LiteralPath $summaryPath
+          if ($incomplete) { throw 'Inventory is partial: inspect collection counts and API observations; no readiness claim is valid.' }
 
       - name: Upload sanitized API inventory evidence
         if: always()
