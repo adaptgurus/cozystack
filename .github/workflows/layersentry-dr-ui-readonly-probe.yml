@@ -47,7 +47,10 @@ jobs:
             $command += '; for part in WEB-INF META-INF; do test -d "/usr/share/cloudstack-management/webapp/$part"; echo WEBAPP_${part}_DIRECTORY_RC=$?; done; test -f /usr/share/cloudstack-management/webapp/WEB-INF/web.xml; echo WEB_XML_RC=$?; rpm -qf /usr/share/cloudstack-management/webapp/WEB-INF/web.xml; lsblk --json --bytes --output NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS; ip -j address show; ip -j route show; getenforce; systemctl is-active firewalld'
             # Expected missing packages/services must become evidence, not a
             # terminating native-stderr error in Windows PowerShell 5.
-            $command = '{ ' + $command + '; } 2>&1'
+            # Windows PowerShell's native argument marshalling removes embedded
+            # double quotes. Send source as base64, never as shell syntax in argv.
+            $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($command))
+            $command = "printf '%s' '$encodedCommand' | base64 -d | bash 2>&1"
             $result = & ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" -i $key "$($env:DR_USER)@$($env:DR_HOST)" $command
             if ($LASTEXITCODE -ne 0) { throw 'Read-only SSH inventory failed.' }
             $result | Set-Content -LiteralPath (Join-Path $out 'inventory.txt') -Encoding UTF8
