@@ -17,7 +17,7 @@ on:
         required: true
         default: Preflight
         type: choice
-        options: [Preflight, Resize, Create, Start, Rollback]
+        options: [DiscoverMedia, Preflight, Resize, Create, Start, Rollback]
       authorization:
         description: For mutation, exact requestId:Phase from reviewed request
         required: false

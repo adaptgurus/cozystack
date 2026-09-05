@@ -1,19 +1,27 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$RequestPath,
-    [ValidateSet('Preflight', 'Resize', 'Create', 'Start', 'Rollback')][string]$Phase = 'Preflight',
+    [ValidateSet('DiscoverMedia', 'Preflight', 'Resize', 'Create', 'Start', 'Rollback')][string]$Phase = 'Preflight',
     [string]$Authorization = '',
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'TwoVmLab.psm1') -Force
-Import-Module Hyper-V -ErrorAction Stop
 
 $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
 Assert-LabRequest $request
 if ($env:COMPUTERNAME -ine $request.host) { throw 'Wrong runner host.' }
+if ($Phase -eq 'DiscoverMedia') {
+    if (Test-Path -LiteralPath $EvidenceDirectory) { throw 'Evidence directory must be unique per invocation.' }
+    $media = Get-LabRockyMedia
+    New-Item -ItemType Directory -Path $EvidenceDirectory | Out-Null
+    [ordered]@{ status = 'PARTIAL'; phase = $Phase; host = $env:COMPUTERNAME; mutationAttempted = $false; media = $media } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $EvidenceDirectory 'result.json') -Encoding UTF8
+    return
+}
+Import-Module Hyper-V -ErrorAction Stop
 if ($request.mode -eq 'resize-only' -and $Phase -in @('Create', 'Start')) { throw 'Resize-only request cannot create or start a second VM.' }
+if ($request.mode -eq 'create-only' -and $Phase -eq 'Resize') { throw 'Create-only request cannot resize the existing VM.' }
 if ($Phase -ne 'Preflight' -and $Authorization -cne "$($request.requestId):$Phase") { throw 'Explicit request/phase authorization is required.' }
 $hash = (Get-FileHash -LiteralPath $RequestPath -Algorithm SHA256).Hash
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -75,6 +83,7 @@ try {
         if ($journal) { throw 'Request already journaled; use a new request ID for a fresh plan.' }
         $preflight = Get-LabPreflight $request
         $journal = [pscustomobject]@{ requestSha256 = $hash; host = $env:COMPUTERNAME; phase = 'Preflight'; original = $preflight.existing; originalReserveGiB = [math]::Min(16, $preflight.freeGiB); secondVmId = ''; createdUtc = [DateTime]::UtcNow.ToString('o') }
+        if ($request.mode -eq 'create-only') { $journal.phase = 'ReadyToCreate' }
         Save-Journal
         $report.preflight = $preflight
         $report.status = 'DESIGN_DEFINED'
@@ -98,18 +107,18 @@ try {
             $journal.phase = 'Resized'; Save-Journal
         }
         elseif ($Phase -eq 'Create') {
-            if ($journal.phase -cne 'Resized') { throw 'Create requires a verified resize.' }
+            if ($journal.phase -cne 'Resized' -and -not ($request.mode -eq 'create-only' -and $journal.phase -ceq 'ReadyToCreate')) { throw 'Create requires a verified resize or create-only preflight.' }
             Assert-ResizedExisting
             $null = Get-LabPreflight $request
             $journal.phase = 'CreateStarted'; Save-Journal
             $report.mutationAttempted = $true
             New-Item -ItemType Directory -Path $request.vmRoot -ErrorAction Stop | Out-Null
-            $disk = Join-Path $request.vmRoot 'rocky9-os.vhdx'
-            # New-VM creates a fresh generation-2 identity and an empty disk. No existing VHD is copied.
-            $vm = New-VM -Name $request.secondVmName -Generation 2 -Path $request.vmRoot -MemoryStartupBytes 40GB -NewVHDPath $disk -NewVHDSizeBytes 80GB
+            # New-VM creates a fresh generation-2 identity. Empty dynamic disks are attached below.
+            $vm = New-VM -Name $request.secondVmName -Generation 2 -Path $request.vmRoot -MemoryStartupBytes 40GB -NoVHD
             $journal.secondVmId = [string]$vm.Id; Save-Journal
             Set-VM -VM $vm -Notes "LayerSentry two-vm-lab $hash" -AutomaticStartAction Nothing -AutomaticStopAction ShutDown -AutomaticCheckpointsEnabled $false
-            Set-VMProcessor -VM $vm -Count 12 -ExposeVirtualizationExtensions $true
+            Add-LabFreshDisks -VM $vm -VmRoot $request.vmRoot
+            Set-VMProcessor -VM $vm -Count 16 -ExposeVirtualizationExtensions $true
             Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes 40GB
             $switch = Get-VMSwitch -Id ([guid]$request.switchId)
             Get-VMNetworkAdapter -VM $vm | Connect-VMNetworkAdapter -VMSwitch $switch
@@ -117,12 +126,16 @@ try {
             Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftUEFICertificateAuthority
             $dvd = Add-VMDvdDrive -VM $vm -Path $request.isoPath -Passthru
             Set-VMFirmware -VM $vm -FirstBootDevice $dvd
+            Assert-LabSecondVm -VM $vm -Request $request
             $journal.phase = 'Created'; Save-Journal
         }
         elseif ($Phase -eq 'Start') {
             if ($journal.phase -notin @('Created', 'StartStarted', 'Started')) { throw 'Start requires fully configured second VM.' }
             Assert-ResizedExisting
             $vm = Get-OwnedSecondVm
+            Assert-LabSecondVm -VM $vm -Request $request
+            Assert-LabStartCapacity -VM $vm -Request $request
+            Assert-PlainLocalPath $request.isoPath
             if ((Get-FileHash -LiteralPath $request.isoPath -Algorithm SHA256).Hash -ine $request.isoSha256) { throw 'ISO digest changed.' }
             $journal.phase = 'StartStarted'; Save-Journal
             $report.mutationAttempted = $true
@@ -131,7 +144,7 @@ try {
             $report.installation = 'PENDING'
         }
         elseif ($Phase -eq 'Rollback') {
-            if ($journal.phase -eq 'Preflight') { throw 'There is no mutation to roll back.' }
+            if ($journal.phase -in @('Preflight', 'ReadyToCreate')) { throw 'There is no mutation to roll back.' }
             # Retain second VM and disk for inspection; never remove or overwrite a disk.
             $report.mutationAttempted = $true
             if ($journal.secondVmId) {
@@ -141,16 +154,18 @@ try {
             }
             elseif ($journal.phase -eq 'CreateStarted') { throw 'Creation was interrupted before VM ID was journaled; inspect orphan resources before rollback.' }
             $journal.phase = 'RollbackStarted'; Save-Journal
-            Stop-LabVmGracefully $request.existingVmId
-            $vm = Get-LabVm $request.existingVmId
-            $original = $journal.original
-            Set-VMProcessor -VM $vm -Count $original.cpu -ExposeVirtualizationExtensions $original.nested
-            Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes $original.startup
-            if ($original.dynamic) { Set-VMMemory -VM $vm -DynamicMemoryEnabled $true -MinimumBytes $original.minimum -MaximumBytes $original.maximum }
-            $nic = @(Get-VMNetworkAdapter -VM $vm | Where-Object { [string]$_.Id -eq $original.nicId })
-            if ($nic.Count -ne 1) { throw 'Original NIC changed; inspect before restoring spoofing.' }
-            $nic[0] | Set-VMNetworkAdapter -MacAddressSpoofing $original.spoofing
-            if ($original.state -eq 'Running') { Start-LabVm $request.existingVmId -RequireHeartbeat -ReserveGiB $journal.originalReserveGiB }
+            if ($request.mode -ne 'create-only') {
+                Stop-LabVmGracefully $request.existingVmId
+                $vm = Get-LabVm $request.existingVmId
+                $original = $journal.original
+                Set-VMProcessor -VM $vm -Count $original.cpu -ExposeVirtualizationExtensions $original.nested
+                Set-VMMemory -VM $vm -DynamicMemoryEnabled $false -StartupBytes $original.startup
+                if ($original.dynamic) { Set-VMMemory -VM $vm -DynamicMemoryEnabled $true -MinimumBytes $original.minimum -MaximumBytes $original.maximum }
+                $nic = @(Get-VMNetworkAdapter -VM $vm | Where-Object { [string]$_.Id -eq $original.nicId })
+                if ($nic.Count -ne 1) { throw 'Original NIC changed; inspect before restoring spoofing.' }
+                $nic[0] | Set-VMNetworkAdapter -MacAddressSpoofing $original.spoofing
+                if ($original.state -eq 'Running') { Start-LabVm $request.existingVmId -RequireHeartbeat -ReserveGiB $journal.originalReserveGiB }
+            }
             $journal.phase = 'RolledBack'; Save-Journal
         }
         $report.status = 'PARTIAL'

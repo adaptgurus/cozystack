@@ -1,0 +1,11 @@
+{
+  "requestId": "replace-with-reviewed-create-id",
+  "mode": "create-only",
+  "host": "TESTSER",
+  "existingVmId": "00000000-0000-0000-0000-000000000001",
+  "secondVmName": "layersentry-dr-rocky9",
+  "switchId": "00000000-0000-0000-0000-000000000002",
+  "isoPath": "C:\\Users\\operator\\Downloads\\Rocky-9.8-x86_64-minimal.iso",
+  "isoSha256": "REPLACE_WITH_PUBLISHER_VERIFIED_SHA256_FROM_DISCOVERY",
+  "vmRoot": "C:\\LayerSentry\\dr-rocky9"
+}
