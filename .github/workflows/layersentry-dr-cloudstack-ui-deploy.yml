@@ -252,7 +252,9 @@ jobs:
             $scpArguments = @($options) + @($archive, $checksum, $manifestPath, $script, "${target}:$remote/")
             $output = & scp @scpArguments 2>&1
             if ($LASTEXITCODE -ne 0) { throw 'Artifact transfer failed; SCP output withheld.' }
-            $command = "chmod 0700 '$remote/$scriptRemoteName'; bash '$remote/$scriptRemoteName' '$remote' '$env:CLOUDSTACK_UI_COMMIT' '$runIdentity'"
+            # Merge remote diagnostics before Windows PowerShell can promote
+            # native stderr into a terminating error and skip evidence capture.
+            $command = "chmod 0700 '$remote/$scriptRemoteName' && bash '$remote/$scriptRemoteName' '$remote' '$env:CLOUDSTACK_UI_COMMIT' '$runIdentity' 2>&1"
             $output = & ssh @options $target $command 2>&1
             $remoteExit = $LASTEXITCODE
             $output | Set-Content -LiteralPath (Join-Path $evidence 'deployment.txt') -Encoding UTF8

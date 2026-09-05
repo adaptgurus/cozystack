@@ -78,7 +78,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in curl python3 restorecon rpm rsync sha256sum systemctl tar; do
+for command in curl python3 restorecon rpm sha256sum systemctl tar timeout; do
   command -v "$command" >/dev/null 2>&1 || die "Required command is missing: $command"
 done
 [[ -f /etc/os-release ]] || die 'Rocky Linux release metadata is missing.'
@@ -134,6 +134,19 @@ with tarfile.open(sys.argv[1], mode='r:gz') as archive:
         assert not member.issym() and not member.islnk()
         assert not (len(path.parts) > 1 and path.parts[1] in {'WEB-INF', 'META-INF'})
 PY
+
+# Minimal Rocky installations may omit rsync. Keep the existing metadata-aware
+# deploy/rollback algorithm and provision its prerequisite before any UI change.
+if ! command -v rsync >/dev/null 2>&1; then
+  command -v dnf >/dev/null 2>&1 || die 'rsync is missing and dnf is unavailable.'
+  printf 'RSYNC_PREREQUISITE=INSTALLING\n'
+  if ! timeout 180 dnf -y --setopt=timeout=30 --setopt=retries=2 install rsync >"$BUNDLE/rsync-install.log" 2>&1; then
+    die 'rsync installation failed before UI mutation; inspect host package-manager logs.'
+  fi
+fi
+command -v rsync >/dev/null 2>&1 || die 'rsync is unavailable after prerequisite provisioning.'
+printf 'RSYNC_PREREQUISITE=READY\n'
+rpm -q rsync
 
 [[ ! -e "$STAGE_ROOT" ]] || die 'A deployment stage already exists for this run identity.'
 install -d -m 0700 "$STAGE_ROOT/extracted" "$CANDIDATE"
@@ -216,6 +229,41 @@ grep -Rqs --include='*.js' 'LayerSentry' "$SERVED_UI" || die 'Served compiled UI
 grep -Rqs --include='*.js' 'layersentry-kvm' "$SERVED_UI" || die 'Served compiled UI does not contain the LayerSentry KVM profile.'
 [[ "$(readlink -f "$SERVED_UI/config.json")" == "$SERVED_CONFIG" ]] || die 'Served config does not resolve to the installed LayerSentry config.'
 systemctl is-active --quiet cloudstack-management || die 'cloudstack-management is not active after deployment.'
+
+python3 - "$EXTRACTED" "$SERVED_UI" <<'PY'
+import hashlib
+from html.parser import HTMLParser
+from pathlib import Path
+import sys
+from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+expected, served = map(Path, sys.argv[1:])
+for path in expected.rglob('*'):
+    if path.is_file() and path.relative_to(expected).as_posix() != 'config.json':
+        assert path.read_bytes() == (served / path.relative_to(expected)).read_bytes(), str(path.relative_to(expected))
+
+class Assets(HTMLParser):
+    paths = {'index.html'}
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        value = attrs.get('src') if tag == 'script' else attrs.get('href') if tag == 'link' else None
+        if value and urlsplit(value).path.endswith(('.js', '.css')):
+            assert not urlsplit(value).scheme and not urlsplit(value).netloc
+            relative = urlsplit(value).path.removeprefix('/client/').removeprefix('./')
+            assert not relative.startswith('/') and '..' not in Path(relative).parts
+            self.paths.add(relative)
+
+assets = Assets()
+assets.feed((expected / 'index.html').read_text())
+for relative in sorted(assets.paths):
+    with urlopen('http://127.0.0.1:8080/client/' + relative, timeout=30) as response:
+        assert response.status == 200
+        assert hashlib.sha256(response.read()).digest() == hashlib.sha256((expected / relative).read_bytes()).digest(), relative
+print('EXACT_UI_FILES=PASS')
+print('HTTP_UI_ASSET_HASHES=PASS')
+PY
 
 DEPLOYMENT_PASSED=true
 printf 'LAYERSENTRY_DR_UI_DEPLOYMENT=PASS\n'
