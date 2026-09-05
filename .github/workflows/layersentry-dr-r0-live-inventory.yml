@@ -146,6 +146,7 @@ jobs:
             Get-VMSwitch -ErrorAction Stop |
               ForEach-Object {
                 [pscustomobject]@{
+                  Id = [string]$_.Id
                   Name = $_.Name
                   SwitchType = [string]$_.SwitchType
                   NetAdapterInterfaceDescription = [string]$_.NetAdapterInterfaceDescription
@@ -197,6 +198,8 @@ jobs:
                   foreach ($address in $addresses) { [void]$candidateAddresses.Add([string]$address) }
                   [pscustomobject]@{
                     Name = $_.Name
+                    Id = [string]$_.Id
+                    SwitchId = [string]$_.SwitchId
                     SwitchName = $_.SwitchName
                     Status = [string]$_.Status
                     MacAddress = $_.MacAddress
