@@ -1,6 +1,9 @@
 name: LayerSentry DR CloudStack UI Deploy
 
 on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [hack/layersentry/dr-cloudstack-ui-deploy-requests/*.json]
   workflow_dispatch:
     inputs:
       confirmation:
@@ -25,16 +28,39 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out an immutable push authorization request
+        if: github.event_name == 'push'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
       - name: Enforce repository branch and exact confirmation
         shell: bash
         env:
           SUPPLIED_CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
           [[ "$GITHUB_REPOSITORY" == adaptgurus/cozystack ]]
           [[ "$GITHUB_REF" == refs/heads/ops/layersentry-hyperv-inventory ]]
-          [[ "$SUPPLIED_CONFIRMATION" == "$EXPECTED_CONFIRMATION" ]]
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$SUPPLIED_CONFIRMATION" == "$EXPECTED_CONFIRMATION" ]]
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            mapfile -t requests < <(git diff-tree --no-commit-id --name-only --diff-filter=A -r "$GITHUB_SHA" -- 'hack/layersentry/dr-cloudstack-ui-deploy-requests/*.json')
+            (( ${#requests[@]} == 1 ))
+            jq -e --arg commit "$CLOUDSTACK_UI_COMMIT" '
+              . == {
+                schemaVersion: "1.0",
+                operation: "DEPLOY_LAYERSENTRY_UI_TO_DR",
+                authorization: "DEPLOY-c4a2bb29457634e38a9375d5de33b04eb3a9c825-TO-10.10.10.20",
+                target: "10.10.10.20",
+                cloudstackUiCommit: $commit
+              }
+            ' "${requests[0]}" >/dev/null
+          else
+            exit 1
+          fi
           echo 'Exact DR UI deployment authorization accepted.'
 
   build:
@@ -173,7 +199,7 @@ jobs:
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
           DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
           DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
-          SUPPLIED_CONFIRMATION: ${{ inputs.confirmation }}
+          SUPPLIED_CONFIRMATION: ${{ inputs.confirmation || 'DEPLOY-c4a2bb29457634e38a9375d5de33b04eb3a9c825-TO-10.10.10.20' }}
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
