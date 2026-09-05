@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set +e
+exec </dev/null
 
 umask 077
 error_file="$(mktemp /tmp/layersentry-dump-error.XXXXXX)" || exit 1
