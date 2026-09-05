@@ -1,0 +1,35 @@
+name: LayerSentry DC Console Snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [.github/workflows/layersentry-dc-console-snapshot.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout snapshot helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Capture exact DC console without input
+        shell: powershell
+        run: ./hack/layersentry/invoke-dc-console-snapshot.ps1
+      - name: Upload snapshot and capture outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-console-snapshot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-console-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 7

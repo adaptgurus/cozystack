@@ -1,0 +1,9 @@
+# DC console snapshot source handoff
+
+Status: `SOURCE_COMPLETE`. This bounded change adds a screenshot-only workflow for host `TESTSER`, VM `sen`, ID `29ba176b-b81a-4f47-8f51-ecec869f247f`, in `Running` state. The identity/state checks occur before capture and again before success. It reuses `capture-hyperv-console.ps1` with only `VmNames @('sen')` and a fresh GUID child directory under the run/attempt output directory. The existing helper is unchanged.
+
+The workflow triggers only on its own workflow-file push to the integration branch, or explicit dispatch, and shares `layersentry-live-environment` concurrency with cancellation disabled. It sends no keyboard input, uses no passwords/SSH, changes no guest configuration and establishes no SSH key trust. It records capture attempted/succeeded separately. Success requires the exact expected report row, positive image dimensions and a nonempty image file; missing reports/images and helper failures cannot produce a success claim. The summary includes source/run/attempt identity and image SHA-256. Snapshot evidence is retained for seven days.
+
+Validation: seven actual PowerShell wrapper fixture tests passed: exact running VM with an image, wrong host, wrong VM ID, stopped VM, missing report, missing image and reported capture failure. Fixtures replace Hyper-V/capture interactions in a temporary directory; they do not prove live Hyper-V rendering. PowerShell syntax, YAML parsing and `git diff --check` passed. No push, dispatch, capture or guest mutation occurred in this source task.
+
+The integration owner must run this capture, inspect the current console image, and decide the separately scoped next out-of-band host-key retrieval action. A console image alone does not authenticate an SSH key or authorize typing into an unknown prompt. No runtime rollback is needed for this source-only change.
