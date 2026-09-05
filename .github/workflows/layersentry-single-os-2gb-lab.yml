@@ -1,0 +1,91 @@
+name: LayerSentry Single-OS 2GB Hyper-V Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - .github/workflows/layersentry-single-os-2gb-lab.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-single-os-2gb-hyperv
+  cancel-in-progress: false
+
+jobs:
+  single-os-acceptance:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 50
+    steps:
+      - name: Checkout Hyper-V integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: ops/layersentry-hyperv-inventory
+          fetch-depth: 1
+
+      - name: Validate PowerShell syntax and exact resource constants
+        shell: powershell
+        run: |
+          $path = Join-Path $env:GITHUB_WORKSPACE 'hack\layersentry\run-single-os-2gb-lab.ps1'
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            throw 'PowerShell parser rejected the single-OS lab runner.'
+          }
+          $text = Get-Content -Raw -LiteralPath $path
+          foreach ($required in @('$Cpu=2', '$Ram=2GB', '$VmCreateLimit=1', 'DynamicMemoryEnabled $false')) {
+            if ($text -notmatch [regex]::Escape($required)) {
+              throw "Required one-VM resource guard is missing: $required"
+            }
+          }
+
+      - name: Provision, harden, reboot, and audit exactly one Rocky Linux 9 VM
+        shell: powershell
+        run: |
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "layersentry-single-os-evidence-$env:GITHUB_RUN_ID"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          "LS_SINGLE_OS_EVIDENCE_ROOT=$evidenceRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$env:GITHUB_WORKSPACE\hack\layersentry\run-single-os-2gb-lab.ps1" -EvidenceRoot $evidenceRoot
+
+      - name: Capture final Hyper-V evidence even on failure
+        if: always()
+        shell: powershell
+        run: |
+          $root = $env:LS_SINGLE_OS_EVIDENCE_ROOT
+          if (-not $root) {
+            $root = Join-Path $env:RUNNER_TEMP "layersentry-single-os-evidence-$env:GITHUB_RUN_ID"
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+          }
+          $vm = Get-VM -Name 'LS-SINGLEOS-R9-2G' -ErrorAction SilentlyContinue
+          if ($vm) {
+            $mem = Get-VMMemory -VMName $vm.Name
+            $cpu = Get-VMProcessor -VMName $vm.Name
+            $snapshot = [ordered]@{
+              CapturedAt = (Get-Date).ToUniversalTime().ToString('o')
+              Name = $vm.Name
+              Generation = $vm.Generation
+              State = [string]$vm.State
+              ProcessorCount = $cpu.Count
+              StartupMemoryBytes = [int64]$mem.Startup
+              DynamicMemoryEnabled = [bool]$mem.DynamicMemoryEnabled
+              IPAddresses = @((Get-VMNetworkAdapter -VMName $vm.Name).IPAddresses)
+              DiskPaths = @((Get-VMHardDiskDrive -VMName $vm.Name).Path)
+            }
+            $snapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'hyperv-final.json') -Encoding UTF8
+          } else {
+            '{"vm":"absent"}' | Set-Content -LiteralPath (Join-Path $root 'hyperv-final.json') -Encoding ASCII
+          }
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: layersentry-single-os-2gb-${{ github.run_id }}
+          path: ${{ env.LS_SINGLE_OS_EVIDENCE_ROOT }}
+          if-no-files-found: warn
+          retention-days: 14
