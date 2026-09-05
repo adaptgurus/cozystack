@@ -3,11 +3,13 @@
 Requires PyYAML and pwsh (or POWERSHELL pointing at a PowerShell executable).
 """
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 
 import yaml
@@ -21,6 +23,9 @@ function Invoke-RestMethod {
   param($Uri, $Method, $TimeoutSec, $MaximumRedirection, $ErrorAction)
   if ($Method -ne 'Get' -or $MaximumRedirection -ne 0) { throw 'Unsafe HTTP options' }
   $command = [regex]::Match($Uri, '[?&]command=([^&]+)').Groups[1].Value
+  if ($env:STUB_HTTP_URL -and $command -eq 'listBackups') {
+    return Microsoft.PowerShell.Utility\Invoke-RestMethod -Uri $env:STUB_HTTP_URL -ErrorAction Stop
+  }
   if ($env:STUB_FAILURE -eq 'true' -and $command -eq 'listBackups') { throw 'Mock failure' }
   $collections = @{
     listCapabilities='capability'; listManagementServers='managementserver';
@@ -32,9 +37,13 @@ function Invoke-RestMethod {
   }
   if (-not $collections.ContainsKey($command)) { throw 'Unexpected API' }
   $item = @{ id='fixture-id'; name='fixture'; cloudstackversion='4.22.1.1'; password='SECRET_SENTINEL'; userdata='SECRET_SENTINEL'; url='SECRET_SENTINEL' }
-  $count = if ($env:STUB_TRUNCATE -eq 'true' -and $command -eq 'listZones') { 10 } else { 1 }
+  $items = @($item)
+  if ($env:STUB_ITEMS -eq 'zero') { $items = @() }
+  if ($env:STUB_ITEMS -eq 'many') { $items = @($item, $item) }
+  $count = if ($env:STUB_TRUNCATE -eq 'true' -and $command -eq 'listZones') { 10 } else { $items.Count }
   $payload = @{ count=$count }
-  $payload[$collections[$command]] = @($item)
+  # CloudStack may omit an empty collection; exercise that exact response shape.
+  if ($items.Count -gt 0) { $payload[$collections[$command]] = $items }
   $response = @{}
   $response[$command.ToLowerInvariant() + 'response'] = $payload
   return ($response | ConvertTo-Json -Depth 8 | ConvertFrom-Json)
@@ -68,6 +77,51 @@ class InventoryTests(unittest.TestCase):
             self.assertTrue(data[name], name)
         self.assertNotIn('SECRET_SENTINEL', json.dumps(data))
         self.assertNotIn('fixture-secret', result.stdout + result.stderr)
+
+    def test_stable_arrays_zero_singleton_many(self):
+        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'Clusters', 'Hosts',
+                  'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories',
+                  'BackupOfferings', 'BackupProviders', 'Backups', 'VirtualMachines', 'RecentAsyncJobs')
+        for mode, count in (('zero', 0), ('one', 1), ('many', 2)):
+            with self.subTest(mode=mode):
+                result, data = self.collect(STUB_ITEMS=mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for field in fields:
+                    self.assertIsInstance(data[field], list, field)
+                    self.assertEqual(len(data[field]), count, field)
+                self.assertIsInstance(data['BackupConfigurations'], list)
+                self.assertEqual(len(data['BackupConfigurations']), count * 3)
+
+    def test_http_errors_keep_numeric_codes_and_redact_bodies(self):
+        for code, response_name in ((401, 'errorresponse'), (431, 'listbackupsresponse')):
+            with self.subTest(code=code):
+                class Handler(BaseHTTPRequestHandler):
+                    def do_GET(self):
+                        self.send_response(code)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({response_name: {
+                            'errorcode': code, 'errortext': 'SECRET_HTTP_BODY_SENTINEL',
+                            'apikey': 'SECRET_HTTP_BODY_SENTINEL'}}).encode())
+
+                    def log_message(self, *_args):
+                        pass
+
+                server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    result, data = self.collect(STUB_HTTP_URL=f'http://127.0.0.1:{server.server_port}/')
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join()
+                self.assertNotEqual(result.returncode, 0)
+                observation = data['BackupApiObservations']['listBackups']
+                self.assertEqual(observation['HttpStatusCode'], code)
+                self.assertEqual(observation['ApiErrorCode'], code)
+                self.assertEqual(data['Backups'], [])
+                self.assertNotIn('SECRET_HTTP_BODY_SENTINEL', json.dumps(data) + result.stdout + result.stderr)
 
     def test_wrong_profile_endpoint_rejected(self):
         result, data = self.collect(TARGET_PROFILE='dr')

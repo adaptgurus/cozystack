@@ -116,23 +116,54 @@ jobs:
             catch {
               $exceptionType = $_.Exception.GetType().FullName
               $apiErrorCode = $null
-              try {
-                if ($null -ne $_.Exception.Response) {
-                  $stream = $_.Exception.Response.GetResponseStream()
+              $httpStatusCode = $null
+              $failureRecord = $_
+              $responseProperty = $failureRecord.Exception.PSObject.Properties['Response']
+              $httpResponse = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
+              if ($null -ne $httpResponse) {
+                try {
+                  $numericStatus = [int]$httpResponse.StatusCode
+                  if ($numericStatus -ge 100 -and $numericStatus -le 599) { $httpStatusCode = $numericStatus }
+                }
+                catch { $httpStatusCode = $null }
+              }
+              # PowerShell 7 exposes the consumed body in ErrorDetails.Message;
+              # Windows PowerShell 5 may instead expose a WebResponse stream.
+              # Retain only numeric codes, never the body, error text or URL.
+              $errorBodies = @()
+              if ($null -ne $failureRecord.ErrorDetails) { $errorBodies += $failureRecord.ErrorDetails.Message }
+              if ($null -ne $httpResponse -and $null -ne $httpResponse.PSObject.Methods['GetResponseStream']) {
+                try {
+                  $stream = $httpResponse.GetResponseStream()
                   $reader = New-Object IO.StreamReader($stream)
                   try {
-                    $errorResponse = $reader.ReadToEnd() | ConvertFrom-Json
-                    $apiErrorCode = $errorResponse.errorresponse.errorcode
+                    $errorBodies += $reader.ReadToEnd()
                   }
                   finally {
                     $reader.Dispose()
                     $stream.Dispose()
                   }
                 }
+                catch { }
               }
-              catch { $apiErrorCode = $null }
+              foreach ($errorBody in $errorBodies) {
+                try {
+                  $errorResponse = $errorBody | ConvertFrom-Json -ErrorAction Stop
+                  foreach ($responseName in @('errorresponse', "$($Command.ToLowerInvariant())response")) {
+                    $errorPayload = $errorResponse.PSObject.Properties[$responseName]
+                    if ($null -eq $errorPayload) { continue }
+                    $codeProperty = $errorPayload.Value.PSObject.Properties['errorcode']
+                    $numericCode = 0
+                    if ($null -ne $codeProperty -and [int]::TryParse([string]$codeProperty.Value, [ref]$numericCode)) {
+                      $apiErrorCode = $numericCode
+                    }
+                  }
+                }
+                catch { }
+              }
               $failure = New-Object System.Management.Automation.RuntimeException("Read-only CloudStack API command $Command failed ($exceptionType).")
               $failure.Data['ApiErrorCode'] = $apiErrorCode
+              $failure.Data['HttpStatusCode'] = $httpStatusCode
               throw $failure
             }
           }
@@ -157,7 +188,10 @@ jobs:
               [Parameter(Mandatory = $true)][string[]]$Properties
             )
             $collectionProperty = $Payload.PSObject.Properties[$Collection]
-            $items = if ($null -eq $collectionProperty) { @() } else { @($collectionProperty.Value) }
+            $items = @()
+            if ($null -ne $collectionProperty -and $null -ne $collectionProperty.Value) {
+              $items = @($collectionProperty.Value | Where-Object { $null -ne $_ })
+            }
             $countProperty = $Payload.PSObject.Properties['count']
             $reportedCount = if ($null -eq $countProperty) { $null } else { [long]$countProperty.Value }
             $collectionObservations[$Collection] = [ordered]@{
@@ -176,7 +210,7 @@ jobs:
 
             try {
               $payload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi $Command $Parameters) $Command
-              return [pscustomobject]@{ Status = 'AVAILABLE'; Payload = $payload; ErrorType = $null; ApiErrorCode = $null }
+              return [pscustomobject]@{ Status = 'AVAILABLE'; Payload = $payload; ErrorType = $null; ApiErrorCode = $null; HttpStatusCode = $null }
             }
             catch {
               # Optional plugins are not installed on every CloudStack deployment. Keep
@@ -189,6 +223,7 @@ jobs:
                 Payload = $null
                 ErrorType = $_.Exception.GetType().FullName
                 ApiErrorCode = $apiErrorCode
+                HttpStatusCode = $_.Exception.Data['HttpStatusCode']
               }
             }
           }
@@ -259,6 +294,16 @@ jobs:
           }
 
           $jsonPath = Join-Path $evidence 'inventory.json'
+          # PowerShell unrolls function results: normalize every public collection
+          # after projection, including zero and singleton optional collections.
+          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
+            $inventory[$field] = @($inventory[$field] | Where-Object { $null -ne $_ })
+          }
+          $inventory.BackupApiObservations.listBackupProviders.HttpStatusCode = $providersObservation.HttpStatusCode
+          $inventory.BackupApiObservations.listBackups.HttpStatusCode = $backupsObservation.HttpStatusCode
+          $inventory.BackupApiObservations.listBackupRepositories.HttpStatusCode = $repositoriesObservation.HttpStatusCode
+          $inventory.BackupApiObservations.listBackupOfferings.HttpStatusCode = $offeringsObservation.HttpStatusCode
+          $inventory.AsyncJobsApiObservation.HttpStatusCode = $jobsObservation.HttpStatusCode
           $inventory.CollectionObservations = $collectionObservations
           $incomplete = @($collectionObservations.Values | Where-Object { $_.Truncated }).Count -gt 0 -or
             @($providersObservation, $backupsObservation, $repositoriesObservation, $offeringsObservation, $jobsObservation | Where-Object { $_.Status -ne 'AVAILABLE' }).Count -gt 0
