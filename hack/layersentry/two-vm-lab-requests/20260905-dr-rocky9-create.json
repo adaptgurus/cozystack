@@ -1,0 +1,11 @@
+{
+  "requestId": "20260905-dr-rocky9-create-v1",
+  "mode": "create-only",
+  "host": "TESTSER",
+  "existingVmId": "29ba176b-b81a-4f47-8f51-ecec869f247f",
+  "secondVmName": "layersentry-dr-rocky9",
+  "switchId": "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+  "isoPath": "C:\\Users\\opc\\Downloads\\Rocky-9.8-x86_64-minimal.iso",
+  "isoSha256": "d338032cd1cdd41c67139f2f71b4c832c8e4a21943106519db9c7137df7a63d4",
+  "vmRoot": "C:\\LayerSentry\\dr-rocky9"
+}
