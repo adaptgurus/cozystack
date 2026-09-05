@@ -54,7 +54,8 @@ function Get-DrNetworkPreflight([object]$Request, [string]$RequestHash) {
         if ([string]$route.InterfaceAlias -ceq $desiredAlias -and [string]$route.DestinationPrefix -ceq $Request.subnet) { continue }
         if (Test-CidrOverlap ([string]$route.DestinationPrefix) $Request.subnet) { throw 'DR subnet overlaps a host route.' }
     }
-    $attached=@(Get-VMNetworkAdapter -All | Where-Object { [string]$_.SwitchName -ceq $Request.switchName -and [string]$_.Id -cne $Request.nicId })
+    # Hyper-V normalizes adapter identifier casing differently between -VM and -All.
+    $attached=@(Get-VMNetworkAdapter -All | Where-Object { [string]$_.SwitchName -ceq $Request.switchName -and [string]$_.Id -ine $Request.nicId })
     if ($attached.Count) { throw 'Target switch is used by another VM.' }
     $state=if($target.Count -eq 0){'ReadyToCreate'}elseif([string]$owned.NIC.SwitchId -ceq [string]$target[0].Id){'Applied'}else{'ReadyToConnect'}
     [ordered]@{status='DESIGN_DEFINED'; state=$state; vmId=[string]$owned.VM.Id; nicId=[string]$owned.NIC.Id; originalSwitchId=[string]$owned.NIC.SwitchId; switchId=$(if($target.Count){[string]$target[0].Id}else{''}); mutationAttempted=$false}

@@ -11,4 +11,5 @@ $module=Get-Content (Join-Path $PSScriptRoot 'DrNetworkIsolation.psm1') -Raw
 $invoke=Get-Content (Join-Path $PSScriptRoot 'invoke-dr-network-isolation.ps1') -Raw
 foreach($forbidden in @('New-NetNat','Remove-NetNat')){if($module.Contains($forbidden)-or$invoke.Contains($forbidden)){throw "Forbidden WinNAT mutation: $forbidden"}}
 foreach($required in @("VM must be off","ownership mismatch","Explicit phase authorization","Remove-VMSwitch")){if(-not ($module.Contains($required)-or$invoke.Contains($required))){throw "Missing guard: $required"}}
+if(-not $module.Contains('[string]$_.Id -ine $Request.nicId')){throw 'All-adapter ownership comparison must tolerate Hyper-V ID casing.'}
 'DR network isolation tests passed.'
