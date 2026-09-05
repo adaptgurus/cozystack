@@ -1,0 +1,55 @@
+name: LayerSentry DR Rocky Prerequisite
+
+on:
+  push:
+    branches: [ops/layersentry-hyperv-inventory]
+    paths: [hack/layersentry/dr-prerequisite-actions/*.json]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install exact signed checkpoint prerequisite
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $changed = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- 'hack/layersentry/dr-prerequisite-actions/*.json')
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected one new prerequisite authorization.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($request.request_id -cne 'dr-tar-1-34-13-el9-8' -or $request.authorization -cne 'Install:tar-1.34-13.el9_8.x86_64') { throw 'Prerequisite authorization rejected.' }
+          if ($env:DR_HOST -cne '10.10.10.20' -or $env:DR_USER -cne 'root' -or -not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS) { throw 'DR binding failed.' }
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-dr-prereq-$env:GITHUB_RUN_ID.key"
+          $known = Join-Path $env:RUNNER_TEMP "layersentry-dr-prereq-$env:GITHUB_RUN_ID.known"
+          [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($known, $env:DR_KNOWN_HOSTS.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            & icacls $key /inheritance:r /grant:r "${identity}:(R)" | Out-Null
+            & icacls $known /inheritance:r /grant:r "${identity}:(R)" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Private file ACL failed.' }
+            $options = @('-o','BatchMode=yes','-o','ConnectTimeout=15','-o','StrictHostKeyChecking=yes','-o',"UserKnownHostsFile=$known",'-o','LogLevel=ERROR','-i',$key)
+            $command = 'dnf -y --setopt=install_weak_deps=False --setopt=*.gpgcheck=1 install tar-1.34-13.el9_8.x86_64 >/dev/null && test "$(rpm -q --qf "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}" tar)" = "tar-1.34-13.el9_8.x86_64"'
+            & ssh @options 'root@10.10.10.20' $command
+            if ($LASTEXITCODE -ne 0) { throw 'Exact prerequisite installation failed; native output withheld.' }
+          }
+          finally {
+            Remove-Item -LiteralPath $key,$known -Force -ErrorAction SilentlyContinue
+            $env:DR_KEY = ''
+          }
+
