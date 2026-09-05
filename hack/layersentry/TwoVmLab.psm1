@@ -60,16 +60,16 @@ function Get-LabRockyMedia {
     param([string]$UsersRoot = "$env:SystemDrive\Users")
     if ($UsersRoot -notmatch '^[a-zA-Z]:\\Users$') { throw 'Media discovery is restricted to local standard user Downloads folders.' }
     Assert-PlainLocalPath $UsersRoot
-    $matches = @()
-    foreach ($profile in @(Get-ChildItem -LiteralPath $UsersRoot -Directory -Force)) {
+    $mediaMatches = @()
+    foreach ($userDirectory in @(Get-ChildItem -LiteralPath $UsersRoot -Directory -Force)) {
         # Profiles may be junctions; never follow them while discovering installation media.
-        if ($profile.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-        $candidate = Join-Path (Join-Path $profile.FullName 'Downloads') 'Rocky-9.8-x86_64-minimal.iso'
+        if ($userDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        $candidate = Join-Path (Join-Path $userDirectory.FullName 'Downloads') 'Rocky-9.8-x86_64-minimal.iso'
         Assert-PlainLocalPath $candidate
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $matches += $candidate }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $mediaMatches += $candidate }
     }
-    if ($matches.Count -ne 1) { throw 'Expected exactly one Rocky-9.8-x86_64-minimal.iso in standard local Downloads folders.' }
-    $item = Get-Item -LiteralPath $matches[0]
+    if ($mediaMatches.Count -ne 1) { throw 'Expected exactly one Rocky-9.8-x86_64-minimal.iso in standard local Downloads folders.' }
+    $item = Get-Item -LiteralPath $mediaMatches[0]
     return [ordered]@{ isoPath = $item.FullName; isoSha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); sizeBytes = $item.Length; publisherVerification = 'PENDING' }
 }
 
