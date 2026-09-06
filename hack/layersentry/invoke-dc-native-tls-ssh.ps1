@@ -8,6 +8,15 @@ $summary = Join-Path $out 'summary.json'
 $state = [ordered]@{ target = '10.10.10.14'; user = 'root'; runnerCommit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; status = 'PENDING'; mode = $Mode; nativeTlsMutationRequested = ($Mode -cne 'Plan'); tlsJournalWritesPossible = ($Mode -cne 'Plan') }
 $private = Join-Path $env:RUNNER_TEMP ([Guid]::NewGuid().ToString('N'))
 try {
+    $sshCommand = Get-Command ssh.exe -CommandType Application -ErrorAction Stop
+    $sshExecutable = $sshCommand.Source
+    if (-not [IO.Path]::IsPathRooted($sshExecutable) -or -not (Test-Path -LiteralPath $sshExecutable -PathType Leaf)) { throw 'SSH executable resolution failed.' }
+    $state['sshExecutable'] = $sshExecutable
+    $versionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { $versionOutput = @(& $sshExecutable -V 2>&1) } finally { $ErrorActionPreference = $versionPreference }
+    $versionText = $versionOutput -join ' '
+    if ($versionText -match '(OpenSSH(?:_for_Windows)?_[0-9][A-Za-z0-9.p_-]{0,40})') { $state['sshVersion'] = $Matches[1] }
     if ($env:ROCKY_HOST -cne '10.10.10.14' -or $env:ROCKY_USERNAME -cne 'root') {
         $state.status = 'TARGET_BINDING_FAILED'
         throw 'R0 secrets must bind exactly to DC 10.10.10.14/root.'
@@ -84,7 +93,7 @@ try {
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = @($envelope | & ssh.exe @sshArgs 2>$null)
+        $output = @($envelope | & $sshExecutable @sshArgs 2>$null)
         $sshExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $oldPreference }
     $state['sshExitCode'] = $sshExit
@@ -92,6 +101,7 @@ try {
     if ($joined.Length -gt 1048576) { throw 'Remote evidence size limit.' }
     $result = $joined | ConvertFrom-Json
     if ($null -ne $result.PSObject.Properties['status'] -and $result.status -cmatch '^[A-Z_]{1,100}$') { $state['remoteStatus'] = $result.status }
+    if ($null -ne $result.PSObject.Properties['reason'] -and $result.reason -is [string] -and $result.reason -cmatch '^[A-Z_]{1,100}$') { $state['remoteReason'] = $result.reason }
     if ($sshExit -ne 0) { throw 'Pinned-host native TLS phase failed; inspect durable journal before any next execution.' }
     if ($result.schema -ne 1 -or $result.target -cne '10.10.10.14' -or $result.phase -cne $Mode -or $result.productionCertified -ne $false -or $result.automaticReplay -ne $false) { throw 'TLS evidence binding failed.' }
     if($joined -match 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY') {throw 'Private key output refused.'}

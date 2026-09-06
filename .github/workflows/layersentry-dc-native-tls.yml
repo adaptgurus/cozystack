@@ -1,10 +1,17 @@
 name: LayerSentry DC Native TLS Prerequisite
 on:
+  push:
+    branches: [codex/dc-native-tls]
+    paths:
+      - .github/workflows/layersentry-dc-native-tls.yml
+      - hack/layersentry/dc-native-tls.py
+      - hack/layersentry/run-dc-native-tls-stdin.py
+      - hack/layersentry/invoke-dc-native-tls-ssh.ps1
   workflow_dispatch:
     inputs:
       mode:
         type: choice
-        options: [Plan, Prepare, Install, Activate, Firewall]
+        options: [Plan]
         default: Plan
         required: true
       plan_path:
@@ -26,6 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   native-tls:
+    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/dc-native-tls' && github.event_name == 'workflow_dispatch' && inputs.mode == 'Plan'
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 12
     steps:
@@ -33,7 +41,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Execute only the root-scheduled native TLS phase
+      - name: Execute only the root-scheduled read-only native TLS Plan
         shell: powershell
         env:
           MODE: ${{ inputs.mode }}
@@ -48,6 +56,7 @@ jobs:
           CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
         run: |
           $ErrorActionPreference='Stop'
+          if($env:MODE -cne 'Plan') {throw 'Only read-only Plan is enabled in this workflow.'}
           if($env:MODE -cne 'Plan' -and $env:PLAN_PATH -cnotmatch '^hack/layersentry/dc-native-tls-plans/[A-Za-z0-9_-]+\.json$') {throw 'Reviewed TLS Plan path required.'}
           $sources=@()
           if($env:FIREWALL_SOURCES) {$sources=@($env:FIREWALL_SOURCES.Split(',')|ForEach-Object{$_.Trim()})}
