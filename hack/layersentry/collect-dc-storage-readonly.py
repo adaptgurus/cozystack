@@ -235,7 +235,7 @@ def guest_network_presence():
     except (ValueError, TypeError, KeyError):
         result['status'] = 'INVALID_OR_UNAVAILABLE'
     result['journal'] = registration_journal('/var/lib/layersentry/native-dc-guest-network-r0',
-                                              ('bridge', 'port', 'activate', 'label'))
+                                              ('bridge', 'port', 'activate', 'label', 'disable-default-autoconnect'))
     return result
 
 

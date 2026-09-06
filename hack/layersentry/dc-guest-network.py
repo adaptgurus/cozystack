@@ -14,6 +14,9 @@ PORT_UUID = '8bb9f0e2-3d8a-50e7-8573-e27ff0e14f5d'
 PHYSICAL = 'a3182ad1-7de2-45e3-81ce-5ccbf9280421'
 GUEST = 'd33d6182-41c1-4217-9116-bf8234fc1b57'
 MANAGEMENT = '5f6ff203-7004-42e3-a4f6-10b2aa23ed98'
+# Exact unused profile observed after our owned disconnected NIC was added.
+DEFAULT_UUID = '1106aace-e8ff-39a7-8d76-7a5bec119e94'
+DEFAULT_OPERATION = 'disable-default-autoconnect'
 
 
 def run(args):
@@ -101,10 +104,42 @@ def profile_observed(key, device):
     return True
 
 
-def no_profile_collisions(device, operations):
+def default_profile_autoconnect(device):
+    require(device == 'eth1', 'DEFAULT_PROFILE_DEVICE_CHANGED')
+    expected = {'connection.id': 'Wired connection 1', 'connection.uuid': DEFAULT_UUID,
+                'connection.type': '802-3-ethernet', 'connection.interface-name': device,
+                'connection.master': '', 'connection.slave-type': '', '802-3-ethernet.mac-address': '',
+                'ipv4.method': 'auto', 'ipv6.method': 'auto', 'connection.timestamp': '0',
+                'GENERAL.STATE': '', 'GENERAL.DEVICES': ''}
+    for field, value in expected.items():
+        require(prop(DEFAULT_UUID, field) == value, 'DEFAULT_PROFILE_IDENTITY_OR_ACTIVITY_CHANGED')
+    autoconnect = prop(DEFAULT_UUID, 'connection.autoconnect')
+    require(autoconnect in ('yes', 'no'), 'DEFAULT_PROFILE_AUTOCONNECT_UNKNOWN')
+    return autoconnect
+
+
+def disable_default_autoconnect(device, journal):
+    if DEFAULT_UUID not in profiles():
+        require(DEFAULT_OPERATION not in journal.data['operations'], 'JOURNALED_DEFAULT_PROFILE_DISAPPEARED')
+        return
+    # Preserve this unused profile. Only its autoconnect bit is changed; no
+    # deletion, activation, renaming, or conversion into an owned port occurs.
+    specification = {'uuid': DEFAULT_UUID, 'device': device, 'guestMac': MAC,
+                     'originalAutoconnect': 'yes', 'desiredAutoconnect': 'no'}
+    once(journal, DEFAULT_OPERATION, specification,
+         lambda: default_profile_autoconnect(device) == 'no',
+         lambda: run(['nmcli', 'connection', 'modify', 'uuid', DEFAULT_UUID, 'connection.autoconnect', 'no']))
+
+
+def no_profile_collisions(device, operations, allow_reviewed_default=False):
     for identity in profiles():
         name, interface = prop(identity, 'connection.id'), prop(identity, 'connection.interface-name')
-        if identity in (BRIDGE_UUID, PORT_UUID):
+        if identity == DEFAULT_UUID and (allow_reviewed_default or DEFAULT_OPERATION in operations):
+            autoconnect = default_profile_autoconnect(device)
+            if not allow_reviewed_default:
+                require(autoconnect == 'no' and operations[DEFAULT_OPERATION].get('state') == 'RECONCILED',
+                        'DEFAULT_PROFILE_NOT_RECONCILED')
+        elif identity in (BRIDGE_UUID, PORT_UUID):
             key = 'bridge' if identity == BRIDGE_UUID else 'port'
             require(key in operations, 'UNJOURNALED_OWNED_PROFILE')
             profile_observed(key, device)
@@ -184,6 +219,12 @@ def execute(api, journal, phase='Plan'):
         evidence['plannedOperations'] = ['ADD_DISCONNECTED_GUEST_NIC', 'CREATE_NO_L3_BRIDGE_AND_PORT', 'CONNECT_GUEST_NIC', 'UPDATE_GUEST_LABEL']
         return evidence
     require(journal is not None, 'PERSISTENT_JOURNAL_REQUIRED')
+    if phase == 'Bridge':
+        # Check every unrelated collision before changing the exact reviewed
+        # inactive default profile. MAC/L3 and native scope were checked above.
+        no_profile_collisions(device, journal.data['operations'], allow_reviewed_default=True)
+        disable_default_autoconnect(device, journal)
+        require(management_identity() == before, 'MANAGEMENT_DRIFT_AFTER_DEFAULT_PROFILE')
     no_profile_collisions(device, journal.data['operations'])
     if phase == 'Bridge':
         for key in ('bridge', 'port'):

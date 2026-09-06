@@ -154,6 +154,44 @@ class GuestTests(unittest.TestCase):
                 self.assertEqual(len(state['mutations']), count)
             journal.close()
 
+    def test_exact_unused_default_profile_disable_is_journaled_and_preserved(self):
+        properties = {'connection.id': 'Wired connection 1', 'connection.uuid': network.DEFAULT_UUID,
+                      'connection.type': '802-3-ethernet', 'connection.interface-name': 'eth1',
+                      'connection.master': '', 'connection.slave-type': '', '802-3-ethernet.mac-address': '',
+                      'ipv4.method': 'auto', 'ipv6.method': 'auto', 'connection.timestamp': '0',
+                      'GENERAL.STATE': '', 'GENERAL.DEVICES': '', 'connection.autoconnect': 'yes'}
+        with tempfile.TemporaryDirectory() as directory:
+            journal = self.journal(directory)
+            calls = []
+            def command(args):
+                self.assertEqual(json.loads((Path(directory) / 'journal.json').read_text())['operations'][network.DEFAULT_OPERATION]['state'], 'SUBMITTING')
+                self.assertEqual(args, ['nmcli', 'connection', 'modify', 'uuid', network.DEFAULT_UUID, 'connection.autoconnect', 'no'])
+                calls.append(args)
+                properties['connection.autoconnect'] = 'no'
+            with patch.object(network, 'profiles', return_value=[network.DEFAULT_UUID]), patch.object(network, 'prop', side_effect=lambda _, field: properties[field]), patch.object(network, 'run', side_effect=command):
+                network.disable_default_autoconnect('eth1', journal)
+                network.disable_default_autoconnect('eth1', journal)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(properties['connection.id'], 'Wired connection 1')
+                for field, value in [('GENERAL.STATE', 'activated'), ('connection.timestamp', '1'), ('connection.interface-name', 'eth0')]:
+                    original = properties[field]
+                    properties[field] = value
+                    with self.assertRaisesRegex(GateError, 'IDENTITY_OR_ACTIVITY_CHANGED'):
+                        network.disable_default_autoconnect('eth1', journal)
+                    properties[field] = original
+                self.assertEqual(len(calls), 1)
+            journal.close()
+
+    def test_default_profile_failed_modify_is_not_replayed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = self.journal(directory)
+            with patch.object(network, 'profiles', return_value=[network.DEFAULT_UUID]), patch.object(network, 'default_profile_autoconnect', return_value='yes'), patch.object(network, 'run') as command:
+                for _ in range(2):
+                    with self.assertRaisesRegex(GateError, 'NO_REPLAY'):
+                        network.disable_default_autoconnect('eth1', journal)
+                self.assertEqual(command.call_count, 1)
+            journal.close()
+
 
 @unittest.skipUnless(os.environ.get('POWERSHELL_TEST_BINARY'), 'PowerShell execution required')
 class HyperVTests(unittest.TestCase):
