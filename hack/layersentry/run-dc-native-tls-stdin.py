@@ -17,7 +17,7 @@ def parse_payload(raw):
     if len(raw) > 524288: raise ValueError('INPUT_LIMIT')
     data = json.loads(raw)
     if set(data) != {'schema', 'target', 'mode', 'sources', 'proof', 'apiKey', 'apiSecret', 'plan', 'planSha256', 'firewallSources'}: raise ValueError('INPUT_FIELDS')
-    if data['schema'] != 1 or data['target'] != '10.10.10.14' or data['mode'] not in ('ObserveIdentity', 'Plan', 'Prepare', 'Install', 'Activate', 'Firewall'): raise ValueError('INPUT_SCOPE')
+    if data['schema'] != 1 or data['target'] != '10.10.10.14' or data['mode'] not in ('ObserveIdentity', 'Plan', 'Prepare', 'Install', 'Activate', 'Rollback', 'Firewall'): raise ValueError('INPUT_SCOPE')
     if set(data['sources']) != set(SOURCES): raise ValueError('SOURCE_SCOPE')
     for value in data['sources'].values():
         if set(value) != {'base64', 'sha256'} or len(value['base64']) > 131072: raise ValueError('SOURCE_SIZE')
@@ -59,7 +59,7 @@ def main():
             native.require(native.digest(expected) == payload['planSha256'] and expected['firewallSources'] == payload['firewallSources'], 'TLS_REVIEWED_PLAN_BINDING_REQUIRED')
             fd = sys.modules['dc_storage_loader'].private_directory(JOURNAL); os.close(fd)
             journal = native.Journal(JOURNAL, expected, storage.ENDPOINT)
-            operation = {'Prepare': tls.prepare, 'Install': tls.install, 'Activate': tls.activate, 'Firewall': tls.firewall}[mode]
+            operation = {'Prepare': tls.prepare, 'Install': tls.install, 'Activate': tls.activate, 'Rollback': tls.rollback, 'Firewall': tls.firewall}[mode]
             result = operation(api, journal, expected)
         result.update(schema=1, target='10.10.10.14', phase=mode, productionCertified=False, automaticReplay=False)
         print(json.dumps(result, sort_keys=True))

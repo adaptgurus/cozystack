@@ -136,7 +136,7 @@ def require_guest_bios(value):
     require(value == BIOS_UUID, 'TLS_DC_BIOS_UUID_MISMATCH')
 
 
-def native_identity(api):
+def local_tls_identity():
     local_dc_binding()
     require_guest_bios(read_file(Path('/sys/devices/virtual/dmi/id/product_uuid')).decode().strip().lower())
     links = json.loads(run(['ip', '-j', 'link', 'show', 'eth0']))
@@ -145,6 +145,11 @@ def native_identity(api):
     hostname = socket.getfqdn().lower()
     require(re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?', hostname) and hostname not in ('localhost', 'localhost.localdomain')
             and not hostname.endswith('.') and '..' not in hostname, 'TLS_HOSTNAME_REQUIRES_REVIEW')
+    return hostname
+
+
+def native_identity(api):
+    hostname = local_tls_identity()
     preflight(api)
     require(not rows(api, 'listVirtualMachines', 'virtualmachine', listall='true'), 'TLS_GUEST_VMS_PRESENT')
     require(not rows(api, 'listSystemVms', 'systemvm'), 'TLS_SYSTEM_VMS_PRESENT')
@@ -351,6 +356,7 @@ def validate_sources(values):
 
 def install(api, journal, expected):
     validate_plan(expected)
+    require('rollback-config' not in journal.data['operations'], 'TLS_ROLLBACK_STARTED')
     require(native_identity(api) == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
     require(ca_read(api)[1] == expected['caSha256'], 'TLS_ROOT_CA_PLAN_CHANGED')
     key = journal.data['operations'].get('keystore', {})
@@ -362,6 +368,14 @@ def install(api, journal, expected):
     require(sha(original) == expected['serverPropertiesSha256'] and sha(candidate) == key['candidateSha256']
             and sha(store) == key['keystoreSha256'], 'TLS_PREPARED_ARTIFACT_CHANGED')
     owner = grp.getgrnam('cloud').gr_gid
+    require(owner == expected['originalMetadata']['gid'], 'TLS_SERVICE_GROUP_CHANGED')
+    require(run(['systemctl', 'show', 'cloudstack-management', '-p', 'User', '--value']).decode().strip() == 'cloud', 'TLS_SERVICE_USER_CHANGED')
+    if 'install-config' not in journal.data['operations']:
+        require(read_file(CONFIG) == original, 'TLS_SERVER_CONFIG_PLAN_CHANGED')
+        info = CONFIG.stat()
+        require({'uid': info.st_uid, 'gid': info.st_gid, 'mode': stat.S_IMODE(info.st_mode)} == expected['originalMetadata'], 'TLS_ORIGINAL_CONFIG_METADATA_CHANGED')
+    for command in ('restorecon', 'matchpathcon', 'runuser'):
+        require(shutil.which(command, path='/usr/sbin:/usr/bin:/sbin:/bin') is not None, 'TLS_INSTALL_TOOL_MISSING')
     for name, destination, data in [('install-keystore', KEYSTORE, store), ('install-config', CONFIG, candidate)]:
         prior = journal.data['operations'].get(name)
         spec = {'path': str(destination), 'sha256': sha(data), 'uid': 0, 'gid': owner, 'mode': 0o640}
@@ -372,6 +386,7 @@ def install(api, journal, expected):
             info = destination.stat()
             require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (0, owner, 0o640), 'TLS_INSTALLED_PERMISSIONS_CHANGED')
             run(['restorecon', str(destination)]); run(['matchpathcon', '-V', str(destination)])
+            run(['runuser', '-u', 'cloud', '--', 'test', '-r', str(destination)])
             prior['state'] = 'RECONCILED'; journal.save(); continue
         require(prior is None, 'TLS_INSTALL_UNCERTAIN_NO_REPLAY')
         if name == 'install-config':
@@ -389,8 +404,9 @@ def install(api, journal, expected):
         finally: os.close(fd)
         os.replace(temporary, destination); sync_directory(destination.parent)
         run(['restorecon', str(destination)]); run(['matchpathcon', '-V', str(destination)])
+        run(['runuser', '-u', 'cloud', '--', 'test', '-r', str(destination)])
         journal.data['operations'][name]['state'] = 'RECONCILED'; journal.save()
-    return {'status': 'PARTIAL', 'phase': 'Install', 'target': TARGET, 'httpPreserved': True,
+    return {'status': 'PARTIAL', 'phase': 'Install', 'target': TARGET, 'configurationInstalled': True, 'httpConfigurationPreserved': True, 'httpListenerVerified': False,
             'serviceRestarted': False, 'firewallChanged': False, 'productionCertified': False}
 
 
@@ -412,25 +428,86 @@ def https_observed(directory, expected, api=None):
 
 def activate(api, journal, expected):
     validate_plan(expected)
-    require(native_identity(api) == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
-    require(ca_read(api)[1] == expected['caSha256'], 'TLS_ROOT_CA_PLAN_CHANGED')
+    require('rollback-config' not in journal.data['operations'], 'TLS_ROLLBACK_STARTED')
+    operation = journal.data['operations'].get('restart')
+    require(local_tls_identity() == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
+    if operation is None:
+        require(native_identity(api) == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
+        require(ca_read(api)[1] == expected['caSha256'], 'TLS_ROOT_CA_PLAN_CHANGED')
+    else:
+        require(operation.get('state') in ('SUBMITTING', 'RECONCILED'), 'TLS_RESTART_STATE_INVALID')
     for key, destination in [('install-config', CONFIG), ('install-keystore', KEYSTORE)]:
         state = journal.data['operations'].get(key, {})
         require(state.get('state') == 'RECONCILED' and sha(read_file(destination)) == state['specification']['sha256'], 'TLS_INSTALLED_ARTIFACT_CHANGED')
-    operation = journal.data['operations'].get('restart')
+        spec = state['specification']; info = destination.stat()
+        require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (spec['uid'], spec['gid'], spec['mode']), 'TLS_INSTALLED_PERMISSIONS_CHANGED')
+        run(['matchpathcon', '-V', str(destination)])
     if https_observed(journal.directory, expected, api):
         require(operation is not None, 'TLS_UNJOURNALED_RESTART')
-        operation['state'] = 'RECONCILED'; journal.save()
+    elif operation is not None:
+        return {'status': 'PENDING', 'phase': 'Activate', 'restartAlreadySubmitted': True, 'httpsVerified': False, 'automaticReplay': False, 'productionCertified': False}
     else:
-        require(operation is None, 'TLS_RESTART_UNCERTAIN_NO_REPLAY')
         journal.data['operations']['restart'] = {'state': 'SUBMITTING'}; journal.save()
         run(['systemctl', 'restart', 'cloudstack-management'])
-        # Root may re-invoke Activate to observe startup; restart is never replayed.
         if not https_observed(journal.directory, expected, api):
-            return {'status': 'PENDING', 'phase': 'Activate', 'target': TARGET, 'automaticReplay': False, 'productionCertified': False}
-        journal.data['operations']['restart']['state'] = 'RECONCILED'; journal.save()
+            return {'status': 'PENDING', 'phase': 'Activate', 'restartAlreadySubmitted': True, 'httpsVerified': False, 'automaticReplay': False, 'productionCertified': False}
+    journal.data['operations']['restart']['state'] = 'RECONCILED'; journal.save()
     return {'status': 'PARTIAL', 'phase': 'Activate', 'target': TARGET, 'httpsVerified': True, 'authenticatedApiTlsVerified': True,
             'httpPreserved': True, 'firewallChanged': False, 'productionCertified': False}
+
+
+def rollback(api, journal, expected):
+    """Explicit recovery only: restore owned original config, one restart, retain keys."""
+    validate_plan(expected)
+    require(local_tls_identity() == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
+    require(not any(k.startswith('firewall-') for k in journal.data['operations']), 'TLS_FIREWALL_RECOVERY_REQUIRES_REVIEW')
+    original = read_file(journal.directory / 'original-server.properties', private=True)
+    candidate = read_file(journal.directory / 'server.properties.candidate', private=True)
+    require(sha(original) == expected['serverPropertiesSha256'], 'TLS_ROLLBACK_ORIGINAL_CHANGED')
+    installed = journal.data['operations'].get('install-config', {})
+    require(installed.get('state') in ('SUBMITTING', 'RECONCILED') and installed.get('specification', {}).get('sha256') == sha(candidate) and installed['specification'].get('path') == str(CONFIG), 'TLS_OWNED_CONFIG_INSTALL_REQUIRED')
+    spec = {'path': str(CONFIG), 'sha256': sha(original), **expected['originalMetadata']}
+    operation = journal.data['operations'].get('rollback-config')
+    if operation is not None: require(operation.get('specification') == spec, 'TLS_ROLLBACK_BINDING_CHANGED')
+    current = read_file(CONFIG)
+    if current == original:
+        require(operation is not None, 'TLS_UNJOURNALED_CONFIG_ROLLBACK')
+    else:
+        require(current == candidate, 'TLS_ROLLBACK_CONFIG_UNOWNED')
+        require(operation is None, 'TLS_ROLLBACK_UNCERTAIN_NO_REPLAY')
+        info = CONFIG.stat(); installed_spec = installed['specification']
+        require((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (installed_spec['uid'], installed_spec['gid'], installed_spec['mode']), 'TLS_INSTALLED_PERMISSIONS_CHANGED')
+        temporary = CONFIG.with_name(CONFIG.name + '.layersentry-rollback')
+        require(not temporary.exists() and not temporary.is_symlink(), 'TLS_ROLLBACK_STAGING_EXISTS')
+        journal.data['operations']['rollback-config'] = {'state': 'SUBMITTING', 'specification': spec}; journal.save()
+        create_once(temporary, original)
+        os.chown(temporary, spec['uid'], spec['gid']); os.chmod(temporary, spec['mode'])
+        fd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+        os.replace(temporary, CONFIG); sync_directory(CONFIG.parent)
+    info = CONFIG.stat()
+    require(read_file(CONFIG) == original and (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (spec['uid'], spec['gid'], spec['mode']), 'TLS_ROLLBACK_CONFIG_NOT_OBSERVED')
+    run(['restorecon', str(CONFIG)]); run(['matchpathcon', '-V', str(CONFIG)])
+    journal.data['operations']['rollback-config']['state'] = 'RECONCILED'; journal.save()
+    restart = journal.data['operations'].get('rollback-restart')
+    if restart is None:
+        journal.data['operations']['rollback-restart'] = {'state': 'SUBMITTING'}; journal.save()
+        run(['systemctl', 'restart', 'cloudstack-management'])
+    else: require(restart.get('state') in ('SUBMITTING', 'RECONCILED'), 'TLS_ROLLBACK_RESTART_STATE_INVALID')
+    ready = False
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open('http://127.0.0.1:8080/client/', timeout=10) as response:
+            ready = response.status == 200 and response.url == 'http://127.0.0.1:8080/client/'
+        if ready: require(ca_read(api)[1] == expected['caSha256'], 'TLS_ROLLBACK_CA_CHANGED')
+        with socket.create_connection(('127.0.0.1', 8443), timeout=5): ready = False
+    except ConnectionRefusedError:
+        pass  # The original configuration had no HTTPS listener.
+    except (OSError, ssl.SSLError): ready = False
+    if not ready: return {'status': 'PENDING', 'phase': 'Rollback', 'configurationRestored': True, 'httpVerified': False, 'automaticReplay': False, 'productionCertified': False}
+    journal.data['operations']['rollback-restart']['state'] = 'RECONCILED'; journal.save()
+    return {'status': 'PARTIAL', 'phase': 'Rollback', 'configurationRestored': True, 'httpVerified': True, 'httpsListenerAbsent': True,
+            'keystoreRetained': True, 'firewallChanged': False, 'automaticReplay': False, 'productionCertified': False}
 
 
 def firewall(api, journal, expected):

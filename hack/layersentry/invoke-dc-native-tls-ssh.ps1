@@ -1,4 +1,4 @@
-param([ValidateSet('ObserveIdentity','Plan','Prepare','Install','Activate','Firewall')][string]$Mode='Plan', [string]$PlanPath='', [string]$PlanSha256='', [string[]]$FirewallSources=@())
+param([ValidateSet('ObserveIdentity','Plan','Prepare','Install','Activate','Rollback','Firewall')][string]$Mode='Plan', [string]$PlanPath='', [string]$PlanSha256='', [string[]]$FirewallSources=@())
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 

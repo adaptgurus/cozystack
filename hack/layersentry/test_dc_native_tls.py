@@ -136,8 +136,9 @@ class TlsCase(unittest.TestCase):
         self.journal.data['operations']['keystore'] = {'state': 'RECONCILED', **proof, 'candidateSha256': tls.sha(candidate), 'keystoreSha256': tls.sha(store)}
         group = type('Group', (), {'gr_gid': os.getgid()})()
         self.journal.data['operations']['install-keystore'] = {'state': 'SUBMITTING', 'specification': {'path': str(target_store), 'sha256': tls.sha(store), 'uid': 0, 'gid': os.getgid(), 'mode': 0o640}}
-        expected = {**self.expected, 'serverPropertiesSha256': tls.sha(original)}
-        with patch.object(tls, 'validate_plan'), patch.object(tls, 'native_identity', return_value=expected['hostname']), patch.object(tls, 'ca_read', return_value=(b'', expected['caSha256'])), patch.object(tls.grp, 'getgrnam', return_value=group), patch.object(tls, 'CONFIG', target_config), patch.object(tls, 'KEYSTORE', target_store), patch.object(tls.os, 'replace') as replace:
+        expected = {**self.expected, 'serverPropertiesSha256': tls.sha(original), 'originalMetadata': {'uid': os.getuid(), 'gid': os.getgid(), 'mode': 0o644}}
+        native_run = tls.run
+        with patch.object(tls, 'validate_plan'), patch.object(tls, 'native_identity', return_value=expected['hostname']), patch.object(tls, 'ca_read', return_value=(b'', expected['caSha256'])), patch.object(tls.grp, 'getgrnam', return_value=group), patch.object(tls, 'CONFIG', target_config), patch.object(tls, 'KEYSTORE', target_store), patch.object(tls, 'run', side_effect=lambda args, *rest: b'cloud' if args[0] == 'systemctl' else native_run(args, *rest)), patch.object(tls.shutil, 'which', return_value='/usr/bin/tool'), patch.object(tls.os, 'replace') as replace:
             with self.assertRaisesRegex(GateError, 'INSTALL_UNCERTAIN_NO_REPLAY'): tls.install(Mock(), self.journal, expected)
             replace.assert_not_called()
         self.assertFalse(target_store.exists()); self.assertEqual(target_config.read_bytes(), original)
@@ -156,6 +157,51 @@ class TlsCase(unittest.TestCase):
             loader.parse_payload(json.dumps({**observation, 'apiKey': 'not-needed'}).encode())
         for change in ({'target': '10.10.10.20'}, {'mode': 'Shell'}, {'sources': {}}, {'mode': 'Install'}, {'apiKey': ''}):
             with self.assertRaises(ValueError): loader.parse_payload(json.dumps({**data, **change}).encode())
+
+    def fixture_installed(self):
+        config, store = self.root / 'active.properties', self.root / 'active.jks'
+        original = b'http.port=8080\n'; candidate = original + b'https.enable=true\n'
+        config.write_bytes(candidate); config.chmod(0o640)
+        store.write_bytes(b'owned-test-store'); store.chmod(0o640)
+        for name, content in [('original-server.properties', original), ('server.properties.candidate', candidate)]: tls.create_once(self.root / name, content)
+        for name, path in [('install-config', config), ('install-keystore', store)]:
+            self.journal.data['operations'][name] = {'state': 'RECONCILED', 'specification': {'path': str(path), 'sha256': tls.sha(path.read_bytes()), 'uid': os.getuid(), 'gid': os.getgid(), 'mode': 0o640}}
+        return config, store, {**self.expected, 'caSha256': 'a' * 64, 'serverPropertiesSha256': tls.sha(original), 'originalMetadata': {'uid': os.getuid(), 'gid': os.getgid(), 'mode': 0o640}}
+
+    def test_original_config_drift_blocks_before_keystore_publish(self):
+        config, store, expected = self.fixture_installed()
+        self.journal.data['operations'].clear()
+        self.journal.data['operations']['keystore'] = {'state': 'RECONCILED', 'certificateSha256': 'leaf', 'candidateSha256': tls.sha((self.root / 'server.properties.candidate').read_bytes()), 'keystoreSha256': tls.sha(b'owned-test-store')}
+        tls.create_once(self.root / 'server.jks', b'owned-test-store')
+        group = type('Group', (), {'gr_gid': os.getgid()})()
+        with patch.object(tls, 'validate_plan'), patch.object(tls, 'native_identity', return_value=expected['hostname']), patch.object(tls, 'ca_read', return_value=(b'', expected['caSha256'])), patch.object(tls, 'verify_certificate', return_value={'certificateSha256': 'leaf'}), patch.object(tls.grp, 'getgrnam', return_value=group), patch.object(tls, 'CONFIG', config), patch.object(tls, 'KEYSTORE', self.root / 'not-published.jks'), patch.object(tls, 'run', return_value=b'cloud'), patch.object(tls.os, 'replace') as replace:
+            with self.assertRaisesRegex(GateError, 'SERVER_CONFIG_PLAN_CHANGED'): tls.install(Mock(), self.journal, expected)
+            replace.assert_not_called()
+        self.assertNotIn('install-keystore', self.journal.data['operations'])
+
+    def test_activation_pending_continuation_never_restarts_or_requires_http_preflight(self):
+        config, store, expected = self.fixture_installed()
+        api = Mock()
+        with patch.object(tls, 'validate_plan'), patch.object(tls, 'local_tls_identity', return_value=expected['hostname']), patch.object(tls, 'native_identity', return_value=expected['hostname']) as native, patch.object(tls, 'ca_read', return_value=(b'', expected['caSha256'])), patch.object(tls, 'CONFIG', config), patch.object(tls, 'KEYSTORE', store), patch.object(tls, 'run', return_value=b'') as commands, patch.object(tls, 'https_observed', return_value=False):
+            self.assertEqual(tls.activate(api, self.journal, expected)['status'], 'PENDING')
+            native.reset_mock()
+            self.assertEqual(tls.activate(api, self.journal, expected)['status'], 'PENDING')
+            native.assert_not_called(); api.assert_not_called()
+            self.assertEqual(sum(call.args[0] == ['systemctl', 'restart', 'cloudstack-management'] for call in commands.call_args_list), 1)
+        self.assertEqual(self.journal.data['operations']['restart']['state'], 'SUBMITTING')
+
+    def test_guarded_rollback_restores_bytes_and_observes_without_restart_replay(self):
+        config, store, expected = self.fixture_installed()
+        response = Mock(); response.status = 200; response.url = 'http://127.0.0.1:8080/client/'
+        opener = Mock(); opener.open.return_value.__enter__ = Mock(return_value=response); opener.open.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(tls, 'validate_plan'), patch.object(tls, 'local_tls_identity', return_value=expected['hostname']), patch.object(tls, 'CONFIG', config), patch.object(tls, 'run', return_value=b'') as commands, patch.object(tls, 'ca_read', return_value=(b'', expected['caSha256'])), patch.object(tls.urllib.request, 'build_opener', return_value=opener), patch.object(tls.socket, 'create_connection', side_effect=ConnectionRefusedError):
+            self.assertTrue(tls.rollback(Mock(), self.journal, expected)['httpVerified'])
+            self.assertTrue(tls.rollback(Mock(), self.journal, expected)['httpsListenerAbsent'])
+            self.assertEqual(sum(call.args[0] == ['systemctl', 'restart', 'cloudstack-management'] for call in commands.call_args_list), 1)
+            config.write_bytes(b'unowned changed config')
+            with self.assertRaisesRegex(GateError, 'ROLLBACK_CONFIG_UNOWNED'): tls.rollback(Mock(), self.journal, expected)
+        self.assertEqual((self.root / 'original-server.properties').read_bytes(), b'http.port=8080\n')
+        self.assertTrue(store.exists())
 
     def test_missing_or_incompatible_tools_prevent_any_issuance(self):
         api = Mock()
