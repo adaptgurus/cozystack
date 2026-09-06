@@ -45,7 +45,10 @@ function Read-TrustConsole([string]$Private) {
     if ($lines.Count -eq 0 -or $lines.Count -gt 128 -or ((Get-Date) - $started).TotalSeconds -gt 30) {
         throw 'CONSOLE_STATE_UNKNOWN_OR_EXPIRED'
     }
-    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started }
+    # This exact public, manually reviewed login screenshot contains no input.
+    # Only it may disclose OCR diagnostics; arbitrary live captures stay private.
+    $knownPublic = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -ceq '6d4362bb6d0fe79b88ec077b24dbceadda16b75add5f173fc39642d4aaabe398'
+    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started; KnownPublicImage = $knownPublic }
 }
 
 function Get-TrustPrompt($View) {
@@ -204,7 +207,10 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $view = Read-TrustConsole $private
         $prompt = Get-TrustPrompt $view
         $state['initialPrompt'] = $prompt
-        if ($Phase -eq 'Observe') { $state.status = 'OBSERVED'; return }
+        if ($Phase -eq 'Observe') {
+            if ($view.KnownPublicImage) { $state['reviewedPublicImageOcrLines'] = @($view.Lines) }
+            $state.status = 'OBSERVED'; return
+        }
         if ($Phase -eq 'Login') {
             if ($prompt -eq 'ROOT_SHELL') { $state.status = 'ALREADY_AUTHENTICATED'; return }
             if ($prompt -notin @('EMPTY_LOGIN', 'LOGIN_WITH_KERNEL_OUTPUT')) { throw 'FRESH_EMPTY_LOGIN_REQUIRED' }

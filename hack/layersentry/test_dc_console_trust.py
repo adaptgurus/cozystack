@@ -57,7 +57,7 @@ function Read-TrustConsole([string]$Private) {
     $image = Join-Path $Private "capture-$script:Reads.png"
     # Private image content is a sentinel; Login must never publish it.
     [IO.File]::WriteAllText($image, 'private-image-sentinel')
-    return [pscustomobject]@{ Lines=$lines; Image=$image; Started=(Get-Date) }
+    return [pscustomobject]@{ Lines=$lines; Image=$image; Started=(Get-Date); KnownPublicImage=$false }
 }
 try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
     ConvertTo-Json -InputObject @($script:Keys) | Set-Content $env:TEST_TRACE
