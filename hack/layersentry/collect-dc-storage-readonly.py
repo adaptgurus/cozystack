@@ -221,7 +221,8 @@ def guest_network_presence():
             raise ValueError('profiles')
         fields = ('connection.id', 'connection.uuid', 'connection.type', 'connection.interface-name',
                   'connection.autoconnect', 'connection.master', 'connection.slave-type',
-                  '802-3-ethernet.mac-address', 'ipv4.method', 'ipv6.method')
+                  '802-3-ethernet.mac-address', 'ipv4.method', 'ipv6.method',
+                  'connection.timestamp', 'GENERAL.STATE', 'GENERAL.DEVICES')
         for identity in ids:
             # Ethernet settings are not valid for every NM connection type; query
             # separately so an absent property remains explicit, not guessed.
