@@ -195,7 +195,7 @@ def inspect(run_id):
               "status": "INSPECTED", "mutationAttempted": False,
               "security": before["security"], "units": {}, "packages": {},
               "rootFilesystemFreeBytes": os.statvfs("/var/lib/libvirt/images").f_bavail * os.statvfs("/var/lib/libvirt/images").f_frsize}
-    for name in (*SOCKETS, "virtqemud-ro.socket", "virtqemud.service", "virtlogd.service", "virtlockd.service"):
+    for name in (*SOCKETS, "virtqemud-ro.socket", "virtsecretd.socket", "virtstoraged.socket", "virtqemud.service", "virtlogd.service", "virtlockd.service"):
         value = command(["systemctl", "show", "--property=LoadState,ActiveState,Result,FragmentPath", name])
         result["units"][name] = value.splitlines()
     for name in (*PACKAGES, "libvirt-daemon-log", "libvirt-daemon-lock", "libvirt-daemon-driver-qemu"):
@@ -208,6 +208,17 @@ def inspect(run_id):
             result[name] = {"status": "OK", "output": command(argv).splitlines()}
         except Refused as error:
             result[name] = {"status": str(error)}
+    # This daemon was newly installed for our networkless fixture. Project only
+    # bounded error records, never management/configuration/SSH service logs.
+    messages = command(["journalctl", "--no-pager", "--output=json", "-u", "virtqemud.service", "-n", "80"]).splitlines()
+    result["libvirtErrors"] = []
+    for line in messages:
+        message = json.loads(line).get("MESSAGE", "")
+        if isinstance(message, str) and re.search(r"error|failed|unable|denied|unsupported|no such", message, re.I):
+            if re.search(r"password|token=|secret=|authorization:|BEGIN .*PRIVATE", message, re.I):
+                result["libvirtErrors"].append("SENSITIVE_ERROR_OMITTED")
+            else:
+                result["libvirtErrors"].append(message[:2048])
     return result
 
 
