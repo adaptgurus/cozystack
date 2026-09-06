@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: 2c758140c4c8ab37a237106f81c0c1f13233012a
+          ref: b5fe09d5b2d772e80c5206d222ccbcde869a0255
           path: ui-qualification-source
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -38,6 +38,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Browser dependency installation failed.' }
           & npx.cmd --no-install playwright install chrome firefox
           if ($LASTEXITCODE -ne 0) { throw 'Browser installation failed.' }
+      - name: Repair verified Firefox runtime prerequisite
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $library = Join-Path $env:WINDIR 'System32\msvcp140_1.dll'
+          if (-not (Test-Path -LiteralPath $library)) {
+            $installer = Join-Path $env:RUNNER_TEMP "layersentry-vcredist-$env:GITHUB_RUN_ID.exe"
+            Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $installer
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation(?:,|$)') { throw 'Microsoft runtime signature verification failed.' }
+            Write-Output "VC_REDIST_SHA256=$((Get-FileHash -Algorithm SHA256 $installer).Hash)"
+            $process = Start-Process -FilePath $installer -ArgumentList '/install','/quiet','/norestart' -PassThru
+            if (-not $process.WaitForExit(180000)) { throw 'Runtime installer timed out; do not blindly replay.' }
+            if ($process.ExitCode -notin @(0, 3010)) { throw 'Runtime prerequisite installation failed.' }
+            Write-Output "VC_REDIST_EXIT=$($process.ExitCode)"
+            Remove-Item -LiteralPath $installer
+          }
+          if (-not (Test-Path -LiteralPath $library)) { throw 'Firefox runtime DLL remains unavailable.' }
       - name: Exercise both lab GUIs without infrastructure mutations
         working-directory: ui-qualification-source/tools/layersentry-ui-acceptance
         shell: powershell
