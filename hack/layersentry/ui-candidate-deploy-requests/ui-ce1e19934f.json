@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1.0",
+  "operation": "DEPLOY_LAYERSENTRY_UI_TO_DR",
+  "authorization": "DEPLOY-ce1e19934f6ce9eb9f336b97e83f7ae2c890b720-TO-10.10.10.20",
+  "target": "10.10.10.20",
+  "cloudstackUiCommit": "ce1e19934f6ce9eb9f336b97e83f7ae2c890b720"
+}
