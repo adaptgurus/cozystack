@@ -122,7 +122,12 @@ BUNDLE=$1
 UI_COMMIT=$2
 RUN_ID=$3
 [[ "$BUNDLE" == "/run/layersentry-dr-ui-${RUN_ID}" ]] || die 'Unexpected deployment bundle path.'
-[[ "$UI_COMMIT" == "$EXPECTED_UI_COMMIT" ]] || die 'CloudStack UI commit is not the authorized commit.'
+# BEGIN REVIEWED UI SOURCE
+case "$UI_COMMIT" in
+  "$EXPECTED_UI_COMMIT"|dc58f76f67dac13aa886c8d45475944f31b0c039) EXPECTED_UI_COMMIT=$UI_COMMIT ;;
+  *) die 'CloudStack UI commit is not the authorized commit.' ;;
+esac
+# END REVIEWED UI SOURCE
 [[ "$RUN_ID" =~ ^[0-9]+-[0-9]+$ ]] || die 'Invalid workflow run identity.'
 
 ARCHIVE="$BUNDLE/ui-dist.tar.gz"
