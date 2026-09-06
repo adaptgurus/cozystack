@@ -7,7 +7,7 @@ import { ASKPASS } from './dc-tunnel.mjs'
 import { sshEnvironment, classifySshFailure } from './owned-tunnel.mjs'
 import { requireThat, publicFailure, readProtectedBytes } from './contract.mjs'
 
-const MARKER = 'LAYERSENTRY_NONSECRET_ASKPASS_DIAGNOSTIC'
+export const MARKER = 'LAYERSENTRY_NONSECRET_ASKPASS_DIAGNOSTIC'
 export function configOnlyArguments () {
   return ['-G', '-F', 'NUL', '-o', 'CanonicalizeHostname=no', '-o', 'ProxyCommand=none', '-o', 'PermitLocalCommand=no', '-o', 'BatchMode=yes', 'root@10.10.10.14']
 }
@@ -28,15 +28,15 @@ export function probeInputBinding (executable, executableSha256, args, env, capt
     stdinMode, environmentSha256: hash(JSON.stringify(Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b))))), stdioSha256: hash(JSON.stringify([stdinMode, captureMarker ? 'pipe' : 'ignore', 'pipe'])), programDataPresent: typeof env.ProgramData === 'string' && env.ProgramData.length > 0 }
 }
 
-async function probe (executable, args, env, captureMarker = false, stdinMode = 'ignore') {
+export async function probe (executable, args, env, captureMarker = false, stdinMode = 'ignore', cwd = undefined) {
   const metadata = fs.statSync(executable)
   requireThat(metadata.isFile() && metadata.size <= 32 * 1024 * 1024, 'SSH_DIAGNOSTIC_EXECUTABLE_SIZE')
-  const inputBinding = probeInputBinding(executable, hash(fs.readFileSync(executable)), args, env, captureMarker, stdinMode)
+  const inputBinding = { ...probeInputBinding(executable, hash(fs.readFileSync(executable)), args, env, captureMarker, stdinMode), cwdSha256: cwd ? hash(cwd) : null }
   return new Promise(resolve => {
     let stdoutBytes = 0; let stderrBytes = 0
     let stdout = Buffer.alloc(0); let stderr = Buffer.alloc(0); let truncated = false; let timedOut = false; let settled = false
     let spawnErrorCode = null; let exitCode = null; let exitSignal = null; let cleanupTimer
-    const child = spawn(executable, args, { env, shell: false, windowsHide: true, stdio: [stdinMode, captureMarker ? 'pipe' : 'ignore', 'pipe'] })
+    const child = spawn(executable, args, { env, cwd, shell: false, windowsHide: true, stdio: [stdinMode, captureMarker ? 'pipe' : 'ignore', 'pipe'] })
     if (stdinMode === 'pipe') child.stdin.end()
     const append = (data, current) => { if (data.length + current.length > 32768) truncated = true; return Buffer.concat([current, data.subarray(0, Math.max(0, 32768 - current.length))]) }
     child.stdout?.on('data', data => { stdoutBytes += data.length; stdout = append(data, stdout) })
