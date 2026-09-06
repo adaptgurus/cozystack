@@ -6,6 +6,7 @@ $VerbosePreference = 'SilentlyContinue'
 $DebugPreference = 'SilentlyContinue'
 Set-PSDebug -Off
 $script:DcVmId = '29ba176b-b81a-4f47-8f51-ecec869f247f'
+. (Join-Path $PSScriptRoot 'hyperv-console-keystrokes.ps1')
 
 function Test-TrustDcUuid([string]$Value) {
     $parsed = [Guid]::Empty
@@ -64,6 +65,7 @@ function Get-TrustPrompt($View) {
     if ($last -cmatch '^\[root@layersentry\s+[^\r\n\]]+\]#\s*$') { return 'ROOT_SHELL' }
     if ($last -cmatch '^[Pp]assword:\s*$') { return 'PASSWORD_PROMPT' }
     if ($last -cmatch '^layersentry\s+login:\s*$') { return 'EMPTY_LOGIN' }
+    if ($last -cmatch '^layersentry\s+login:\s+root\s*$') { return 'ROOT_USERNAME_ECHO' }
     # Exactly the observed empty login prompt followed only by kernel messages.
     $joined = $lines -join "`n"
     if ($joined -match '(?im)password\s*:|root@|[#\$]\s*$') { return 'UNKNOWN' }
@@ -90,15 +92,27 @@ function Get-TrustKeyboard {
 }
 
 function Send-TrustText($Keyboard, [string]$Text) {
-    # Microsoft TypeText permits at most 512 ASCII characters per call.
-    # No input value, exception details or CIM result is logged or returned.
+    # Linux rejected TypeText as unknown ASCII scan codes. Use the existing
+    # reviewed US virtual-key mapping; no input, key codes or errors are logged.
     if ($Text.Length -eq 0 -or $Text.Length -gt 3500 -or $Text -match '[^\x20-\x7e]') { throw 'INPUT_FORMAT_REFUSED' }
-    for ($offset = 0; $offset -lt $Text.Length; $offset += 384) {
-        Assert-TrustDcIdentity
-        $part = $Text.Substring($offset, [Math]::Min(384, $Text.Length - $offset))
-        $result = Invoke-CimMethod -InputObject $Keyboard -MethodName TypeText -Arguments @{ asciiText = $part } -ErrorAction Stop
-        if ([uint32]$result.ReturnValue -ne 0) { throw 'INPUT_OUTCOME_UNKNOWN_NO_REPLAY' }
+    $strokes = @($Text.ToCharArray() | ForEach-Object { Get-CharacterStroke $_ })
+    foreach ($stroke in $strokes) {
+        try {
+            if ($stroke.Shift) { Send-TrustVirtualKey $Keyboard 'PressKey' 16 }
+            Send-TrustVirtualKey $Keyboard 'TypeKey' ([uint32]$stroke.Code)
+        }
+        finally {
+            # Release only the modifier owned by this operation; never replay a
+            # character or Enter after an uncertain key result.
+            if ($stroke.Shift) { Send-TrustVirtualKey $Keyboard 'ReleaseKey' 16 }
+        }
     }
+}
+
+function Send-TrustVirtualKey($Keyboard, [string]$Method, [uint32]$Code) {
+    Assert-TrustDcIdentity
+    $result = Invoke-CimMethod -InputObject $Keyboard -MethodName $Method -Arguments @{ keyCode = $Code } -ErrorAction Stop
+    if ([uint32]$result.ReturnValue -ne 0) { throw 'INPUT_OUTCOME_UNKNOWN_NO_REPLAY' }
 }
 
 function Send-TrustEnter($Keyboard) {
@@ -260,6 +274,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
             $state.inputAttempted = $true
             $state.stage = 'USERNAME_INPUT'
             Send-TrustText $keyboard 'root'
+            $null = Wait-TrustPrompt $private 'ROOT_USERNAME_ECHO'
             Send-TrustEnter $keyboard
             $view = Wait-TrustPrompt $private 'PASSWORD_PROMPT'
             $state.stage = 'PASSWORD_INPUT'

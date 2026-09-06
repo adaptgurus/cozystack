@@ -29,14 +29,16 @@ function Get-CimInstance { [pscustomobject]@{ Name=$env:TEST_VM_ID; ElementName=
 function Get-CimAssociatedInstance { [pscustomobject]@{ SystemName=$env:TEST_VM_ID; CreationClassName='Msvm_Keyboard' } }
 function New-TrustPrivateDirectory([string]$Path) { New-Item -ItemType Directory -Path $Path | Out-Null }
 function Get-TrustKeyboard { Assert-TrustDcIdentity; return 'keyboard' }
+$script:ActualSendTrustText = ${function:Send-TrustText}
+function Send-TrustText($Keyboard, [string]$Text) {
+    $script:Keys += 'Text'
+    if ($Text -ceq $env:DC_PASSWORD) { $script:Keys[-1] = 'Password' }
+    & $script:ActualSendTrustText $Keyboard $Text
+}
 function Invoke-CimMethod {
     param($InputObject, $MethodName, $Arguments)
-    if ($MethodName -eq 'TypeText') {
-        if ($Arguments.asciiText.Length -gt 512) { throw 'Oversized text call' }
-        $script:Keys += 'Text'
-        if ($Arguments.asciiText -ceq $env:DC_PASSWORD) { $script:Keys[-1] = 'Password' }
-    } elseif ($MethodName -eq 'TypeKey' -and $Arguments.keyCode -eq 13) { $script:Keys += 'Enter' }
-    else { throw 'Unexpected keyboard operation' }
+    if ($MethodName -eq 'TypeKey' -and $Arguments.keyCode -eq 13) { $script:Keys += 'Enter' }
+    elseif ($MethodName -notin @('TypeKey', 'PressKey', 'ReleaseKey')) { throw 'Unexpected keyboard operation' }
     if ($env:TEST_FAIL_KEY -eq [string]$script:Keys.Count) {
         throw ('Raw CIM exception containing ' + $env:DC_PASSWORD)
     }
@@ -50,6 +52,7 @@ function Read-TrustConsole([string]$Private) {
     $prompt = $env:TEST_PROMPT
     if ($env:TEST_PHASE -eq 'Refresh' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
+    if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Text') { $prompt = 'layersentry login: root' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Enter') { $prompt = 'Password:' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Password' -and $script:Keys[-1] -eq 'Enter') { $prompt = '[root@layersentry ~]#' }
     $lines = @($prompt.Split("`n"))
@@ -70,6 +73,30 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_virtual_keys_use_existing_us_mapping_and_release_shift_on_failure(self):
+        command = r'''
+$script:Calls=@()
+function Assert-TrustDcIdentity {}
+function Invoke-CimMethod {
+    param($InputObject, $MethodName, $Arguments)
+    $script:Calls += ($MethodName + ':' + $Arguments.keyCode)
+    if ($env:TEST_KEY_FAILURE -eq [string]$script:Calls.Count) { throw 'uncertain key result' }
+    [pscustomobject]@{ReturnValue=0}
+}
+try { Send-TrustText 'keyboard' $env:TEST_TYPED_TEXT } catch { }
+$script:Calls | ConvertTo-Json -Compress
+'''
+        result = self.run_function(command, TEST_TYPED_TEXT='rootA!', TEST_KEY_FAILURE='0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ['TypeKey:82', 'TypeKey:79', 'TypeKey:79', 'TypeKey:84',
+                         'PressKey:16', 'TypeKey:65', 'ReleaseKey:16', 'PressKey:16', 'TypeKey:49', 'ReleaseKey:16'])
+        for fault in ('1', '2'):
+            result = self.run_function(command, TEST_TYPED_TEXT='AB', TEST_KEY_FAILURE=fault)
+            expected = ['PressKey:16', 'ReleaseKey:16'] if fault == '1' else ['PressKey:16', 'TypeKey:65', 'ReleaseKey:16']
+            self.assertEqual(json.loads(result.stdout), expected)
+        result = self.run_function(command, TEST_TYPED_TEXT='root\n', TEST_KEY_FAILURE='0')
+        self.assertEqual(result.stdout.strip(), '')
+
     def test_ocr_column_reading_order_cannot_hide_lower_terminal_prompt(self):
         source = (ROOT / 'read-console-ocr.ps1').read_text()
         sorter = source[source.index('function Sort-ConsoleOcrLines'):source.index('[void][Windows.Storage.StorageFile')]
@@ -166,6 +193,7 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
             root = Path(folder)
             script = root / 'invoke-dc-console-trust.ps1'
             shutil.copyfile(ROOT / script.name, script)
+            shutil.copyfile(ROOT / 'hyperv-console-keystrokes.ps1', root / 'hyperv-console-keystrokes.ps1')
             env = dict(os.environ, TRUST_WRAPPER=str(script), RUNNER_TEMP=folder, GITHUB_RUN_ID='fixture',
                        GITHUB_RUN_ATTEMPT='1', GITHUB_SHA='test-source', COMPUTERNAME='TESTSER',
                        TEST_VM_ID='29ba176b-b81a-4f47-8f51-ecec869f247f', TEST_PHASE=phase,
@@ -241,7 +269,7 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
         self.assertIn("assert key == candidate", payload)
         self.assertIn("os.geteuid() == 0", payload)
         self.assertIn("10.10.10.14", payload)
-        count = (len(command) + 383) // 384
+        count = 1
         state = self.run_phase('Verify', '[root@layersentry ~]#', ['Text'] * count + ['Enter'])
         self.assertEqual(state['status'], 'OOB_HOST_KEY_VERIFIED')
 
