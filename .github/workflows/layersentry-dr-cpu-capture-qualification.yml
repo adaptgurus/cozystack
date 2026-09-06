@@ -1,5 +1,8 @@
 name: LayerSentry retained CPU DR capture qualification
 on:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-dr-cpu-capture-qualification.yml]
   workflow_dispatch:
     inputs:
       boot-run:
@@ -22,13 +25,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   qualify:
-    if: github.repository == 'adaptgurus/cozystack'
+    if: github.repository == 'adaptgurus/cozystack' && github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 55
     env:
-      BOOT_SOURCE: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
-      CAPTURE_SOURCE: 0152e63182e0f01abda723206f57325042a2536f
-      IMAGE_SHA256: 61c0b8088fc0c08a0263d8076dc6a9f2b402bc7e05becd6d7c1cde60e1a0c356
+      BOOT_SOURCE: 2b7f06773216d76c455be1ab32d483cebbd38804
+      CAPTURE_SOURCE: 2b7f06773216d76c455be1ab32d483cebbd38804
+      IMAGE_SHA256: 7580d64a5b9f27d930d7a5f5688f67063db042252dd43c7cf280fdb3e101a34d
       BOOT_RUN: ${{ inputs.boot-run }}
       BOOT_ARTIFACT: ${{ inputs.boot-artifact }}
       BOOT_RUNNER_SOURCE: ${{ inputs.boot-runner-source }}
@@ -63,7 +66,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: 0152e63182e0f01abda723206f57325042a2536f
+          ref: 2b7f06773216d76c455be1ab32d483cebbd38804
           path: capture-source
           persist-credentials: false
       - name: Capture retained fixture once through verified DR SSH

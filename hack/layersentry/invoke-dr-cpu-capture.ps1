@@ -18,7 +18,7 @@ $state = [ordered]@{status='PENDING';target='10.10.10.20';runnerCommit=$env:GITH
 try {
     if ($env:DR_HOST -cne '10.10.10.20' -or $env:DR_USER -cne 'root' -or -not $env:DR_KEY -or -not $env:DR_KNOWN_HOSTS) { throw 'Exact-target verified SSH credentials required.' }
     foreach ($name in @('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','BOOT_RUN','BOOT_ARTIFACT')) { if ([Environment]::GetEnvironmentVariable($name) -cnotmatch '^[0-9]{1,20}$') { throw 'Invalid run identity.' } }
-    if ($env:CAPTURE_SOURCE -cne '0152e63182e0f01abda723206f57325042a2536f' -or $env:IMAGE_SHA256 -cne '61c0b8088fc0c08a0263d8076dc6a9f2b402bc7e05becd6d7c1cde60e1a0c356') { throw 'Reviewed source/image pins required.' }
+    if ($env:CAPTURE_SOURCE -cne '2b7f06773216d76c455be1ab32d483cebbd38804' -or $env:IMAGE_SHA256 -cne '7580d64a5b9f27d930d7a5f5688f67063db042252dd43c7cf280fdb3e101a34d') { throw 'Reviewed source/image pins required.' }
     $boot = Join-Path $env:RUNNER_TEMP "layersentry-dr-capture-boot-$env:GITHUB_RUN_ID"
     $records = @{}
     foreach ($name in @('summary','result','ownership','cleanup','guest-checks')) {

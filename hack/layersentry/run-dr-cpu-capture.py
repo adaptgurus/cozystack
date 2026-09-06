@@ -14,8 +14,8 @@ import sys
 import uuid
 import zipfile
 
-SOURCE = '0152e63182e0f01abda723206f57325042a2536f'
-IMAGE = '61c0b8088fc0c08a0263d8076dc6a9f2b402bc7e05becd6d7c1cde60e1a0c356'
+SOURCE = '2b7f06773216d76c455be1ab32d483cebbd38804'
+IMAGE = '7580d64a5b9f27d930d7a5f5688f67063db042252dd43c7cf280fdb3e101a34d'
 BASE = Path('/var/lib/layersentry-validation')
 FILES = ('dr_cpu_capture_acceptance.py', 'dr_libvirt_capture.py', 'dr_file_replication.py',
          'dr_replication.py', 'dr_replication_transport.py', 'dr_state_machine.py',
