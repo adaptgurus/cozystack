@@ -1,0 +1,380 @@
+﻿{
+    "EvidenceClass":  "NATIVE_DERIVED_CAPACITY_REFRESH_AND_API_INVENTORY",
+    "RunId":  "34062542683",
+    "Repository":  "adaptgurus/cozystack",
+    "Commit":  "7103ae4fc7be4cb7fe4693e22330c7bfebfa965a",
+    "CapturedUtc":  "2026-09-06T21:56:42.0997943Z",
+    "Endpoint":  "http://10.10.10.14:8080/client/api",
+    "MutationPerformed":  true,
+    "MutationScope":  "DERIVED_CAPACITY_COUNTERS_ONLY",
+    "TargetProfile":  "dc",
+    "SupportClusterUuidStatus":  "UNKNOWN",
+    "CollectionScope":  "Single API page per collection; counts below expose truncation. Not a readiness certification.",
+    "Capabilities":  [
+                         {
+                             "cloudstackversion":  "4.22.1.1",
+                             "kvmsnapshotenabled":  true
+                         }
+                     ],
+    "ManagementServers":  [
+                              {
+                                  "id":  "bc7d2aa9-d95a-46fc-a4d0-2b94856db557",
+                                  "name":  "layersentry.lab.example",
+                                  "version":  "4.22.1.1",
+                                  "state":  "Up",
+                                  "ipaddress":  "10.10.10.14",
+                                  "agentscount":  1,
+                                  "pendingjobscount":  0
+                              }
+                          ],
+    "Networks":  [
+                     {
+                         "id":  "9da9a6de-60f3-4fdb-be41-e3f103f491e7",
+                         "name":  "defaultGuestNetwork",
+                         "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                         "state":  "Setup",
+                         "type":  "Shared",
+                         "networkofferingid":  "15759ed4-98b9-4a62-8376-1c332724a864",
+                         "vpcid":  null,
+                         "cidr":  "10.10.20.0/24",
+                         "gateway":  "10.10.20.1",
+                         "broadcastdomaintype":  "Native"
+                     }
+                 ],
+    "Templates":  [
+                      {
+                          "id":  "13f22f9c-61e2-4d88-93c0-5735212bccd0",
+                          "name":  "SystemVM Template (KVM)",
+                          "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                          "isready":  true,
+                          "hypervisor":  "KVM",
+                          "format":  "QCOW2",
+                          "size":  5242880000,
+                          "templatetype":  "SYSTEM",
+                          "checksum":  "10987c4fb3158d40006b1a1db89bf6e9b6c3995294f295e1ca564c26c9543453d4d21a7d8c967d5487b489d88194ecfba9829f00e929b17e3ddaa70751cece90"
+                      },
+                      {
+                          "id":  "bf20eab1-a831-11f1-ad7e-00155d00390a",
+                          "name":  "CentOS 5.5(64-bit) no GUI (KVM)",
+                          "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                          "isready":  false,
+                          "hypervisor":  "KVM",
+                          "format":  "QCOW2",
+                          "size":  null,
+                          "templatetype":  "BUILTIN",
+                          "checksum":  "ed0e788280ff2912ea40f7f91ca7a249"
+                      }
+                  ],
+    "Zones":  [
+                  {
+                      "id":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                      "name":  "dc",
+                      "networktype":  "Basic",
+                      "allocationstate":  "Disabled",
+                      "localstorageenabled":  false
+                  }
+              ],
+    "Pods":  [
+                 {
+                     "id":  "020dc658-af4e-4e2e-bed5-0607de8a787f",
+                     "name":  "mgmt",
+                     "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                     "zonename":  "dc",
+                     "allocationstate":  "Enabled",
+                     "gateway":  "10.10.10.1",
+                     "netmask":  "255.255.255.0",
+                     "startip":  [
+                                     "10.10.10.2"
+                                 ],
+                     "endip":  [
+                                   "10.10.10.254"
+                               ]
+                 }
+             ],
+    "PodIpRanges":  [
+                        {
+                            "startip":  "10.10.10.2",
+                            "endip":  "10.10.10.254",
+                            "gateway":  null,
+                            "cidr":  null,
+                            "vlanid":  "vlan://untagged",
+                            "forsystemvms":  "0",
+                            "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f"
+                        }
+                    ],
+    "PrivateIpCapacity":  [
+
+                          ],
+    "VirtualRouters":  [
+
+                       ],
+    "VlanIpRanges":  [
+                         {
+                             "id":  "138d0e03-4dab-4e35-bc5b-4891518f481c",
+                             "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                             "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f",
+                             "networkid":  "9da9a6de-60f3-4fdb-be41-e3f103f491e7",
+                             "physicalnetworkid":  "a3182ad1-7de2-45e3-81ce-5ccbf9280421",
+                             "vlan":  "vlan://untagged",
+                             "gateway":  "10.10.20.1",
+                             "netmask":  "255.255.255.0",
+                             "startip":  "10.10.20.2",
+                             "endip":  "10.10.20.254",
+                             "forvirtualnetwork":  false
+                         }
+                     ],
+    "PhysicalNetworks":  [
+                             {
+                                 "id":  "a3182ad1-7de2-45e3-81ce-5ccbf9280421",
+                                 "name":  "Physical Network 1",
+                                 "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                                 "state":  "Enabled",
+                                 "broadcastdomainrange":  "POD",
+                                 "isolationmethods":  null,
+                                 "vlan":  null
+                             }
+                         ],
+    "TrafficTypes":  [
+                         {
+                             "id":  "d33d6182-41c1-4217-9116-bf8234fc1b57",
+                             "traffictype":  "Guest",
+                             "physicalnetworkid":  "a3182ad1-7de2-45e3-81ce-5ccbf9280421",
+                             "kvmnetworklabel":  null
+                         },
+                         {
+                             "id":  "5f6ff203-7004-42e3-a4f6-10b2aa23ed98",
+                             "traffictype":  "Management",
+                             "physicalnetworkid":  "a3182ad1-7de2-45e3-81ce-5ccbf9280421",
+                             "kvmnetworklabel":  null
+                         }
+                     ],
+    "SystemVms":  [
+
+                  ],
+    "Clusters":  [
+                     {
+                         "id":  "7d2bb586-6b60-4c51-aa5f-3b4903f31e51",
+                         "name":  "abc",
+                         "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                         "zonename":  "dc",
+                         "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f",
+                         "podname":  "mgmt",
+                         "hypervisortype":  "KVM",
+                         "allocationstate":  "Enabled",
+                         "managedstate":  "Managed"
+                     }
+                 ],
+    "Hosts":  [
+                  {
+                      "id":  "3abb80a8-bc4a-48de-bc99-dedc5ac91bf9",
+                      "name":  "layersentry.lab.example",
+                      "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                      "zonename":  "dc",
+                      "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f",
+                      "podname":  "mgmt",
+                      "clusterid":  "7d2bb586-6b60-4c51-aa5f-3b4903f31e51",
+                      "clustername":  "abc",
+                      "hypervisor":  "KVM",
+                      "hypervisorversion":  null,
+                      "state":  "Up",
+                      "resourcestate":  "Enabled",
+                      "hahost":  false
+                  }
+              ],
+    "PrimaryStorage":  [
+                           {
+                               "id":  "3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7",
+                               "name":  "layersentry-dc-primary-r0",
+                               "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                               "zonename":  "dc",
+                               "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f",
+                               "podname":  "mgmt",
+                               "clusterid":  "7d2bb586-6b60-4c51-aa5f-3b4903f31e51",
+                               "clustername":  "abc",
+                               "type":  "NetworkFilesystem",
+                               "scope":  "CLUSTER",
+                               "state":  "Up",
+                               "capacityiops":  null,
+                               "overprovisionfactor":  "2.0"
+                           }
+                       ],
+    "ImageStores":  [
+                        {
+                            "id":  "e824ee8c-2fa1-466b-9948-629958479a78",
+                            "name":  "layersentry-dc-secondary-r0",
+                            "zoneid":  "929d1f2c-d629-41ed-96b4-6c48a288d056",
+                            "zonename":  "dc",
+                            "protocol":  "nfs",
+                            "readonly":  false,
+                            "scope":  "ZONE"
+                        }
+                    ],
+    "BackupApiObservations":  {
+                                  "listBackupProviders":  {
+                                                              "Status":  "FAILED",
+                                                              "ErrorType":  "System.Management.Automation.RuntimeException",
+                                                              "ApiErrorCode":  401,
+                                                              "HttpStatusCode":  401
+                                                          },
+                                  "listBackups":  {
+                                                      "Status":  "FAILED",
+                                                      "ErrorType":  "System.Management.Automation.RuntimeException",
+                                                      "ApiErrorCode":  401,
+                                                      "HttpStatusCode":  401
+                                                  },
+                                  "listBackupRepositories":  {
+                                                                 "Status":  "FAILED",
+                                                                 "ErrorType":  "System.Management.Automation.RuntimeException",
+                                                                 "ApiErrorCode":  401,
+                                                                 "HttpStatusCode":  401
+                                                             },
+                                  "listBackupOfferings":  {
+                                                              "Status":  "FAILED",
+                                                              "ErrorType":  "System.Management.Automation.RuntimeException",
+                                                              "ApiErrorCode":  401,
+                                                              "HttpStatusCode":  401
+                                                          }
+                              },
+    "AsyncJobsApiObservation":  {
+                                    "Status":  "AVAILABLE",
+                                    "ErrorType":  null,
+                                    "ApiErrorCode":  null,
+                                    "HttpStatusCode":  null
+                                },
+    "BackupRepositories":  [
+
+                           ],
+    "BackupOfferings":  [
+
+                        ],
+    "BackupConfigurations":  [
+                                 {
+                                     "name":  "backup.framework.enabled",
+                                     "value":  "false",
+                                     "scope":  null,
+                                     "zonename":  null
+                                 },
+                                 {
+                                     "name":  "backup.framework.provider.plugin",
+                                     "value":  "dummy",
+                                     "scope":  null,
+                                     "zonename":  null
+                                 },
+                                 {
+                                     "name":  "backup.framework.sync.interval",
+                                     "value":  "300",
+                                     "scope":  null,
+                                     "zonename":  null
+                                 }
+                             ],
+    "BackupProviders":  [
+
+                        ],
+    "Backups":  [
+
+                ],
+    "VirtualMachines":  [
+
+                        ],
+    "RecentAsyncJobs":  [
+
+                        ],
+    "CollectionObservations":  {
+                                   "physicalnetwork":  {
+                                                           "ReturnedCount":  1,
+                                                           "ReportedCount":  1,
+                                                           "Truncated":  false
+                                                       },
+                                   "traffictype:a3182ad1-7de2-45e3-81ce-5ccbf9280421":  {
+                                                                                            "ReturnedCount":  2,
+                                                                                            "ReportedCount":  2,
+                                                                                            "Truncated":  false
+                                                                                        },
+                                   "configuration":  {
+                                                         "ReturnedCount":  1,
+                                                         "ReportedCount":  1,
+                                                         "Truncated":  false
+                                                     },
+                                   "capability":  {
+                                                      "ReturnedCount":  1,
+                                                      "ReportedCount":  null,
+                                                      "Truncated":  false
+                                                  },
+                                   "managementserver":  {
+                                                            "ReturnedCount":  1,
+                                                            "ReportedCount":  1,
+                                                            "Truncated":  false
+                                                        },
+                                   "network":  {
+                                                   "ReturnedCount":  1,
+                                                   "ReportedCount":  1,
+                                                   "Truncated":  false
+                                               },
+                                   "template":  {
+                                                    "ReturnedCount":  2,
+                                                    "ReportedCount":  2,
+                                                    "Truncated":  false
+                                                },
+                                   "zone":  {
+                                                "ReturnedCount":  1,
+                                                "ReportedCount":  1,
+                                                "Truncated":  false
+                                            },
+                                   "pod":  {
+                                               "ReturnedCount":  1,
+                                               "ReportedCount":  1,
+                                               "Truncated":  false
+                                           },
+                                   "capacity":  {
+                                                    "ReturnedCount":  0,
+                                                    "ReportedCount":  null,
+                                                    "Truncated":  false
+                                                },
+                                   "router":  {
+                                                  "ReturnedCount":  0,
+                                                  "ReportedCount":  null,
+                                                  "Truncated":  false
+                                              },
+                                   "vlaniprange":  {
+                                                       "ReturnedCount":  1,
+                                                       "ReportedCount":  1,
+                                                       "Truncated":  false
+                                                   },
+                                   "systemvm":  {
+                                                    "ReturnedCount":  0,
+                                                    "ReportedCount":  null,
+                                                    "Truncated":  false
+                                                },
+                                   "cluster":  {
+                                                   "ReturnedCount":  1,
+                                                   "ReportedCount":  1,
+                                                   "Truncated":  false
+                                               },
+                                   "host":  {
+                                                "ReturnedCount":  1,
+                                                "ReportedCount":  1,
+                                                "Truncated":  false
+                                            },
+                                   "storagepool":  {
+                                                       "ReturnedCount":  1,
+                                                       "ReportedCount":  1,
+                                                       "Truncated":  false
+                                                   },
+                                   "imagestore":  {
+                                                      "ReturnedCount":  1,
+                                                      "ReportedCount":  1,
+                                                      "Truncated":  false
+                                                  },
+                                   "virtualmachine":  {
+                                                          "ReturnedCount":  0,
+                                                          "ReportedCount":  null,
+                                                          "Truncated":  false
+                                                      },
+                                   "asyncjobs":  {
+                                                     "ReturnedCount":  0,
+                                                     "ReportedCount":  null,
+                                                     "Truncated":  false
+                                                 }
+                               },
+    "InventoryComplete":  false
+}

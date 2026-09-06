@@ -1,0 +1,92 @@
+﻿{
+    "schema":  1,
+    "target":  "10.10.10.14",
+    "mode":  "Apply",
+    "sourceCommit":  "39848a33cbd507bf5a34d16ea58f6e16a813cd2c",
+    "runId":  "34062614955",
+    "status":  "GUEST_NETWORK_RECONCILED_NOT_ROUTING_VERIFIED",
+    "networkMutationAttempted":  true,
+    "hyperv":  {
+                   "schema":  1,
+                   "vmId":  "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                   "vmName":  "sen",
+                   "guest":  {
+                                 "id":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\7CA4C078-0E79-405B-A054-A6863204C2C4",
+                                 "mac":  "0229BA176B81",
+                                 "switchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                                 "spoof":  "On"
+                             },
+                   "managementNicId":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\174A74C0-18CA-4B09-BC4C-8E9696DEAFE9",
+                   "managementSwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                   "managementMac":  "00155D00390A",
+                   "managementMacSpoofing":  "On",
+                   "managementNestedTraffic":  "ALLOWED_BY_HYPERV_SETTING",
+                   "guestSwitchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                   "gateway":  "10.10.20.1/24",
+                   "gatewayRouting":  "NOT_ESTABLISHED"
+               },
+    "prepared":  {
+                     "schema":  1,
+                     "vmId":  "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                     "vmName":  "sen",
+                     "guest":  {
+                                   "id":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\7CA4C078-0E79-405B-A054-A6863204C2C4",
+                                   "mac":  "0229BA176B81",
+                                   "switchId":  "",
+                                   "spoof":  "Off"
+                               },
+                     "managementNicId":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\174A74C0-18CA-4B09-BC4C-8E9696DEAFE9",
+                     "managementSwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                     "managementMac":  "00155D00390A",
+                     "managementMacSpoofing":  "On",
+                     "managementNestedTraffic":  "ALLOWED_BY_HYPERV_SETTING",
+                     "guestSwitchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                     "gateway":  "10.10.20.1/24",
+                     "gatewayRouting":  "NOT_ESTABLISHED"
+                 },
+    "bridge":  {
+                   "bridge":  "ls-guest0",
+                   "device":  "eth1",
+                   "gatewayRouting":  "NOT_ESTABLISHED",
+                   "guestLabel":  null,
+                   "guestMac":  "02:29:ba:17:6b:81",
+                   "managementPreserved":  true,
+                   "phase":  "Bridge",
+                   "schema":  1,
+                   "status":  "RECONCILED",
+                   "target":  "10.10.10.14",
+                   "zoneEnabled":  false
+               },
+    "connected":  {
+                      "schema":  1,
+                      "vmId":  "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                      "vmName":  "sen",
+                      "guest":  {
+                                    "id":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\7CA4C078-0E79-405B-A054-A6863204C2C4",
+                                    "mac":  "0229BA176B81",
+                                    "switchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                                    "spoof":  "On"
+                                },
+                      "managementNicId":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\174A74C0-18CA-4B09-BC4C-8E9696DEAFE9",
+                      "managementSwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                      "managementMac":  "00155D00390A",
+                      "managementMacSpoofing":  "On",
+                      "managementNestedTraffic":  "ALLOWED_BY_HYPERV_SETTING",
+                      "guestSwitchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                      "gateway":  "10.10.20.1/24",
+                      "gatewayRouting":  "NOT_ESTABLISHED"
+                  },
+    "guest":  {
+                  "bridge":  "ls-guest0",
+                  "device":  "eth1",
+                  "gatewayRouting":  "NOT_ESTABLISHED",
+                  "guestLabel":  "ls-guest0",
+                  "guestMac":  "02:29:ba:17:6b:81",
+                  "managementPreserved":  true,
+                  "phase":  "Label",
+                  "schema":  1,
+                  "status":  "RECONCILED",
+                  "target":  "10.10.10.14",
+                  "zoneEnabled":  false
+              }
+}

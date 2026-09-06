@@ -1,6 +1,6 @@
 # Disabled DC Pod range: lab-only alternative for review
 
-Status: design only; no controller gate has been relaxed and no Pod request exists. Actual capacity observation `34062542683` confirms exact range `.2–.254`, role `0`, VLAN `vlan://untagged` and parent Zone Disabled. Capacity usage is UNKNOWN because native capacity listing excludes Disabled rows; it must never be reported as zero. This design covers only the fixed disposable DC lab while root owns its runtime reservation. The normal production/concurrent-writer path remains blocked on unknown allocation evidence.
+Status: explicit lab-only source and Plan-only strict runner prepared; no Pod request exists. The normal controller still rejects absent capacity rows. Actual capacity observation `34062542683` confirms exact range `.2–.254`, role `0`, VLAN `vlan://untagged` and parent Zone Disabled. Capacity usage is UNKNOWN because native capacity listing excludes Disabled rows; it must never be reported as zero. This design covers only the fixed disposable DC lab while root owns its runtime reservation. The normal production/concurrent-writer path remains blocked on unknown allocation evidence.
 
 ## Exact native behavior
 
@@ -19,3 +19,8 @@ Automatic console-proxy and secondary-storage scanners use `listEnabledNonEdgeZo
 5. Record and poll the exact returned async job. On timeout, re-list exact range and query only the recorded job; do not resubmit. Require preserved role/VLAN/gateway/mask and `.2–.9` afterward, no new instances or other pending jobs, and Zone still Disabled. Capacity usage remains UNKNOWN until native visibility can establish a value; deriving eight total addresses is not an observation of eight free addresses.
 
 The proposed result would certify only the fixed range update under an exclusive lab reservation, not free-address count, SystemVM readiness, arbitrary concurrent safety or production readiness. Source implementation and tests must be reviewed before any live Pod Apply. The present controller still rejects absent capacity rows.
+
+
+## Prepared implementation
+
+`execute_lab` in `dc-pod-range.py` separately implements this fixed lab protocol and retains capacityUsed UNKNOWN_DISABLED_ZONE. Its entry requires exact SHA-256-bound public capacity, completed guest-network and trusted Hyper-V/DHCP receipts plus the explicit root reservation assertion. It freshly checks native scope, both false override configurations and no pending jobs, then supports the existing journaled one-submission mechanism. This does not claim to enforce external administrator exclusivity. `run-dc-pod-range-plan-stdin.py`, `invoke-dc-pod-range-plan-ssh.ps1` and `layersentry-dc-pod-range-plan.yml` expose only Plan, over verified-host SSH with credentials in encrypted stdin and no journal/configuration writes. Apply is rejected by the loader; no executable Apply workflow exists. Ten executed tests cover genuine receipt hashes/tampering, root assertion, override/pending-job gates, unknown evidence, default fail-closed behavior, real journaled async handling and actual PowerShell Legacy private transport. An actual Plan must still pass and be reviewed before any Apply wrapper is authorized.

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Native-only fixed DC Pod exclusion; never edits SQL, DHCP or Zone state."""
+import hashlib
+import json
 import time
 
 from dr_recovery_acceptance import GateError, identifier, require
@@ -11,7 +13,7 @@ PARAMS = {'podid': POD, 'currentstartip': OLD[0], 'currentendip': OLD[1],
           'newstartip': NEW[0], 'newendip': NEW[1]}
 
 
-def observe(api):
+def observe_scope(api):
     preflight(api)
     pod = exact(api, 'listPods', 'pod', POD)
     require(pod.get('gateway') == '10.10.10.1' and pod.get('netmask') == '255.255.255.0', 'POD_SUBNET_CHANGED')
@@ -24,6 +26,11 @@ def observe(api):
     require(endpoints in (OLD, NEW), 'POD_ENDPOINTS_CHANGED')
     for command, kind in (('listSystemVms', 'systemvm'), ('listVirtualMachines', 'virtualmachine'), ('listRouters', 'router')):
         require(not rows(api, command, kind, zoneid=ZONE, listall='true'), 'SOURCE_ZONE_HAS_VMS')
+    return endpoints
+
+
+def observe(api):
+    endpoints = observe_scope(api)
     # This diagnostic refresh updates derived capacity counters. It is reported explicitly.
     capacities = rows(api, 'listCapacity', 'capacity', zoneid=ZONE, podid=POD, type=5, fetchlatest='true')
     require(len(capacities) == 1, 'PRIVATE_IP_CAPACITY_UNKNOWN')
@@ -43,15 +50,19 @@ def execute(api, journal=None, apply=False):
               'parameters': PARAMS, 'status': 'PLAN_REVIEW_REQUIRED'}
     if not apply:
         return result
+    return apply_once(api, journal, current, result, observe, 'strict-capacity')
+
+
+def apply_once(api, journal, current, result, observer, mode):
     require(journal is not None, 'PERSISTENT_JOURNAL_REQUIRED')
     operation = journal.data['operations'].get('pod-range')
     if operation:
-        require(operation.get('params') == PARAMS, 'RANGE_INTENT_CHANGED')
+        require(operation.get('params') == PARAMS and operation.get('mode') == mode, 'RANGE_INTENT_CHANGED')
     if current == NEW:
         require(operation is not None, 'UNJOURNALED_RANGE_CHANGE')
     else:
         require(operation is None, 'UNCERTAIN_RANGE_UPDATE_NO_REPLAY')
-        operation = {'params': PARAMS, 'state': 'SUBMITTING'}
+        operation = {'params': PARAMS, 'state': 'SUBMITTING', 'mode': mode}
         journal.data['operations']['pod-range'] = operation
         journal.save()
         try:
@@ -70,8 +81,64 @@ def execute(api, journal=None, apply=False):
             operation['state'] = 'SUBMISSION_UNCERTAIN'
             journal.save()
         # Exact re-list is authoritative after timeout; never repeat the submission.
-        require(observe(api) == NEW, 'UNCERTAIN_RANGE_UPDATE_NO_REPLAY')
+        require(observer(api) == NEW, 'UNCERTAIN_RANGE_UPDATE_NO_REPLAY')
     operation['state'] = 'RECONCILED'
     journal.save()
     result.update(status='RANGE_RECONCILED_NOT_SYSTEMVM_READY', currentStart=NEW[0], currentEnd=NEW[1])
+    return result
+
+
+LAB_RECEIPTS = {
+    'hypervNetwork': '5d13f4e2a820c8421db5bff37b975b62cb4541095564f221392e28bd4e1e33fb',
+    'capacity': '54a2f9a54dbc41defb37698eff2eb87100deeb4c81b638a2b5a8b968ccba1f6e',
+    'guestNetwork': 'd8dce4ef9ab60ccea6b05161b918770a7da8001885ebef181597b759f4104897',
+}
+LAB_RESERVATION = 'ROOT_EXCLUSIVE_DC_POD_RANGE_INCLUDING_ADMIN_AND_SYNCHRONOUS_IP_WRITERS'
+
+
+def verify_lab_receipts(receipts, reservation):
+    # A lead reservation is an administrative assertion, not a native fence.
+    require(reservation == LAB_RESERVATION, 'EXPLICIT_EXCLUSIVE_LAB_RESERVATION_REQUIRED')
+    require(isinstance(receipts, dict) and set(receipts) == set(LAB_RECEIPTS), 'REVIEWED_LAB_RECEIPTS_REQUIRED')
+    for name, digest in LAB_RECEIPTS.items():
+        raw = receipts[name]
+        require(isinstance(raw, bytes) and len(raw) <= 131072 and hashlib.sha256(raw).hexdigest() == digest,
+                'REVIEWED_LAB_RECEIPT_DIGEST_CHANGED')
+        json.loads(raw.decode('utf-8-sig'))
+    return {'reviewedReceiptSha256': LAB_RECEIPTS.copy(), 'exclusiveWriterReservation': reservation}
+
+
+def observe_lab(api, allowed_job=None):
+    endpoints = observe_scope(api)  # Exact Disabled DC, known role/VLAN and zero instance observations.
+    for name in ('allow.router.on.disabled.resources', 'allow.admin.vm.on.disabled.resources'):
+        configs = rows(api, 'listConfigurations', 'configuration', name=name)
+        require(len(configs) == 1 and configs[0].get('name') == name and configs[0].get('value') == 'false',
+                'DISABLED_RESOURCE_OVERRIDE_UNKNOWN_OR_ENABLED')
+    jobs = rows(api, 'listAsyncJobs', 'asyncjobs', listall='true')
+    require(all(allowed_job is not None and row.get('jobid', row.get('id')) == allowed_job for row in jobs),
+            'PENDING_NATIVE_JOBS_BLOCK_LAB_RANGE')
+    return endpoints
+
+
+def execute_lab(api, receipts, reservation, journal=None, apply=False):
+    binding = verify_lab_receipts(receipts, reservation)
+    operation = journal.data['operations'].get('pod-range') if journal else None
+    current = observe_lab(api, operation.get('job_id') if operation else None)
+    result = {'schema': 1, 'target': '10.10.10.14', 'mode': 'EXCLUSIVE_DISABLED_DC_LAB_ONLY',
+              'zoneEnabled': False, 'capacityUsed': 'UNKNOWN_DISABLED_ZONE',
+              'capacityTotalFromEndpoints': 253 if current == OLD else 8,
+              'derivedCapacityRefreshRequested': False, 'configurationUpdateRequested': apply,
+              'concurrentWriterSafety': 'NOT_ESTABLISHED_NATIVE_GUARD_IS_NOT_ATOMIC',
+              'administrativeExclusivityRequired': True, 'currentStart': current[0], 'currentEnd': current[1],
+              'command': 'updatePodManagementNetworkIpRange', 'parameters': PARAMS,
+              'status': 'LAB_PLAN_REVIEW_REQUIRED', **binding}
+    if not apply:
+        return result
+    require(journal is not None, 'PERSISTENT_JOURNAL_REQUIRED')
+    def reobserve(client):
+        own = journal.data['operations'].get('pod-range', {})
+        return observe_lab(client, own.get('job_id'))
+    result = apply_once(api, journal, current, result, reobserve, 'exclusive-disabled-dc-lab')
+    result['status'] = 'LAB_RANGE_RECONCILED_USAGE_UNKNOWN_NOT_SYSTEMVM_READY'
+    result['capacityTotalFromEndpoints'] = 8
     return result

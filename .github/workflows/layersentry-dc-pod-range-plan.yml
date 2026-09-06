@@ -1,0 +1,46 @@
+name: LayerSentry DC Pod Range Lab Plan
+on:
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-pod-plan-actions/*.json]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact Plan-only source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind immutable Plan and observe native prerequisites
+        shell: powershell
+        env:
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+          CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+          CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -cne 'refs/heads/codex/dr-dc-trust' -or $env:GITHUB_EVENT_NAME -cne 'push'){throw 'Exact isolated Plan ref required.'}
+          $files=@(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-pod-plan-actions | Where-Object {$_ -cmatch '^hack/layersentry/dc-pod-plan-actions/[a-z0-9-]+\.json$'})
+          if($LASTEXITCODE -ne 0 -or $files.Count -ne 1){throw 'One immutable Plan request required.'}
+          $r=Get-Content -LiteralPath $files[0] -Raw|ConvertFrom-Json
+          if((@($r.PSObject.Properties.Name|Sort-Object)-join ',') -cne 'authorization,mode,schema,target' -or $r.schema -ne 1 -or $r.target -cne '10.10.10.14' -or $r.mode -cne 'Plan' -or $r.authorization -cne 'DC-POD-EXCLUSIVE-LAB-PLAN'){throw 'Plan request scope failed.'}
+          ./hack/layersentry/invoke-dc-pod-range-plan-ssh.ps1
+      - name: Upload public Plan only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-pod-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-pod-range-plan-${{ github.run_id }}-${{ github.run_attempt }}-Plan/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,620 @@
+﻿{
+    "status":  "READ_ONLY_OBSERVATION",
+    "mutationPerformed":  false,
+    "host":  "TESTSER",
+    "dcGuestNetworkJournal":  {
+                                  "status":  "OBSERVED",
+                                  "vmId":  "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                                  "guestMac":  "0229BA176B81",
+                                  "planSha256":  "f398537bb42e3adb50ee9ba7a0c03f0852d6ea90da04668c6e8670d526e9f053",
+                                  "guestId":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\7CA4C078-0E79-405B-A054-A6863204C2C4",
+                                  "prepareIntent":  true,
+                                  "spoofIntent":  false,
+                                  "connectIntent":  false
+                              },
+    "dhcp":  {
+                 "status":  "OBSERVED",
+                 "scopes":  [
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "start":  "10.10.10.10",
+                                    "end":  "10.10.10.250",
+                                    "mask":  "255.255.255.0",
+                                    "state":  "Active"
+                                }
+                            ],
+                 "exclusions":  [
+
+                                ],
+                 "reservations":  [
+                                      {
+                                          "scopeId":  "10.10.10.0",
+                                          "address":  "10.10.10.11",
+                                          "clientId":  "00-15-5d-0a-0a-11",
+                                          "type":  "Both"
+                                      },
+                                      {
+                                          "scopeId":  "10.10.10.0",
+                                          "address":  "10.10.10.12",
+                                          "clientId":  "00-15-5d-0a-0a-12",
+                                          "type":  "Both"
+                                      },
+                                      {
+                                          "scopeId":  "10.10.10.0",
+                                          "address":  "10.10.10.13",
+                                          "clientId":  "00-15-5d-0a-0a-13",
+                                          "type":  "Both"
+                                      }
+                                  ],
+                 "leases":  [
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.10",
+                                    "clientId":  "00-15-5d-00-39-0a",
+                                    "state":  "Active"
+                                },
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.11",
+                                    "clientId":  "00-15-5d-0a-0a-11",
+                                    "state":  "ActiveReservation"
+                                },
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.12",
+                                    "clientId":  "00-15-5d-0a-0a-12",
+                                    "state":  "ActiveReservation"
+                                },
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.13",
+                                    "clientId":  "00-15-5d-0a-0a-13",
+                                    "state":  "ActiveReservation"
+                                },
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.14",
+                                    "clientId":  "00-15-5d-00-39-09",
+                                    "state":  "Active"
+                                },
+                                {
+                                    "scopeId":  "10.10.10.0",
+                                    "address":  "10.10.10.15",
+                                    "clientId":  "00-15-5d-00-39-0b",
+                                    "state":  "Active"
+                                }
+                            ]
+             },
+    "addressServices":  [
+                            {
+                                "Name":  "DHCPServer",
+                                "Status":  4
+                            },
+                            {
+                                "Name":  "HNS",
+                                "Status":  4
+                            },
+                            {
+                                "Name":  "SharedAccess",
+                                "Status":  4
+                            }
+                        ],
+    "ipv4Interfaces":  [
+                           {
+                               "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                               "InterfaceIndex":  25,
+                               "Forwarding":  0,
+                               "Dhcp":  0
+                           },
+                           {
+                               "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                               "InterfaceIndex":  19,
+                               "Forwarding":  0,
+                               "Dhcp":  0
+                           },
+                           {
+                               "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                               "InterfaceIndex":  5,
+                               "Forwarding":  0,
+                               "Dhcp":  0
+                           },
+                           {
+                               "InterfaceAlias":  "Ethernet",
+                               "InterfaceIndex":  6,
+                               "Forwarding":  0,
+                               "Dhcp":  1
+                           },
+                           {
+                               "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                               "InterfaceIndex":  1,
+                               "Forwarding":  0,
+                               "Dhcp":  0
+                           }
+                       ],
+    "neighbors":  [
+                      {
+                          "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                          "InterfaceIndex":  25,
+                          "IPAddress":  "10.10.20.255",
+                          "LinkLayerAddress":  "FF-FF-FF-FF-FF-FF",
+                          "State":  6
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                          "InterfaceIndex":  25,
+                          "IPAddress":  "10.10.20.14",
+                          "LinkLayerAddress":  "00-00-00-00-00-00",
+                          "State":  0
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                          "InterfaceIndex":  25,
+                          "IPAddress":  "10.10.20.10",
+                          "LinkLayerAddress":  "00-00-00-00-00-00",
+                          "State":  0
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                          "InterfaceIndex":  25,
+                          "IPAddress":  "10.10.20.1",
+                          "LinkLayerAddress":  "00-00-00-00-00-00",
+                          "State":  0
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.255",
+                          "LinkLayerAddress":  "FF-FF-FF-FF-FF-FF",
+                          "State":  6
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.20",
+                          "LinkLayerAddress":  "00-15-5D-00-39-0B",
+                          "State":  4
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.15",
+                          "LinkLayerAddress":  "00-15-5D-00-39-0B",
+                          "State":  4
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.14",
+                          "LinkLayerAddress":  "00-15-5D-00-39-0A",
+                          "State":  4
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.1",
+                          "LinkLayerAddress":  "00-00-00-00-00-00",
+                          "State":  0
+                      },
+                      {
+                          "InterfaceAlias":  "Ethernet",
+                          "InterfaceIndex":  6,
+                          "IPAddress":  "10.10.10.1",
+                          "LinkLayerAddress":  "00-00-00-00-00-00",
+                          "State":  0
+                      }
+                  ],
+    "switches":  [
+                     {
+                         "Name":  "Cozystack-NAT",
+                         "Id":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                         "SwitchType":  1,
+                         "AllowManagementOS":  true
+                     },
+                     {
+                         "Name":  "WSL (Hyper-V firewall)",
+                         "Id":  "790e58b4-7939-4434-9358-89ae7ddbe87e",
+                         "SwitchType":  1,
+                         "AllowManagementOS":  true
+                     },
+                     {
+                         "Name":  "LayerSentry-DR-Internal",
+                         "Id":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                         "SwitchType":  1,
+                         "AllowManagementOS":  true
+                     }
+                 ],
+    "adapters":  [
+                     {
+                         "Name":  "vEthernet (WSL (Hyper-V firewall))",
+                         "InterfaceIndex":  19,
+                         "Status":  "Up",
+                         "MacAddress":  "00-15-5D-A0-AF-D6"
+                     },
+                     {
+                         "Name":  "vEthernet (LayerSentry-DR-Internal)",
+                         "InterfaceIndex":  25,
+                         "Status":  "Up",
+                         "MacAddress":  "00-15-5D-00-39-0C"
+                     },
+                     {
+                         "Name":  "vEthernet (Cozystack-NAT)",
+                         "InterfaceIndex":  5,
+                         "Status":  "Up",
+                         "MacAddress":  "00-15-5D-00-39-00"
+                     }
+                 ],
+    "addresses":  [
+                      {
+                          "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                          "InterfaceIndex":  25,
+                          "IPAddress":  "10.10.20.1",
+                          "PrefixLength":  24,
+                          "AddressState":  4
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                          "InterfaceIndex":  19,
+                          "IPAddress":  "172.20.112.1",
+                          "PrefixLength":  20,
+                          "AddressState":  4
+                      },
+                      {
+                          "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                          "InterfaceIndex":  5,
+                          "IPAddress":  "10.10.10.1",
+                          "PrefixLength":  24,
+                          "AddressState":  4
+                      },
+                      {
+                          "InterfaceAlias":  "Ethernet",
+                          "InterfaceIndex":  6,
+                          "IPAddress":  "172.28.0.57",
+                          "PrefixLength":  26,
+                          "AddressState":  4
+                      },
+                      {
+                          "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                          "InterfaceIndex":  1,
+                          "IPAddress":  "127.0.0.1",
+                          "PrefixLength":  8,
+                          "AddressState":  4
+                      }
+                  ],
+    "routes":  [
+                   {
+                       "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                       "InterfaceIndex":  19,
+                       "DestinationPrefix":  "255.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                       "InterfaceIndex":  25,
+                       "DestinationPrefix":  "255.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                       "InterfaceIndex":  5,
+                       "DestinationPrefix":  "255.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "255.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                       "InterfaceIndex":  1,
+                       "DestinationPrefix":  "255.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                       "InterfaceIndex":  19,
+                       "DestinationPrefix":  "224.0.0.0/4",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                       "InterfaceIndex":  25,
+                       "DestinationPrefix":  "224.0.0.0/4",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                       "InterfaceIndex":  5,
+                       "DestinationPrefix":  "224.0.0.0/4",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "224.0.0.0/4",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                       "InterfaceIndex":  1,
+                       "DestinationPrefix":  "224.0.0.0/4",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "172.28.0.63/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "172.28.0.57/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "172.28.0.0/26",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                       "InterfaceIndex":  19,
+                       "DestinationPrefix":  "172.20.127.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                       "InterfaceIndex":  19,
+                       "DestinationPrefix":  "172.20.112.1/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (WSL (Hyper-V firewall))",
+                       "InterfaceIndex":  19,
+                       "DestinationPrefix":  "172.20.112.0/20",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "169.254.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "169.254.169.254/32",
+                       "NextHop":  "172.28.0.1",
+                       "RouteMetric":  1,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "169.254.0.0/16",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  1,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                       "InterfaceIndex":  1,
+                       "DestinationPrefix":  "127.255.255.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                       "InterfaceIndex":  1,
+                       "DestinationPrefix":  "127.0.0.1/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Loopback Pseudo-Interface 1",
+                       "InterfaceIndex":  1,
+                       "DestinationPrefix":  "127.0.0.0/8",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                       "InterfaceIndex":  25,
+                       "DestinationPrefix":  "10.10.20.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                       "InterfaceIndex":  25,
+                       "DestinationPrefix":  "10.10.20.1/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (LayerSentry-DR-Internal)",
+                       "InterfaceIndex":  25,
+                       "DestinationPrefix":  "10.10.20.0/24",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                       "InterfaceIndex":  5,
+                       "DestinationPrefix":  "10.10.10.255/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                       "InterfaceIndex":  5,
+                       "DestinationPrefix":  "10.10.10.1/32",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "vEthernet (Cozystack-NAT)",
+                       "InterfaceIndex":  5,
+                       "DestinationPrefix":  "10.10.10.0/24",
+                       "NextHop":  "0.0.0.0",
+                       "RouteMetric":  256,
+                       "State":  0
+                   },
+                   {
+                       "InterfaceAlias":  "Ethernet",
+                       "InterfaceIndex":  6,
+                       "DestinationPrefix":  "0.0.0.0/0",
+                       "NextHop":  "172.28.0.1",
+                       "RouteMetric":  1,
+                       "State":  0
+                   }
+               ],
+    "nats":  [
+                 {
+                     "Name":  "Cozystack-NAT",
+                     "InternalIPInterfaceAddressPrefix":  "10.10.10.0/24",
+                     "Active":  1,
+                     "Store":  0
+                 }
+             ],
+    "mappings":  [
+
+                 ],
+    "vmNics":  [
+                   {
+                       "VMName":  null,
+                       "Name":  "Cozystack-NAT",
+                       "Id":  "Microsoft:BBFCE11A-D2CF-428F-918B-CB4CCEC961A5\\28145ABB-318A-4BB1-B49A-44847D54498E",
+                       "SwitchName":  "Cozystack-NAT",
+                       "SwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "00155D003900",
+                       "MacAddressSpoofing":  1,
+                       "DynamicMacAddressEnabled":  null,
+                       "IPAddresses":  null
+                   },
+                   {
+                       "VMName":  null,
+                       "Name":  "LayerSentry-DR-Internal",
+                       "Id":  "Microsoft:3BCF3EAB-BC74-44C3-96B6-0064B636525A\\1C99D321-27FA-4F91-A19B-A8606D86F640",
+                       "SwitchName":  "LayerSentry-DR-Internal",
+                       "SwitchId":  "3bcf3eab-bc74-44c3-96b6-0064b636525a",
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "00155D00390C",
+                       "MacAddressSpoofing":  1,
+                       "DynamicMacAddressEnabled":  null,
+                       "IPAddresses":  null
+                   },
+                   {
+                       "VMName":  null,
+                       "Name":  "Host Vnic 790E58B4-7939-4434-9358-89AE7DDBE87E",
+                       "Id":  "Microsoft:790E58B4-7939-4434-9358-89AE7DDBE87E\\790E58B4-7939-4434-9358-89AE7DDBE87F",
+                       "SwitchName":  "WSL (Hyper-V firewall)",
+                       "SwitchId":  "790e58b4-7939-4434-9358-89ae7ddbe87e",
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "00155DA0AFD6",
+                       "MacAddressSpoofing":  1,
+                       "DynamicMacAddressEnabled":  null,
+                       "IPAddresses":  null
+                   },
+                   {
+                       "VMName":  "layersentry-dr-rocky9",
+                       "Name":  "Network Adapter",
+                       "Id":  "Microsoft:61FEF4DC-44DC-43AD-A2A0-F923912A01D7\\8405E25A-FF3B-4B8C-9DB8-5C2D609A3CA6",
+                       "SwitchName":  "Cozystack-NAT",
+                       "SwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "00155D00390B",
+                       "MacAddressSpoofing":  0,
+                       "DynamicMacAddressEnabled":  true,
+                       "IPAddresses":  [
+
+                                       ]
+                   },
+                   {
+                       "VMName":  "sen",
+                       "Name":  "Network Adapter",
+                       "Id":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\174A74C0-18CA-4B09-BC4C-8E9696DEAFE9",
+                       "SwitchName":  "Cozystack-NAT",
+                       "SwitchId":  "bbfce11a-d2cf-428f-918b-cb4ccec961a5",
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "00155D00390A",
+                       "MacAddressSpoofing":  0,
+                       "DynamicMacAddressEnabled":  true,
+                       "IPAddresses":  [
+
+                                       ]
+                   },
+                   {
+                       "VMName":  "sen",
+                       "Name":  "LayerSentry-DC-Guest-R0",
+                       "Id":  "Microsoft:29BA176B-B81A-4F47-8F51-ECEC869F247F\\7CA4C078-0E79-405B-A054-A6863204C2C4",
+                       "SwitchName":  null,
+                       "SwitchId":  null,
+                       "Status":  [
+                                      2
+                                  ],
+                       "MacAddress":  "0229BA176B81",
+                       "MacAddressSpoofing":  1,
+                       "DynamicMacAddressEnabled":  false,
+                       "IPAddresses":  [
+
+                                       ]
+                   }
+               ]
+}
