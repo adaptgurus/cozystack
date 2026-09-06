@@ -236,6 +236,7 @@ jobs:
           $backupsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackups' @{ listall = 'true' }
           $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
           $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
+          $vlanPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVlanIpRanges' @{ page = '1'; pagesize = '100' }) 'listVlanIpRanges'
           $clustersPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listClusters' @{ listall = 'true' }) 'listClusters'
           $hostsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listHosts' @{ listall = 'true'; type = 'Routing' }) 'listHosts'
           $storagePayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listStoragePools' @{ listall = 'true' }) 'listStoragePools'
@@ -271,9 +272,10 @@ jobs:
             Capabilities = Select-InventoryItems $capabilities 'capability' @('cloudstackversion', 'kvmsnapshotenabled')
             ManagementServers = Select-InventoryItems $managementPayload 'managementserver' @('id', 'name', 'version', 'state', 'ipaddress', 'agentscount', 'pendingjobscount')
             Networks = Select-InventoryItems $networksPayload 'network' @('id', 'name', 'zoneid', 'state', 'type', 'networkofferingid', 'vpcid', 'cidr', 'gateway', 'broadcastdomaintype')
-            Templates = Select-InventoryItems $templatesPayload 'template' @('id', 'name', 'zoneid', 'isready', 'hypervisor', 'format', 'size', 'templatetype')
+            Templates = Select-InventoryItems $templatesPayload 'template' @('id', 'name', 'zoneid', 'isready', 'hypervisor', 'format', 'size', 'templatetype', 'checksum')
             Zones = Select-InventoryItems $zonesPayload 'zone' @('id', 'name', 'networktype', 'allocationstate', 'localstorageenabled')
-            Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate')
+            Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate', 'gateway', 'netmask', 'startip', 'endip')
+            VlanIpRanges = Select-InventoryItems $vlanPayload 'vlaniprange' @('id', 'zoneid', 'podid', 'networkid', 'physicalnetworkid', 'vlan', 'gateway', 'netmask', 'startip', 'endip', 'forvirtualnetwork')
             Clusters = Select-InventoryItems $clustersPayload 'cluster' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'hypervisortype', 'allocationstate', 'managedstate')
             Hosts = Select-InventoryItems $hostsPayload 'host' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'hypervisor', 'hypervisorversion', 'state', 'resourcestate', 'hahost')
             PrimaryStorage = Select-InventoryItems $storagePayload 'storagepool' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'type', 'scope', 'state', 'capacityiops', 'overprovisionfactor')
@@ -297,7 +299,7 @@ jobs:
           $jsonPath = Join-Path $evidence 'inventory.json'
           # PowerShell unrolls function results: normalize every public collection
           # after projection, including zero and singleton optional collections.
-          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
+          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
             $inventory[$field] = @($inventory[$field] | Where-Object { $null -ne $_ })
           }
           $inventory.BackupApiObservations.listBackupProviders.HttpStatusCode = $providersObservation.HttpStatusCode

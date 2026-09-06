@@ -34,7 +34,7 @@ function Invoke-RestMethod {
     listBackups='backup'; listZones='zone'; listPods='pod'; listClusters='cluster';
     listHosts='host'; listStoragePools='storagepool'; listImageStores='imagestore';
     listBackupRepositories='backuprepository'; listBackupOfferings='backupoffering';
-    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'
+    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'; listVlanIpRanges='vlaniprange'
   }
   if (-not $collections.ContainsKey($command)) { throw 'Unexpected API' }
   $item = @{ id='fixture-id'; name='fixture'; cloudstackversion='4.22.1.1'; password='SECRET_SENTINEL'; userdata='SECRET_SENTINEL'; url='SECRET_SENTINEL' }
@@ -80,7 +80,7 @@ class InventoryTests(unittest.TestCase):
         self.assertNotIn('fixture-secret', result.stdout + result.stderr)
 
     def test_stable_arrays_zero_singleton_many(self):
-        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'Clusters', 'Hosts',
+        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'Clusters', 'Hosts',
                   'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories',
                   'BackupOfferings', 'BackupProviders', 'Backups', 'VirtualMachines', 'RecentAsyncJobs')
         for mode, count in (('zero', 0), ('one', 1), ('many', 2)):

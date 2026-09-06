@@ -90,6 +90,18 @@ class StorageProofTests(unittest.TestCase):
         with patch.object(collector, 'command', return_value=xml.replace('<uuid>' + collector.POOL, '<uuid>wrong')):
             self.assertEqual(collector.pool_identity()['status'], 'INVALID_OUTPUT')
 
+    def test_routes_and_plugin_package_omit_unrequested_content(self):
+        routes = [{'dst': '10.10.20.0/24', 'dev': 'cloudbr0', 'gateway': '10.10.10.1', 'private': 'never-publish'}]
+        with patch.object(collector, 'command', return_value=json.dumps(routes)):
+            result = collector.public_routes()
+        self.assertEqual(result['routes'][0]['dst'], '10.10.20.0/24')
+        self.assertNotIn('never-publish', json.dumps(result))
+        with patch.object(collector, 'command', side_effect=['cloudstack-management 4.22.1.1 1',
+                               '/usr/share/cloudstack-management/lib/cloud-plugin-backup-nas-4.22.1.1.jar\n/etc/private-never-publish']):
+            result = collector.plugin_package()
+        self.assertEqual(len(result['nasPluginPackagePaths']), 1)
+        self.assertNotIn('never-publish', json.dumps(result))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -138,6 +138,35 @@ def pool_identity():
         return {'status': 'INVALID_OUTPUT'}
 
 
+def public_routes():
+    raw = command(['ip', '-j', '-4', 'route', 'show', 'table', 'main'])
+    try:
+        data = json.loads(raw or 'null')
+        if not isinstance(data, list) or len(data) > 128:
+            raise ValueError('invalid route list')
+        values = []
+        for route in data:
+            if not isinstance(route, dict):
+                raise ValueError('invalid route')
+            values.append({k: v for k, v in route.items() if k in {'dst', 'gateway', 'dev', 'prefsrc', 'protocol', 'scope'}
+                           and isinstance(v, str) and re.fullmatch(r'[A-Za-z0-9_./:-]{1,128}', v)})
+        return {'status': 'OBSERVED', 'routes': values}
+    except (ValueError, TypeError):
+        return {'status': 'UNAVAILABLE_OR_INVALID'}
+
+
+def plugin_package():
+    package = command(['rpm', '-q', '--qf', '%{NAME} %{VERSION} %{RELEASE}', 'cloudstack-management'])
+    files = command(['rpm', '-ql', 'cloudstack-management'])
+    if package is None or files is None or not re.fullmatch(r'cloudstack-management [A-Za-z0-9_.+-]+ [A-Za-z0-9_.+-]+', package):
+        return {'status': 'UNAVAILABLE'}
+    names = [line for line in files.splitlines() if re.fullmatch(r'/usr/(?:share|lib)/[A-Za-z0-9_./-]+/cloud-plugin-backup-nas-[A-Za-z0-9_.-]+\.jar', line)]
+    if len(names) > 16:
+        return {'status': 'OUTPUT_LIMIT'}
+    return {'status': 'PACKAGE_OBSERVED', 'managementPackage': package,
+            'nasPluginPackagePaths': names, 'pluginLoaded': 'NOT_ESTABLISHED'}
+
+
 def collect():
     result = {'schemaVersion': '1.0', 'target': TARGET, 'mutationPerformed': False}
     raw = command(['ip', '-j', '-4', 'address', 'show'])
@@ -153,6 +182,8 @@ def collect():
     except (OSError, ValueError, UnicodeError):
         result['systemVm'] = {'status': 'UNAVAILABLE_OR_CHANGED', 'versionEstablished': False}
     result['pool'] = pool_identity()
+    result['routes'] = public_routes()
+    result['managementPlugin'] = plugin_package()
     return dict(result, status='COLLECTED')
 
 
