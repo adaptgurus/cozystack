@@ -1,5 +1,8 @@
 name: LayerSentry RKE2 candidate DR boot qualification
 on:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-rke2-dr-boot-qualification.yml]
   workflow_dispatch:
     inputs:
       image-run:
@@ -27,10 +30,10 @@ jobs:
     timeout-minutes: 45
     env:
       BOOT_SOURCE: e96e9b8d211d39bcde00704cda70b22f347d1f07
-      IMAGE_RUN: ${{ inputs.image-run }}
-      IMAGE_ARTIFACT: ${{ inputs.image-artifact }}
-      IMAGE_SOURCE: ${{ inputs.image-source }}
-      IMAGE_SHA256: ${{ inputs.image-sha256 }}
+      IMAGE_RUN: ${{ inputs.image-run || '34050507635' }}
+      IMAGE_ARTIFACT: ${{ inputs.image-artifact || '9994542246' }}
+      IMAGE_SOURCE: ${{ inputs.image-source || 'f05710874613c3a38c2704c28650a04f7bae2aef' }}
+      IMAGE_SHA256: ${{ inputs.image-sha256 || '8ee4a820fd427abf3f00e0f55b0421c8cb9d5fa054cd84bc0aab62fc1fc4bf77' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -52,8 +55,8 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           repository: adaptgurus/cloudstack
-          run-id: ${{ inputs.image-run }}
-          artifact-ids: ${{ inputs.image-artifact }}
+          run-id: ${{ inputs.image-run || '34050507635' }}
+          artifact-ids: ${{ inputs.image-artifact || '9994542246' }}
           github-token: ${{ github.token }}
           merge-multiple: true
           path: ${{ runner.temp }}/layersentry-cpu-candidate-${{ github.run_id }}
