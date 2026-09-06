@@ -56,7 +56,7 @@ function Read-TrustConsole([string]$Private) {
     $digest = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
     $knownPublic = $digest -cin @('6d4362bb6d0fe79b88ec077b24dbceadda16b75add5f173fc39642d4aaabe398',
         '2b397045222983268bf0807dbbe8db59ae7ab9cfa7e5588494939f0665ecdb8a')
-    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started; KnownPublicImage = $knownPublic; ImageSha256 = $digest }
+    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started; KnownPublicImage = $knownPublic; ImageSha256 = $digest; Ocr = $ocr }
 }
 
 function Get-TrustPrompt($View) {
@@ -108,6 +108,41 @@ function Get-TrustPromptDiagnostics($View) {
         rootPromptCandidates = $candidates
         loginRejectedMessage = @($View.Lines | Where-Object { $_ -cmatch '^[Ll]ogin\s+incorrect[.!]?$' }).Count -gt 0
         rootAndHostRecognized = @($View.Lines | Where-Object { $_ -cmatch 'root' -and $_ -cmatch '[l1I]ayersentry' }).Count -gt 0
+    }
+}
+
+function Export-TrustRootPromptCrop($View, [string]$Out) {
+    # Publish at most one short terminal row, never the credential/history frame.
+    $roots = @($View.Ocr.lines | Where-Object { $_.text -ceq '[root@layersentry' })
+    if ($roots.Count -ne 1) { return $null }
+    $root = $roots[0]
+    $top = ($root.words | ForEach-Object { $_.boundingRect.y } | Measure-Object -Minimum).Minimum
+    $bottom = ($root.words | ForEach-Object { $_.boundingRect.y + $_.boundingRect.height } | Measure-Object -Maximum).Maximum
+    $left = ($root.words | ForEach-Object { $_.boundingRect.x } | Measure-Object -Minimum).Minimum
+    $right = ($root.words | ForEach-Object { $_.boundingRect.x + $_.boundingRect.width } | Measure-Object -Maximum).Maximum
+    if ($left -gt 16 -or $right -gt 350 -or $top -lt 0 -or $bottom - $top -gt 40) { return $null }
+    foreach ($line in $View.Ocr.lines) {
+        if ($line.text -ceq '[root@layersentry') { continue }
+        $y = ($line.words | ForEach-Object { $_.boundingRect.y } | Measure-Object -Minimum).Minimum
+        $end = ($line.words | ForEach-Object { $_.boundingRect.y + $_.boundingRect.height } | Measure-Object -Maximum).Maximum
+        if ($y -lt $bottom -and $end -gt $top -and $line.text -cnotmatch '^[ ~_\-\[\]{}()|Il1#]*$') { return $null }
+    }
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [Drawing.Bitmap]::new($View.Image)
+    $crop = $null
+    try {
+        # OCR used 2x scaling; map its visible glyph bounds to original pixels.
+        $y = [Math]::Max(0, [int][Math]::Floor($top / 2) - 2)
+        $height = [Math]::Min(24, [int][Math]::Ceiling($bottom / 2) - $y + 3)
+        if ($y + $height -gt $bitmap.Height -or $bitmap.Width -lt 192) { return $null }
+        $rectangle = [Drawing.Rectangle]::new(0, $y, 192, $height)
+        $crop = $bitmap.Clone($rectangle, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
+        $path = Join-Path $Out 'public-root-prompt-row.png'
+        $crop.Save($path, [Drawing.Imaging.ImageFormat]::Png)
+        return [ordered]@{ sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); width=192; height=$height }
+    } finally {
+        if ($null -ne $crop) { $crop.Dispose() }
+        $bitmap.Dispose()
     }
 }
 
@@ -251,6 +286,9 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state['initialPrompt'] = $prompt
         if ($Phase -eq 'Observe') {
             $state['promptDiagnostics'] = Get-TrustPromptDiagnostics $view
+            if ($prompt -eq 'UNKNOWN' -and $state.promptDiagnostics.rootPromptCandidates -contains '[root@layersentry') {
+                $state['rootPromptRow'] = Export-TrustRootPromptCrop $view $out
+            }
             if ($view.KnownPublicImage) { $state['reviewedPublicImageOcrLines'] = @($view.Lines) }
             # Public identity/count diagnostics only; never invoke keyboard methods.
             $systems = @(Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName 'Msvm_ComputerSystem' -Filter "Name='$script:DcVmId'" -ErrorAction Stop)
