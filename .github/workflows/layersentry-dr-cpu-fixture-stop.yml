@@ -1,0 +1,37 @@
+name: LayerSentry exact disposable DR fixture stop
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-dr-cpu-fixture-stop.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  inventory:
+    if: github.repository == 'adaptgurus/cozystack' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/modules-runtime-validation'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Stop exact owned disposable guest and preserve captured files
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+        run: ./hack/layersentry/invoke-dr-fixture-stop.ps1
+      - name: Retain exact retirement outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dr-fixture-stop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-fixture-stop-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
