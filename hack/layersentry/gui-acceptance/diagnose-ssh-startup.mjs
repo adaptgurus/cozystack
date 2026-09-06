@@ -20,20 +20,31 @@ export function diagnosticEnvironments (source, helper) {
   return { baseline, fixed }
 }
 
+const hash = value => crypto.createHash('sha256').update(value).digest('hex')
+export function probeInputBinding (executable, executableSha256, args, env, captureMarker = false) {
+  const stableEnvironment = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ProgramData').sort(([a], [b]) => a.localeCompare(b)))
+  return { executableSha256, executablePathSha256: hash(executable), argumentsSha256: hash(JSON.stringify(args)), environmentWithoutProgramDataSha256: hash(JSON.stringify(stableEnvironment)),
+    stdioSha256: hash(JSON.stringify(['ignore', captureMarker ? 'pipe' : 'ignore', 'pipe'])), programDataPresent: typeof env.ProgramData === 'string' && env.ProgramData.length > 0 }
+}
+
 async function probe (executable, args, env, captureMarker = false) {
+  const metadata = fs.statSync(executable)
+  requireThat(metadata.isFile() && metadata.size <= 32 * 1024 * 1024, 'SSH_DIAGNOSTIC_EXECUTABLE_SIZE')
+  const inputBinding = probeInputBinding(executable, hash(fs.readFileSync(executable)), args, env, captureMarker)
   return new Promise(resolve => {
+    let stdoutBytes = 0; let stderrBytes = 0
     let stdout = Buffer.alloc(0); let stderr = Buffer.alloc(0); let truncated = false; let timedOut = false; let settled = false
     let spawnErrorCode = null; let exitCode = null; let exitSignal = null; let cleanupTimer
     const child = spawn(executable, args, { env, shell: false, windowsHide: true, stdio: ['ignore', captureMarker ? 'pipe' : 'ignore', 'pipe'] })
     const append = (data, current) => { if (data.length + current.length > 32768) truncated = true; return Buffer.concat([current, data.subarray(0, Math.max(0, 32768 - current.length))]) }
-    child.stdout?.on('data', data => { stdout = append(data, stdout) })
-    child.stderr?.on('data', data => { stderr = append(data, stderr) })
+    child.stdout?.on('data', data => { stdoutBytes += data.length; stdout = append(data, stdout) })
+    child.stderr?.on('data', data => { stderrBytes += data.length; stderr = append(data, stderr) })
     child.once('error', error => { spawnErrorCode = ['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'ENOMEM'].includes(error.code) ? error.code : 'OTHER' })
     child.once('exit', (code, signal) => { exitCode = Number.isInteger(code) ? code : null; exitSignal = ['SIGTERM', 'SIGKILL'].includes(signal) ? signal : (signal ? 'OTHER' : null) })
     const finish = closed => {
       if (settled) return
       settled = true; clearTimeout(timer); clearTimeout(cleanupTimer)
-      const receipt = { processId: child.pid || null, exitCode, spawnErrorCode, exitSignal, timedOut, processClosed: closed, outputTruncated: truncated, stderrClass: classifySshFailure(stderr.toString('utf8')),
+      const receipt = { inputBinding, stderrBytes, stdoutBytes: captureMarker ? stdoutBytes : null, processId: child.pid || null, exitCode, spawnErrorCode, exitSignal, timedOut, processClosed: closed, outputTruncated: truncated, stderrClass: classifySshFailure(stderr.toString('utf8')),
         ...(captureMarker ? { dummyMarkerMatched: stdout.toString('utf8').trim() === MARKER } : {}) }
       stdout.fill(0); stderr.fill(0); stdout = Buffer.alloc(0); stderr = Buffer.alloc(0)
       resolve(receipt)
@@ -47,9 +58,14 @@ async function probe (executable, args, env, captureMarker = false) {
 export function acceptStartupProof (result) {
   requireThat(result?.schema === 1 && result.networkConnectionAttempted === false && result.realCredentialsUsed === false, 'SSH_STARTUP_PROOF_SCOPE')
   const baseline = result.configuration?.baseline; const fixed = result.configuration?.fixed
-  requireThat(baseline?.exitCode === 255 && baseline.stderrClass === 'PROGRAMDATA_MISSING' && fixed?.exitCode === 0, 'SSH_STARTUP_CAUSE_NOT_REPRODUCED')
-  for (const item of [baseline, fixed, result.askpass?.baseline, result.askpass?.fixed]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
+    requireThat(baseline?.exitCode === 255 && fixed?.exitCode === 0 && (baseline.stderrClass === 'PROGRAMDATA_MISSING' || (baseline.stderrClass === 'UNKNOWN' && baseline.stderrBytes === 0)), 'SSH_STARTUP_CAUSE_NOT_REPRODUCED')
+  for (const pair of [result.configuration, result.askpass]) {
+    requireThat(pair?.baseline?.inputBinding?.programDataPresent === false && pair?.fixed?.inputBinding?.programDataPresent === true, 'SSH_STARTUP_ENVIRONMENT_DELTA_CHANGED')
+    for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentWithoutProgramDataSha256', 'stdioSha256']) requireThat(/^[0-9a-f]{64}$/.test(pair.baseline.inputBinding[key]) && pair.baseline.inputBinding[key] === pair.fixed.inputBinding[key], 'SSH_STARTUP_INVARIANTS_CHANGED')
+  }
+  for (const item of [baseline, fixed, result.askpass?.baseline, result.askpass?.fixed]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && item.exitSignal === null && Number.isSafeInteger(item.stderrBytes) && item.stderrBytes >= 0 && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
   requireThat(result.askpass.baseline.exitCode === 0 && result.askpass.baseline.dummyMarkerMatched === true && result.askpass.fixed.exitCode === 0 && result.askpass.fixed.dummyMarkerMatched === true, 'SSH_DUMMY_ASKPASS_FAILED')
+  return baseline.stderrClass === 'PROGRAMDATA_MISSING' ? 'EXACT_MESSAGE_AND_DIFFERENTIAL' : 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE'
 }
 
 async function main () {
@@ -72,7 +88,7 @@ async function main () {
     // its path is an environment value, never interpolated command text.
     const args = ['-NoProfile', '-NonInteractive', '-Command', '& $env:LAYERSENTRY_DUMMY_ASKPASS']
     result.askpass = { baseline: await probe(powershell, args, baseline, true), fixed: await probe(powershell, args, fixed, true) }
-    acceptStartupProof(result); result.status = 'PASS'
+    result.causalProof = acceptStartupProof(result); result.status = 'PASS'
   } catch (error) { result.reason = publicFailure(error) } finally {
     if (fs.existsSync(helper)) fs.unlinkSync(helper)
     result.dummyHelperRemoved = !fs.existsSync(helper)
