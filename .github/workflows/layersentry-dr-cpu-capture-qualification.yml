@@ -1,0 +1,84 @@
+name: LayerSentry retained CPU DR capture qualification
+on:
+  workflow_dispatch:
+    inputs:
+      boot-run:
+        required: true
+        type: string
+        description: Successful retained CPU boot run in this repository
+      boot-artifact:
+        required: true
+        type: string
+        description: Exact bounded boot evidence artifact ID
+      boot-runner-source:
+        required: true
+        type: string
+        description: Exact Cozystack commit of that successful boot run
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  qualify:
+    if: github.repository == 'adaptgurus/cozystack'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 55
+    env:
+      BOOT_SOURCE: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
+      CAPTURE_SOURCE: 0152e63182e0f01abda723206f57325042a2536f
+      IMAGE_SHA256: 61c0b8088fc0c08a0263d8076dc6a9f2b402bc7e05becd6d7c1cde60e1a0c356
+      BOOT_RUN: ${{ inputs.boot-run }}
+      BOOT_ARTIFACT: ${{ inputs.boot-artifact }}
+      BOOT_RUNNER_SOURCE: ${{ inputs.boot-runner-source }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Bind successful retained boot run and artifact
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:BOOT_RUN -cnotmatch '^[0-9]{1,20}$' -or $env:BOOT_ARTIFACT -cnotmatch '^[0-9]{1,20}$' -or $env:BOOT_RUNNER_SOURCE -cnotmatch '^[0-9a-f]{40}$') { throw 'Exact immutable boot inputs required.' }
+          $headers = @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'}
+          $base = 'https://api.github.com/repos/adaptgurus/cozystack/actions'
+          $run = Invoke-RestMethod -Uri "$base/runs/$env:BOOT_RUN" -Headers $headers -TimeoutSec 30
+          if ($run.head_sha -cne $env:BOOT_RUNNER_SOURCE -or $run.head_branch -cne 'codex/modules-runtime-validation' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success' -or $run.path -cne '.github/workflows/layersentry-rke2-dr-boot-qualification.yml') { throw 'Boot workflow source/result mismatch.' }
+          $artifact = Invoke-RestMethod -Uri "$base/artifacts/$env:BOOT_ARTIFACT" -Headers $headers -TimeoutSec 30
+          if ([string]$artifact.workflow_run.id -cne $env:BOOT_RUN -or $artifact.expired -or $artifact.name -cne "layersentry-rke2-dr-boot-$env:BOOT_RUN-$($run.run_attempt)" -or $artifact.digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or $artifact.size_in_bytes -gt 16777216) { throw 'Boot artifact identity/size mismatch.' }
+          $out = Join-Path $env:RUNNER_TEMP "layersentry-dr-cpu-capture-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
+          @{bootRun=$env:BOOT_RUN;bootArtifact=$env:BOOT_ARTIFACT;bootRunnerSource=$env:BOOT_RUNNER_SOURCE;artifactDigest=$artifact.digest;artifactBytes=$artifact.size_in_bytes;runAttempt=$run.run_attempt} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $out 'boot-binding.json') -Encoding UTF8
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: adaptgurus/cozystack
+          run-id: ${{ inputs.boot-run }}
+          artifact-ids: ${{ inputs.boot-artifact }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/layersentry-dr-capture-boot-${{ github.run_id }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: adaptgurus/cloudstack
+          ref: 0152e63182e0f01abda723206f57325042a2536f
+          path: capture-source
+          persist-credentials: false
+      - name: Capture retained fixture once through verified DR SSH
+        shell: powershell
+        env:
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+        run: ./hack/layersentry/invoke-dr-cpu-capture.ps1
+      - name: Preserve bounded provider evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dr-cpu-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-cpu-capture-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
