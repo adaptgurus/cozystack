@@ -4,7 +4,7 @@ on:
     inputs:
       phase:
         type: choice
-        options: [inspect, prepare, reconcile-socket]
+        options: [inspect, prepare, reconcile-socket, complete-iso-tool]
         default: inspect
         required: true
       prior-run:

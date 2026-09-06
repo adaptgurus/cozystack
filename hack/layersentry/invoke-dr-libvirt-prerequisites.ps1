@@ -21,10 +21,10 @@ try {
     [IO.File]::WriteAllText($known, ($keys -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     $script = (Get-Content -LiteralPath 'hack/layersentry/prepare-dr-libvirt-validation.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
-    if ($env:DR_PHASE -cnotin @('prepare', 'inspect', 'reconcile-socket')) { throw 'Invalid phase.' }
+    if ($env:DR_PHASE -cnotin @('prepare', 'inspect', 'reconcile-socket', 'complete-iso-tool')) { throw 'Invalid phase.' }
     if ($env:GITHUB_RUN_ID -cnotmatch '^[0-9]{1,20}$') { throw 'Run identity invalid.' }
     $prior = ''
-    if ($env:DR_PHASE -ceq 'reconcile-socket') {
+    if ($env:DR_PHASE -cin @('reconcile-socket', 'complete-iso-tool')) {
         if ($env:DR_PRIOR_RUN -cnotmatch '^[0-9]{1,20}$') { throw 'Prior run invalid.' }
         $prior = ' ' + $env:DR_PRIOR_RUN
     }
