@@ -1,0 +1,70 @@
+name: LayerSentry DC Guest Network
+
+on:
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-guest-network-actions/*.json]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [Plan, Apply]
+        default: Plan
+        required: true
+      plan_sha256:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  network:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact guest-network source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind exact phase and run fixed DC controller
+        shell: powershell
+        env:
+          REQUEST_MODE: ${{ inputs.mode }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+          CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+          CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -cne 'refs/heads/codex/dr-dc-trust'){throw 'Exact isolated ref required.'}
+          $mode=$env:REQUEST_MODE
+          $plan=$env:PLAN_SHA256
+          if($env:GITHUB_EVENT_NAME -ceq 'push'){
+            $files=@(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-guest-network-actions | Where-Object {$_ -cmatch '^hack/layersentry/dc-guest-network-actions/[a-z0-9-]+\.json$'})
+            if($LASTEXITCODE -ne 0 -or $files.Count -ne 1){throw 'One immutable request required.'}
+            $request=Get-Content -LiteralPath $files[0] -Raw|ConvertFrom-Json
+            if((@($request.PSObject.Properties.Name|Sort-Object)-join ',') -cne 'authorization,mode,planSha256,schema,target' -or $request.schema -ne 1 -or $request.target -cne '10.10.10.14' -or $request.authorization -cne 'DC-GUEST-NETWORK-PHASE'){throw 'Invalid request scope.'}
+            $mode=$request.mode;$plan=$request.planSha256
+          }elseif($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch'){throw 'Unsupported event.'}
+          if($mode -cnotin @('Plan','Apply') -or ($mode -ceq 'Plan' -and $plan)){throw 'Invalid mode.'}
+          ./hack/layersentry/invoke-dc-guest-network.ps1 -Mode $mode -PlanReceiptPath hack/layersentry/evidence/dc-guest-network-reviewed-plan.json -PlanReceiptSha256 $plan
+      - name: Upload public phase evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-guest-network-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/layersentry-dc-guest-plan-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/layersentry-dc-guest-network-${{ github.run_id }}-${{ github.run_attempt }}-*/
+          if-no-files-found: error
+          retention-days: 30

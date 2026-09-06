@@ -1,10 +1,10 @@
 # DC native recovery fixture reconciliation
 
-Status: read-only API, host, pool and SystemVM release-asset reconciliation completed. Native registration workflow is prepared for lead review and has not been dispatched. No storage, network, Zone, backup or host configuration was changed. The authenticated DC SSH host identity is established by the separately documented exact Hyper-V console proof. The existing Basic Zone is preserved.
+Status: native DC storage registration is complete and independently verified. Run `34058013796` passed; fresh API `34058157069` confirms primary storage Up, the NFS image store and the exact official SystemVM template `isready=true`. The source Basic Zone remains Disabled, with no SystemVM or user VM instances. Guest-network setup, address exclusions, SystemVM boot, GUI validation and same-database Advanced recovery are still pending. The next source-only controller adds only a dedicated guest NIC/bridge; no guest-network change has been dispatched.
 
-## Current API and host identity
+## Current verified API and host identity
 
-[Fresh API inventory 34055138570](https://github.com/adaptgurus/cozystack/actions/runs/34055138570), source `c693ad351c70fa6018145d0ac1d84502acf757f1`, remains PARTIAL because four backup APIs return 401 while the global framework is disabled/provider `dummy`. Management `4.22.1.1` is Up at `.14`, with one agent and zero pending jobs. Async-job listing is available and empty. These backup observations are configuration gates, not evidence of a bad API key or nonexistent repository.
+[Post-registration API inventory 34058157069](https://github.com/adaptgurus/cozystack/actions/runs/34058157069), source `f757d2fe754d82b2a533156e0093d39595dc84e4`, confirms the current table below. Overall PARTIAL remains caused by four B&R API 401 configuration gates while the framework is disabled/provider `dummy`; these are not bad-key or absent-repository claims.
 
 | Object | Exact observed identity/state |
 | --- | --- |
@@ -12,16 +12,18 @@ Status: read-only API, host, pool and SystemVM release-asset reconciliation comp
 | Pod | `020dc658-af4e-4e2e-bed5-0607de8a787f`, `mgmt`, Enabled |
 | KVM cluster | `7d2bb586-6b60-4c51-aa5f-3b4903f31e51`, `abc`, Managed/Enabled |
 | KVM host | `3abb80a8-bc4a-48de-bc99-dedc5ac91bf9`, Up/Enabled, `layersentry.lab.example` |
-| Primary/image stores | Both API collections empty, without truncation reported |
+| Primary/image stores | Primary `3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7` Up; NFS image store `e824ee8c-2fa1-466b-9948-629958479a78` registered |
 | Existing guest network | `9da9a6de-60f3-4fdb-be41-e3f103f491e7`, Shared/Setup, `10.10.20.0/24`, gateway `10.10.20.1` |
-| SystemVM template | `13f22f9c-61e2-4d88-93c0-5735212bccd0`, QCOW2/KVM/SYSTEM, `isready=false`, `zoneid=null` |
-| User VMs | API and read-only libvirt listings empty |
+| SystemVM template | `13f22f9c-61e2-4d88-93c0-5735212bccd0`, QCOW2/KVM/SYSTEM, `isready=true`, exact DC Zone and verified official checksum |
+| SystemVM/user instances | Fresh API lists empty; SystemVM boot and guest recovery not tested |
+
+## Historical discovery and original proposal (superseded where later evidence differs)
 
 [Verified host inventory 34052767019](https://github.com/adaptgurus/cozystack/actions/runs/34052767019) proves the existing management bridge `cloudbr0` owns `.14/24` and `eth0` forwards on it. Agent/libvirt/NFS services are active. Existing NFS exports `10.10.10.14:/export/primary` and `10.10.10.14:/export/secondary` use the existing root XFS filesystem; there is no evidence requiring a new disk format. The existing SystemVM filename exactly matches the API UUID. This links the objects by name but does not establish image version, integrity or readiness. The existing guest range `10.10.20.0/24` must not be confused with the management subnet `10.10.10.0/24`; guest routing, allocation ranges and SystemVM network reachability remain unverified.
 
 The historical DR thread `01a06d95-801f-74a0-bd9e-bc41aa825b17` was sent an explicit read-only coordination message through `codex queue`. No competing recent live jobs existed before the API dispatch. The separate storage proof uses the global live-environment lock and waits behind the root-owned `.20` boot qualification. No shared integration or historical worktree was edited.
 
-## Minimal proposed native fixture sequence — not executed
+## Historical: Minimal proposed native fixture sequence — not executed
 
 1. Reconcile the observed libvirt pool `9c9fbd8f-e4ee-4e02-9767-6d1cc7a2b8c9` with its public source/target identity and fresh API absence before registration. Do not delete or redefine it merely because API lists are empty. Once reconciled, use native `createStoragePool` for the existing primary NFS URL, exact DC Zone/Pod/cluster above, with cluster scope; use `addImageStore` with provider `NFS`, existing secondary URL and DC Zone. Before each create, re-list by identity and record the request/response in the runtime journal. Existing exports do not require the unsafe historical storage preparation helper.
 2. Establish the installed SystemVM image version and a trusted release checksum independently of its generated UUID filename. Observe native image-store/SystemVM template association and readiness after registration. If the existing image cannot be authenticated or is incompatible, propose an isolated supported replacement through the native installation process; do not overwrite the observed image under this read-only task. Verify pod management allocation and actual routes for the configured guest range before enabling the source Zone. An Up KVM host alone does not establish SSVM/console-proxy readiness.
@@ -32,11 +34,11 @@ The historical DR thread `01a06d95-801f-74a0-bd9e-bc41aa825b17` was sent an expl
 
 Source basis: CloudStack `api/.../backup/BackupManager.java` defines the non-dynamic framework flag; `server/.../backup/BackupManagerImpl.java:getCommands` gates API registration; `api/.../backup/repository/AddBackupRepositoryCmd.java` exposes cross-Zone repository eligibility; `plugins/backup/nas/.../NASBackupProvider.java` identifies `nas` and derives offerings from repositories. `UserVmManagerImpl.allocateVMFromBackup` loads backup and destination through the same database and supplies network IDs; its Basic allocator rejects explicit network IDs. The existing adapter retains its Advanced-destination guard. No backend core rewrite or readiness bypass is proposed.
 
-## Storage proof pending
+## Historical: Storage proof pending
 
 Exact source `be197cdec4dac371f7952a7e52c7991621c1b1fc`; [read-only storage run 34055365447](https://github.com/adaptgurus/cozystack/actions/runs/34055365447). Collector reads only the exact previously observed template directory/image and pool. It refuses symlink traversal, hardlinks, oversized or changing files, projects known public properties and pool fields, and publishes SHA-256 as an observation rather than a release-authenticity claim. Six real-file/hash/path/public-field tests and ten DC inventory tests pass. Final live image hash, pool identity and unresolved version gate will be appended after the serialized run completes.
 
-## Registration controller prepared for review
+## Historical: Registration controller prepared for review
 
 `hack/layersentry/register-dc-native-storage.py` reuses the existing native `Client` and POSIX durable `Journal`, and accepts only the fixed DC primary/image registration identities above. It is designed to execute on the verified `.14` guest against loopback `http://127.0.0.1:8080/client/api`, with API credentials injected privately by the future strict SSH launcher. The strict SSH launcher and explicit Plan/Register workflow are now prepared; no registration request file exists and no registration has been dispatched. The parent owns review and the eventual execution boundary.
 
@@ -52,7 +54,7 @@ python3 register-dc-native-storage.py --journal PRIVATE_PERSISTENT_DIRECTORY --p
 
 The source also extends the next read-only discovery with fixed pod gateway/netmask/start/end allocation, public VLAN ranges, template checksum, IPv4 main-table routes and the management RPM/NAS plugin package path. Nine executed PowerShell API collector tests and seven storage collector tests pass. These additional fields require fresh runtime evidence before any fixture decision.
 
-## Native driver collision gate
+## Historical: Native driver collision gate
 
 Root review identified an implicit native mutation that the initial wrapper-only preservation statement missed. `CloudStackPrimaryDataStoreLifeCycleImpl` lines 327–337 computes the NFS UUID with Java `UUID.nameUUIDFromBytes(storageHost + hostPath)`. Exact `10.10.10.14/export/primary` produces `3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7`, which differs from the observed existing pool `9c9fbd8f-e4ee-4e02-9767-6d1cc7a2b8c9`. `LibvirtStorageAdaptor` lines 738–870 can undefine/recreate a conflicting target-path pool or encounter a source conflict. The controller now checks that exact UUID and rejects either target-path collision or same-source/different-UUID collision before submission. The public proof also enumerates all pool names; an unreconciled additional pool blocks the fixed controller. A successful native create may add only its exact deterministic UUID after durable intent, while the old pool's definition must remain unchanged.
 
@@ -70,7 +72,7 @@ The [official 4.22.1.1 upgrade guide](https://docs.cloudstack.apache.org/en/4.22
 
 Artifacts: initial storage `9996000279`, digest `sha256:ae76978d5c9d4e885a92bb0eadf0e2e372aa95a27730a24cdd0b8c6e8d982b18`; combined storage `9996038164`, digest `sha256:c8d541b0ee9df6d7b0efbf91dc7cdb62e996a451972632bd95294358c241b4ff`; expanded API `9996042727`, digest `sha256:b3d67915460fe5fc34ea2c965fac6a25f229041ff85c43607652332c24146277`.
 
-## Strict registration launcher review boundary
+## Historical: Strict registration launcher review boundary
 
 `.github/workflows/layersentry-dc-native-storage-registration.yml` pins checkout to `github.sha`, serializes through `layersentry-live-environment`, defaults to Plan and accepts Register only from an explicit dispatch or a new immutable exact-target authorization request. No such request is included. It references only existing scoped DC SSH, independently verified known_hosts and CloudStack API secrets.
 
@@ -78,7 +80,7 @@ Artifacts: initial storage `9996000279`, digest `sha256:ae76978d5c9d4e885a92bb0e
 
 Read-only Hyper-V network discovery is prepared with exact `TESTSER` binding and explicit dispatch support; NAT API failures stop rather than becoming false empty success. It can observe management/guest route and address reservations, but no IP range is assigned by this change. Zone enablement, management restart, network changes, backup registration and any guest restore/start remain outside this registration slice.
 
-## First registration attempt and held retry
+## Historical: First registration attempt and held retry
 
 After full lead review of source `70adbc0c765b6ef35e6b617cf4dcc64468bc83f6`, exact TESTSER network inventory `34056883119` passed and no active lab jobs were reported. The lead explicitly authorized one immutable Register request. Run `34056971769`, source `67441e8d0e206f2e3c010d038059b6ab7a6b0472`, failed in the SSH phase with exit 1 and no structured remote result. The absence of a response is not being treated as proof of no mutation. Fresh API run `34057101769` and bounded public journal/storage observation `34057107214` were queued before considering another attempt. No automatic registration replay occurred.
 
@@ -115,3 +117,12 @@ Fresh API run `34058157069`, exact collector source `f757d2fe754d82b2a533156e009
 Physical network `a3182ad1-7de2-45e3-81ce-5ccbf9280421` is Enabled with broadcast domain range POD. It has exactly Guest traffic UUID `d33d6182-41c1-4217-9116-bf8234fc1b57` and Management traffic UUID `5f6ff203-7004-42e3-a4f6-10b2aa23ed98`; both current KVM labels are null. Source `ConsoleProxyManagerImpl.getDefaultNetworkForBasicZone` lines 661–675 and `SecondaryStorageManagerImpl` lines 609–622 select the Guest network for the default SystemVM NIC in a Basic Zone. Thus the proposed guest bridge matters to both SystemVM default interfaces, not only tenant VMs. Existing `10.10.20.1` switch gateway adjacency alone does not prove routing, return path or Internet access: the observed host NAT covers only `10.10.10.0/24`. Guest gateway forwarding/egress and console access from the operator must be independently checked before claiming usable SystemVM services; do not silently widen NAT or move management NICs.
 
 Registration artifact `9996568113` digest `sha256:0b3554273879ac554103deb04905a5857849541a72c93356253e2b7c69540465`; independent API artifact `9996608131` digest `sha256:0b97f0f893481ae97213a44337a3dc982f95f4bae4495bd3df795c3061933946`. Public results are downloaded at `/tmp/layersentry-dc-register-34058013796` and `/tmp/layersentry-dc-postregister-34058157069`. The live queue reservation was released to the lead after both completed; no further DC/DR/Hyper-V mutation is running from this slice.
+
+
+## Guest-network controller prepared; Apply not dispatched
+
+`DcGuestNetwork.psm1`, `invoke-dc-guest-network.ps1`, `dc-guest-network.py` and the strict SSH/private loader implement the reviewed fixed DC sequence. Plan reads the exact Hyper-V and guest/native scope without guest configuration or journal writes. It reports the actual management NIC `MacAddressSpoofing` value; the previous broad inventory omitted that field, so the old evidence alone cannot establish it. Apply requires a SHA-256-bound reviewed Plan receipt showing management spoof already On, the guest NIC absent and the exact VM/switch/management identities. If spoof is Off, Apply stops with a specific separate-review gate; it never changes that setting.
+
+The owned guest MAC is fixed locally administered `02:29:ba:17:6b:81`, checked for collision against all Hyper-V adapters. The [native Add-VMNetworkAdapter command](https://learn.microsoft.com/en-us/powershell/module/hyper-v/add-vmnetworkadapter) supports a specified static MAC. The controller adds only `LayerSentry-DC-Guest-R0` to exact `sen`, initially disconnected. The strict MAC-bound guest phase installs two deterministic NetworkManager profiles for `ls-guest0` and its single new port; the bridge has IPv4 and IPv6 disabled, with no gateway/default route. Only after those profiles reconcile does the host enable MAC spoofing on the owned guest NIC and connect it to the existing guest switch. The final guest phase verifies/activates that owned port/bridge and submits only `updateTrafficType` for the exact Guest UUID. Management label, NIC, bridge, address and all main IPv4 routes are asserted unchanged. No Zone enable, allocation range, NAT, management restart, DR VM or disk operation exists in this controller.
+
+Each create/connect/spoof/native action has intent recorded before submission. Unknown outcomes stop and can only reconcile exact observed identity; an unresolved earlier action is never automatically replayed. Owned NetworkManager autoconnect is explicitly armed before the host supplies carrier, so its expected bridge activation can reconcile without a duplicate activation command. Persistent host and guest journals remain separate from public artifacts and contain no credentials. Ten tests pass with no skips, including actual PowerShell lifecycle execution against constrained Hyper-V fixtures, durable filesystem intent/restart cases, exact MAC/address rejection, and the actual Legacy Windows argument boundary followed by Bash execution of the private loader. Runtime Plan and real NetworkManager behavior still require live observation; no network readiness claim is made.
