@@ -22,6 +22,10 @@ on:
         default: protected-personas
         type: choice
         options: [protected-personas, existing-operator]
+      dc_fixture_path:
+        description: Exact reviewed native DC identity/project receipt, required for DC
+        type: string
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -45,11 +49,13 @@ jobs:
           ARTIFACT_RUN: ${{ inputs.artifact_run_id }}
           ARTIFACT_NAME: ${{ inputs.artifact_name }}
           GH_TOKEN: ${{ github.token }}
+          DC_FIXTURE_PATH: ${{ inputs.dc_fixture_path }}
         run: |
           $ErrorActionPreference='Stop'
           if($env:REQUEST_PATH -cnotmatch '^hack/layersentry/gui-acceptance-requests/[A-Za-z0-9_-]+\.json$') {throw 'Request path rejected.'}
           if($env:ARTIFACT_RUN -cnotmatch '^[0-9]+$' -or $env:ARTIFACT_NAME -cnotmatch '^[A-Za-z0-9_-]{1,160}$') {throw 'Artifact input rejected.'}
           $r=Get-Content -LiteralPath $env:REQUEST_PATH -Raw -Encoding UTF8|ConvertFrom-Json
+          if($r.target -ceq 'dc' -and $env:DC_FIXTURE_PATH -cnotmatch '^hack/layersentry/gui-acceptance-requests/dc-fixture-[A-Za-z0-9_-]+\.json$') {throw 'Reviewed DC fixture receipt path required.'}
           if([string]$r.artifactRunId -cne $env:ARTIFACT_RUN -or [string]$r.artifactName -cne $env:ARTIFACT_NAME) {throw 'Artifact request binding mismatch.'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'}
           $run=Invoke-RestMethod -Uri "https://api.github.com/repos/adaptgurus/cozystack/actions/runs/$env:ARTIFACT_RUN" -Headers $headers -TimeoutSec 30
@@ -80,6 +86,7 @@ jobs:
         env:
           REQUEST_PATH: ${{ inputs.request_path }}
           CREDENTIAL_SOURCE: ${{ inputs.credential_source }}
+          DC_FIXTURE_PATH: ${{ inputs.dc_fixture_path }}
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
           DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
@@ -91,7 +98,7 @@ jobs:
           LAYERSENTRY_CLOUDSTACK_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
           LAYERSENTRY_CLOUDSTACK_PASSWORD: ${{ secrets.LAYERSENTRY_CLOUDSTACK_PASSWORD }}
         run: |
-          & ./hack/layersentry/gui-acceptance/invoke-acceptance.ps1 -RequestPath $env:REQUEST_PATH -ArtifactDirectory "$env:RUNNER_TEMP/layersentry-gui-artifact-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -EvidenceDirectory "$env:RUNNER_TEMP/layersentry-gui-evidence-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -CredentialSource $env:CREDENTIAL_SOURCE
+          & ./hack/layersentry/gui-acceptance/invoke-acceptance.ps1 -RequestPath $env:REQUEST_PATH -ArtifactDirectory "$env:RUNNER_TEMP/layersentry-gui-artifact-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -EvidenceDirectory "$env:RUNNER_TEMP/layersentry-gui-evidence-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -CredentialSource $env:CREDENTIAL_SOURCE -DcFixtureEvidencePath $env:DC_FIXTURE_PATH
           exit $LASTEXITCODE
       - name: Upload only allowlisted public evidence
         if: always()
