@@ -11,7 +11,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [ObserveIdentity, Plan]
+        options: [ObserveIdentity, Plan, Prepare]
         default: Plan
         required: true
       plan_path:
@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   native-tls:
-    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/dc-native-tls' && github.event_name == 'workflow_dispatch' && (inputs.mode == 'Plan' || inputs.mode == 'ObserveIdentity')
+    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/dc-native-tls' && github.event_name == 'workflow_dispatch' && (inputs.mode == 'Plan' || inputs.mode == 'ObserveIdentity' || (inputs.mode == 'Prepare' && inputs.plan_path == 'hack/layersentry/dc-native-tls-plans/plan-34062801410.json' && inputs.plan_sha256 == '2279b43d2a215a1d7c23fd535ca78c7049b93b15fb79cbd62e605f00881fb105' && inputs.firewall_sources == ''))
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 12
     steps:
@@ -41,7 +41,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Execute only the root-scheduled read-only native TLS Plan
+      - name: Execute only the root-scheduled native TLS observation or approved preparation
         shell: powershell
         env:
           MODE: ${{ inputs.mode }}
@@ -56,7 +56,8 @@ jobs:
           CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
         run: |
           $ErrorActionPreference='Stop'
-          if($env:MODE -cnotin @('ObserveIdentity','Plan')) {throw 'Only read-only observation is enabled in this workflow.'}
+          if($env:MODE -cnotin @('ObserveIdentity','Plan','Prepare')) {throw 'Only observation and reviewed preparation are enabled.'}
+          if($env:MODE -ceq 'Prepare' -and ($env:PLAN_PATH -cne 'hack/layersentry/dc-native-tls-plans/plan-34062801410.json' -or $env:PLAN_SHA256 -cne '2279b43d2a215a1d7c23fd535ca78c7049b93b15fb79cbd62e605f00881fb105' -or $env:FIREWALL_SOURCES -cne '')) {throw 'Exact reviewed Prepare Plan required.'}
           if($env:MODE -cnotin @('ObserveIdentity','Plan') -and $env:PLAN_PATH -cnotmatch '^hack/layersentry/dc-native-tls-plans/[A-Za-z0-9_-]+\.json$') {throw 'Reviewed TLS Plan path required.'}
           $sources=@()
           if($env:FIREWALL_SOURCES) {$sources=@($env:FIREWALL_SOURCES.Split(',')|ForEach-Object{$_.Trim()})}

@@ -1,0 +1,39 @@
+﻿{
+    "automaticReplay":  false,
+    "phase":  "Plan",
+    "plan":  {
+                 "biosUuid":  "ccbcac90-c8e3-4091-90a0-7e2e8cf2f7e5",
+                 "caCertificate":  "-----BEGIN CERTIFICATE-----\nMIIFDDCCAvSgAwIBAgIIC8jqPSNIbHcwDQYJKoZIhvcNAQELBQAwIzEhMB8GA1UE\nAwwYY2EuY2xvdWRzdGFjay5hcGFjaGUub3JnMCAXDTI2MDkwMzE5MzAzMFoYDzIw\nNTYwODI3MDczMDMwWjAjMSEwHwYDVQQDDBhjYS5jbG91ZHN0YWNrLmFwYWNoZS5v\ncmcwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCbcVIvWE9Gmdc5zX9x\ndZResaMahLdhASEDUnleOqeRhyokDoM3Zjmiiiu8guzTMtIC7CFLOY3wXpZPWtVG\nuMdSYhbYfWQqk4VkcSLeMkYjCbQ71/bGCPqJJEoMrjx7RxkLuJepOmEd8wcf1Tow\nn2boG1UvfoL5pFSZkmHTeC1yINGHV6Wudc9X9dVlv+zI4tj5Sa246IhZd80wE6Ut\ntu15FouUITvGRALVA19PF+HPiqCRMimQUUe/B3NbxWpj2vtcy/bzXuWFlqSVaIuh\nwN3iLcXxMiEMwfzg9MJPQljGbdU0Xb1bhcte4QHDjWd6jV/fAbqVKy9hTHfnkFi4\nM4ceNLK6++/2vjEjtt1A912VdlSjeWWIzkmkbNRlIoWj/FPZ2Zb0WZP8Fgq+ADoV\n7D5DorL4VN6evsM7C9kMXDTwYn7qLwBUOwx8pWr4ZMSAedQe2kjXfQ9tc+cLE6aI\nPia8uA0LgYZzQz0nrBq85aEBoHX79pDTq/1/qWTJoz7yD30n7P1ivdw3bxOLsH6F\nLMs3nLRpLWgXLvTzSUzOA5MhahyzQ8+vgprvoiYI/AbiYvqWc+MaO4DwzFXICUmu\nP7JSDm8cPXcF7d4ZHyaahsqtfLKyepINi3q0zTagwyfo80iKwDJNP0j6aEv0r6jc\nxvlew6tPyquGcQ2slGZCWrlpBwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MA4G\nA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUzFe3ogyjRcj7krm/Bi94lcLWADUwDQYJ\nKoZIhvcNAQELBQADggIBADWgb7cGIoVSwb9XJEp0N86h0y7byuf0+llv6pn2HNfO\nBsDo5qhL7v1iPWdIzi8J2YUlRgzdsN/RaohW+5zQKpj4prd+4d8MRjkC9oPDr0gh\n2yEp8Hd1cO7+T/hsIE+NGDamdulvR1ocXpL+k1gsdShEK4CWO1bVJpgWYM3lCX2C\nrGZ/gC50X3Vp9+WK1iyF1rnaLr9hb0i7Ht1+fUGRFYPi8qoAibDC5QWnOmqWSmk1\ngsgLH1Nrfy4smZzTtZ3ZJnv6h02uLBM3Q4RsvvGnEMtUDidbYVSDfGkaC8Rk9GN5\nHMBCMG8aTzkorOpbI/myefZHDkeR46ddweijuFyASAZQH8G7SQvje0GhoqfLJQT6\nafqphjA9YEPzyflErfUnMC4rXe/W0R60yGoI5YyaN9K1C5a4ZKqVjWl5NPAbbyhr\nAybboElM6Cil/Gf7oJgmrl5TC47SL/VThPHkgEwPhsn58R1PTX3zxaGws5WBPhIo\nBXBdLYyXYIA8StPf4x0/r7QYPftKvDghYQ83i2PtAFGjbe4Q1MZbAahUSt99gLtt\nqyPxhF6dMzRgjX2xhyR074AFP5bZZ9I6yGEHBTya5aidiWQxKXqVzUot/Ye4hQr7\n17G5T1eho7YoHvi7u0iZ1Mm62laFO1HzbQ2f7p2z1UuBvdD6qish3Gh+boqXw7W8\n-----END CERTIFICATE-----\n",
+                 "caProvider":  "root",
+                 "caSha256":  "67885ce20afcea82d0912937adb7a5d72c2f2cfff7fe894745a5574a4720b1bd",
+                 "durationDays":  30,
+                 "firewallSources":  [
+
+                                     ],
+                 "guestVmCount":  0,
+                 "hostname":  "layersentry.lab.example",
+                 "httpPort":  8080,
+                 "httpsPort":  8443,
+                 "identityEvidence":  {
+                                          "runId":  "34062671636",
+                                          "source":  "591272077e47d52d52aaf54b3f012bcf4a776520"
+                                      },
+                 "originalMetadata":  {
+                                          "gid":  989,
+                                          "mode":  416,
+                                          "uid":  0
+                                      },
+                 "productionCertified":  false,
+                 "schema":  1,
+                 "serverPropertiesSha256":  "3c10e35e00dc1f99f0ed982cf03fa05dd1f09634fc3a6f97ab998a90f64eb159",
+                 "systemVmCount":  0,
+                 "target":  "10.10.10.14",
+                 "vmId":  "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                 "zoneEnabled":  false
+             },
+    "planSha256":  "2279b43d2a215a1d7c23fd535ca78c7049b93b15fb79cbd62e605f00881fb105",
+    "productionCertified":  false,
+    "schema":  1,
+    "status":  "PARTIAL",
+    "target":  "10.10.10.14"
+}
