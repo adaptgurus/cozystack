@@ -24,6 +24,18 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          fetch-depth: 2
+      - name: Bind read-only request
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -cnotin @('refs/heads/codex/dr-dc-trust','refs/heads/ops/layersentry-hyperv-inventory')){throw 'Exact source binding required.'}
+          if($env:GITHUB_EVENT_NAME -ceq 'push'){
+            $files=@(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/network-inventory-actions | Where-Object {$_ -cmatch '^hack/layersentry/network-inventory-actions/[a-z0-9-]+\.json$'})
+            if($LASTEXITCODE -ne 0 -or $files.Count -ne 1){throw 'One immutable read-only request required.'}
+            $request=Get-Content -LiteralPath $files[0] -Raw|ConvertFrom-Json
+            if((@($request.PSObject.Properties.Name|Sort-Object)-join ',') -cne 'authorization,schema,target' -or $request.schema -ne 1 -or $request.target -cne 'TESTSER' -or $request.authorization -cne 'READ_ONLY_DC_NETWORK_PREREQUISITES'){throw 'Read-only request scope failed.'}
+          }elseif($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch'){throw 'Unsupported event.'}
       - name: Collect read-only switch and NAT state
         shell: powershell
         run: |
