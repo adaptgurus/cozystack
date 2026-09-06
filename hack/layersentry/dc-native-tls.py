@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import socket
 import stat
 import subprocess
@@ -302,8 +303,20 @@ def keystore_prepare(journal, expected):
     return journal.data['operations']['keystore']
 
 
+def prepare_tools():
+    # Check the exact execution PATH before an irreversible native issuance.
+    for command in ('openssl', 'keytool'):
+        require(shutil.which(command, path='/usr/sbin:/usr/bin:/sbin:/bin') is not None, 'TLS_PREPARE_TOOL_MISSING')
+    require(re.match(rb'OpenSSL 3\.', run(['openssl', 'version'])) is not None, 'TLS_OPENSSL_VERSION_UNSUPPORTED')
+    require(b'default' in run(['openssl', 'list', '-providers']), 'TLS_OPENSSL_PROVIDER_MISSING')
+    run(['keytool', '-J-version'])
+    run(['keytool', '-importkeystore', '-help'])
+    run(['keytool', '-list', '-help'])
+
+
 def prepare(api, journal, expected):
     validate_plan(expected)
+    prepare_tools()
     require(native_identity(api) == expected['hostname'], 'TLS_HOSTNAME_CHANGED')
     ca, fingerprint = ca_read(api)
     require(fingerprint == expected['caSha256'], 'TLS_ROOT_CA_PLAN_CHANGED')

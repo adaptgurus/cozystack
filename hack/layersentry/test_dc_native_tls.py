@@ -157,6 +157,17 @@ class TlsCase(unittest.TestCase):
         for change in ({'target': '10.10.10.20'}, {'mode': 'Shell'}, {'sources': {}}, {'mode': 'Install'}, {'apiKey': ''}):
             with self.assertRaises(ValueError): loader.parse_payload(json.dumps({**data, **change}).encode())
 
+    def test_missing_or_incompatible_tools_prevent_any_issuance(self):
+        api = Mock()
+        with patch.object(tls, 'validate_plan'), patch.object(tls.shutil, 'which', return_value=None), patch.object(tls, 'key_prepare') as key:
+            with self.assertRaisesRegex(GateError, 'PREPARE_TOOL_MISSING'): tls.prepare(api, self.journal, {})
+            api.assert_not_called(); key.assert_not_called()
+        self.assertEqual(self.journal.data['operations'], {})
+        with patch.object(tls.shutil, 'which', return_value='/usr/bin/tool'), patch.object(tls, 'run', return_value=b'OpenSSL 1.1.1'):
+            with self.assertRaisesRegex(GateError, 'VERSION_UNSUPPORTED'): tls.prepare_tools()
+        with patch.object(tls.shutil, 'which', return_value='/usr/bin/tool'), patch.object(tls, 'run', side_effect=[b'OpenSSL 3.2.2', b'default', GateError('TLS_NATIVE_COMMAND_FAILED')]):
+            with self.assertRaisesRegex(GateError, 'NATIVE_COMMAND_FAILED'): tls.prepare_tools()
+
     def test_native_bios_binding_rejects_vm_id_and_other_guest(self):
         tls.require_guest_bios('ccbcac90-c8e3-4091-90a0-7e2e8cf2f7e5')
         for value in (tls.VM_ID, '12345678-abcd-abcd-abcd-123456789abc', ''):
