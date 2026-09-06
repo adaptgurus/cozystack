@@ -34,6 +34,25 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24.20.0'
+      - name: Prove SSH startup correction without network or real credentials
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $private=Join-Path $env:RUNNER_TEMP "layersentry-ssh-startup-private-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-ssh-startup-evidence-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $private -ErrorAction Stop|Out-Null
+          New-Item -ItemType Directory -Path $evidence -ErrorAction Stop|Out-Null
+          $owner=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & icacls.exe $private /inheritance:r /grant:r "${owner}:(OI)(CI)F"|Out-Null
+          if($LASTEXITCODE -ne 0) {throw 'Private startup diagnostic ACL failed.'}
+          try {
+            $env:LAYERSENTRY_GUI_ACL_VERIFIED='1'
+            & node ./hack/layersentry/gui-acceptance/diagnose-ssh-startup.mjs $private (Join-Path $evidence 'startup.json')
+            if($LASTEXITCODE -ne 0) {throw 'Credential-free SSH startup proof failed; no DC connection permitted.'}
+          } finally {
+            Remove-Item Env:LAYERSENTRY_GUI_ACL_VERIFIED -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $private -Recurse -Force
+          }
       - name: Execute only the selected native identity phase
         shell: powershell
         env:
@@ -57,6 +76,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}/dc-fixture.json
+          path: |
+            ${{ runner.temp }}/layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}/dc-fixture.json
+            ${{ runner.temp }}/layersentry-ssh-startup-evidence-${{ github.run_id }}-${{ github.run_attempt }}/startup.json
           if-no-files-found: warn
           retention-days: 30

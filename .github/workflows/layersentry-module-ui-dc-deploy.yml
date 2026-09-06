@@ -1,0 +1,77 @@
+name: LayerSentry current module UI DC deploy
+on:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-module-ui-dc-deploy.yml]
+  workflow_dispatch:
+    inputs:
+      artifact-run:
+        type: string
+        required: true
+      artifact-id:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+env:
+  CLOUDSTACK_UI_COMMIT: dc58f76f67dac13aa886c8d45475944f31b0c039
+  ARTIFACT_RUN: ${{ inputs.artifact-run }}
+  ARTIFACT_ID: ${{ inputs.artifact-id }}
+jobs:
+  deploy:
+    name: Deploy prebuilt UI to exact DC management host
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/modules-runtime-validation'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact deployment transport
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind exact successful module UI build and immutable artifact
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:ARTIFACT_RUN -cnotmatch '^[0-9]{1,20}$' -or $env:ARTIFACT_ID -cnotmatch '^[0-9]{1,20}$'){throw 'Exact artifact inputs required.'}
+          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'}
+          $base='https://api.github.com/repos/adaptgurus/cozystack/actions'
+          $run=Invoke-RestMethod -Uri "$base/runs/$env:ARTIFACT_RUN" -Headers $headers -TimeoutSec 30
+          if($run.head_sha -cne '99733f131ea1deb0262f256afc04e7c1bb79c34b' -or $run.head_branch -cne 'codex/modules-runtime-validation' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success' -or $run.path -cne '.github/workflows/layersentry-module-ui-artifact.yml'){throw 'Reviewed build source/result mismatch.'}
+          $artifact=Invoke-RestMethod -Uri "$base/artifacts/$env:ARTIFACT_ID" -Headers $headers -TimeoutSec 30
+          if([string]$artifact.workflow_run.id -cne $env:ARTIFACT_RUN -or $artifact.expired -or $artifact.name -cne "layersentry-module-ui-$env:ARTIFACT_RUN-$($run.run_attempt)" -or $artifact.digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or $artifact.size_in_bytes -gt 536870912){throw 'Immutable UI artifact binding failed.'}
+      - name: Download exact prebuilt artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: adaptgurus/cozystack
+          run-id: ${{ inputs.artifact-run }}
+          artifact-ids: ${{ inputs.artifact-id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/layersentry-dc-ui-download-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Deploy exact reviewed UI through trusted DC password SSH
+        shell: powershell
+        env:
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+        run: |
+          & ./hack/layersentry/invoke-dc-current-ui-ssh.ps1 -ArtifactDirectory "$env:RUNNER_TEMP/layersentry-dc-ui-download-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+      - name: Retain projected DC UI deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-module-ui-dc-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-ui-evidence-${{ github.run_id }}-${{ github.run_attempt }}/summary.json
+          if-no-files-found: warn
+          retention-days: 90
