@@ -64,6 +64,13 @@ function Get-TrustPrompt($View) {
     $last = $lines[-1]
     if ($last -cmatch '^\[root@layersentry\s+[^\r\n\]]+\]#\s*$') { return 'ROOT_SHELL' }
     if ($last -cmatch '^[Pp]assword:\s*$') { return 'PASSWORD_PROMPT' }
+    # Exact OCR error proved by username-only run 34050130232. This alias
+    # requires its reviewed public image and preceding root username; no fuzzy
+    # matching or arbitrary UNKNOWN prompt can become a credential target.
+    if ($last -ceq 'Passuord :' -and $lines.Count -ge 2 -and
+        $lines[-2] -cmatch '^layersentry\s+login:\s+root\s*$' -and
+        $null -ne $View.PSObject.Properties['ImageSha256'] -and
+        $View.ImageSha256 -ceq '274d45c7f0fca8b8db796963c1c4c1675139c52480322f67af185909457c6bf0') { return 'PASSWORD_PROMPT' }
     if ($last -cmatch '^layersentry\s+login:\s*$') { return 'EMPTY_LOGIN' }
     if ($last -cmatch '^layersentry\s+login:\s+root\s*$') { return 'ROOT_USERNAME_ECHO' }
     # Exactly the observed empty login prompt followed only by kernel messages.
