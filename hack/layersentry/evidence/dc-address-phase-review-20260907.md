@@ -1,6 +1,6 @@
 # DC DHCP and Pod phase review
 
-Current status: no DHCP or Pod configuration request has been submitted. The source Basic Zone remains Disabled. Native primary/image storage and the official SystemVM template are verified; SystemVM instances and guest routing are not ready. The owned guest NIC is disconnected after Apply `34060879767` stopped at an unowned NetworkManager profile collision; this does not authorize an Apply replay.
+Current status: DHCP exclusions for static `.14/.20` are applied and verified by `34063327094`; no Pod range update has been submitted. The source Basic Zone remains Disabled. Native primary/image storage and the official SystemVM template are verified; SystemVM instances and guest routing are not ready. Owned guest networking subsequently reconciled in `34062614955`; gateway routing and SystemVM readiness remain unverified.
 
 ## DHCP phase
 
@@ -27,3 +27,8 @@ Before Pod Apply: collect actual `listPods.ipranges` role/VLAN and top-level gat
 ## Actual DHCP Plan
 
 Read-only Plan `34063102956` passed at source `16d9494edbe81ac3ee099967c89af1a1e46963ed`. Its original public receipt is preserved byte-for-byte as `dc-dhcp-reviewed-plan.json`, SHA-256 `05c0bc5cb4625662a8b9e292f2eebd71d9eb9d44f5951598414f819ea0434cae`. It observes the same scope, empty exclusions, reservations `.11/.12/.13`, six unchanged leases including old-MAC `.14`, exact attached VM identities and only the two proposed single-address additions. exclusionMutationAttempted is false. Actual Windows enumeration returned unsorted lease/reservation arrays; a source correction now compares canonical address/client/state-or-type tuples independent of row ordering, while still rejecting any actual identity/state change. The original receipt is not normalized or rewritten. No DHCP Apply request exists; source and actual Plan await lead review.
+
+
+## Verified DHCP exclusions
+
+Approved Apply `34063327094` at `37be1f6cb9e23fb6f5fc04276867b04c8d8c933e` completed SUCCESS. Native final observation shows exactly `.14` and `.20` exclusions in the original TESTSER scope `.10–.250`; result EXCLUSIONS_RECONCILED_LEASES_PRESERVED. An independent local comparison of downloaded Apply with original reviewed Plan canonicalizes and compares all six leases, three reservations and both attached VM identities; every address/client/state/type is unchanged, including old-MAC `.14`. The journaled controller completed its two intended additions without lease revocation or scope/Pod/NAT changes. Receipt SHA-256 is `4bf887d8a1a2086a80bf614bcb801d6a40881e2bb2061677d91d772b162736cf`, retained under `/tmp/layersentry-dc-dhcp-apply-34063327094`. The live queue was released for root TLS certificate observation. This proves the configured exclusions and preserved records; it does not claim revocation of an older client lease or SystemVM readiness.
