@@ -116,6 +116,10 @@ def storage_files(directory=DIRECTORY):
 
 
 def pool_identity():
+    names_raw = command(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-list', '--all', '--name'])
+    names = (names_raw or '').split()
+    if names_raw is None or len(names) > 128 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name) for name in names):
+        return {'status': 'POOL_LIST_UNAVAILABLE'}
     raw = command(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-dumpxml', POOL])
     if raw is None:
         return {'status': 'UNAVAILABLE'}
@@ -133,7 +137,7 @@ def pool_identity():
         for key, value in values.items():
             if value is not None:
                 public[key] = value if re.fullmatch(r'[A-Za-z0-9_.:/-]{1,256}', value) else '[OMITTED]'
-        return {'status': 'OBSERVED', 'identity': public}
+        return {'status': 'OBSERVED', 'identity': public, 'allPoolNames': sorted(names)}
     except (ValueError, ET.ParseError):
         return {'status': 'INVALID_OUTPUT'}
 

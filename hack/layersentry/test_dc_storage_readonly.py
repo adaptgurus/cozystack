@@ -82,12 +82,12 @@ class StorageProofTests(unittest.TestCase):
 
     def test_pool_identity_omits_credentials_and_rejects_wrong_uuid(self):
         xml = '<pool type="netfs"><name>' + collector.POOL + '</name><uuid>' + collector.POOL + '</uuid><source><host name="10.10.10.14"/><dir path="/export/primary"/><auth password="never-publish"/></source><target><path>/mnt/pool</path></target></pool>'
-        with patch.object(collector, 'command', return_value=xml) as command:
+        with patch.object(collector, 'command', side_effect=[collector.POOL, xml]) as command:
             result = collector.pool_identity()
         self.assertEqual(result['identity']['sourceDirectory'], '/export/primary')
         self.assertNotIn('never-publish', json.dumps(result))
         self.assertIn('--readonly', command.call_args.args[0])
-        with patch.object(collector, 'command', return_value=xml.replace('<uuid>' + collector.POOL, '<uuid>wrong')):
+        with patch.object(collector, 'command', side_effect=[collector.POOL, xml.replace('<uuid>' + collector.POOL, '<uuid>wrong')]):
             self.assertEqual(collector.pool_identity()['status'], 'INVALID_OUTPUT')
 
     def test_routes_and_plugin_package_omit_unrequested_content(self):

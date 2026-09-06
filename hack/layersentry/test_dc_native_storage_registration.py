@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location('dc_registration', ROOT / 'registe
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
-PRIMARY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+PRIMARY = runner.NATIVE_PRIMARY_UUID
 IMAGE = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
 
@@ -125,7 +125,7 @@ class RegistrationTests(unittest.TestCase):
     def test_replaced_registered_id_and_changed_source_zone_stop(self):
         runner.register_one(self.api, self.journal, 'primary', True)
         self.api.storage['primary'][0]['id'] = IMAGE
-        with self.assertRaisesRegex(runner.GateError, 'REPLACED'):
+        with self.assertRaisesRegex(runner.GateError, 'NATIVE_UUID_CONFLICT'):
             runner.register_one(self.api, self.journal, 'primary', True)
         self.api.zone_state = 'Enabled'
         with self.assertRaisesRegex(runner.GateError, 'SOURCE_ZONE_CHANGED'):
@@ -151,6 +151,19 @@ class RegistrationTests(unittest.TestCase):
         self.api.storage['image'] = [row]
         self.assertEqual(runner.register_one(self.api, self.journal, 'image', True)['status'], 'OBSERVED_EXISTING')
         self.assertEqual(self.api.mutations, [])
+
+    def test_native_uuid_and_driver_collision_gate(self):
+        self.assertEqual(runner.NATIVE_PRIMARY_UUID, '3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7')
+        pool = {'uuid': runner.PRESERVED_POOL, 'type': 'netfs', 'sourceHost': runner.DC,
+                'sourceDirectory': '/export/primary', 'targetPath': '/mnt/' + runner.PRESERVED_POOL}
+        with self.assertRaisesRegex(runner.GateError, 'NFS_SOURCE_UUID_COLLISION'):
+            runner.check_native_pool_compatibility(pool)
+        pool['sourceDirectory'] = '/unrelated'
+        pool['targetPath'] = '/export/primary'
+        with self.assertRaisesRegex(runner.GateError, 'REDEFINE_EXISTING_TARGET'):
+            runner.check_native_pool_compatibility(pool)
+        pool['targetPath'] = '/unrelated-mount'
+        runner.check_native_pool_compatibility(pool)
 
 
 if __name__ == '__main__':

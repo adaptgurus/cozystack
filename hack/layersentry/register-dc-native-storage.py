@@ -9,6 +9,7 @@ import re
 import subprocess
 import xml.etree.ElementTree as ET
 import urllib.parse
+import uuid
 
 from dr_recovery_acceptance import Client, GateError, Journal, identifier, require
 
@@ -19,6 +20,8 @@ POD = '020dc658-af4e-4e2e-bed5-0607de8a787f'
 CLUSTER = '7d2bb586-6b60-4c51-aa5f-3b4903f31e51'
 HOST = '3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
 PRESERVED_POOL = '9c9fbd8f-e4ee-4e02-9767-6d1cc7a2b8c9'
+# Exact Java UUID.nameUUIDFromBytes(host + path), without a namespace prefix.
+NATIVE_PRIMARY_UUID = str(uuid.UUID(bytes=hashlib.md5((DC + '/export/primary').encode()).digest(), version=3))
 RESOURCES = {
     'primary': {'list': 'listStoragePools', 'kind': 'storagepool', 'create': 'createStoragePool',
                 'params': {'name': 'layersentry-dc-primary-r0', 'url': 'nfs://10.10.10.14/export/primary',
@@ -79,7 +82,8 @@ def match_resource(api, key):
             require(physical and row.get('zoneid') == ZONE, 'STORAGE_IDENTITY_CONFLICT')
             if key == 'primary':
                 require(row.get('podid') == POD and row.get('clusterid') == CLUSTER
-                        and row.get('scope') == 'CLUSTER' and row.get('type') == 'NetworkFilesystem', 'PRIMARY_SCOPE_CONFLICT')
+                        and row.get('scope') == 'CLUSTER' and row.get('type') == 'NetworkFilesystem'
+                        and row.get('id') == NATIVE_PRIMARY_UUID, 'PRIMARY_SCOPE_OR_NATIVE_UUID_CONFLICT')
             else:
                 require(row.get('protocol') == 'nfs' and row.get('providername') == 'NFS'
                         and row.get('scope') == 'ZONE', 'IMAGE_SCOPE_CONFLICT')
@@ -141,7 +145,8 @@ def validate_proof(proof):
             and proof.get('mutationPerformed') is False and proof.get('status') == 'COLLECTED', 'PUBLIC_PROOF_BINDING')
     pool = proof.get('pool', {})
     require(pool.get('status') == 'OBSERVED' and pool.get('identity', {}).get('uuid') == PRESERVED_POOL, 'EXISTING_POOL_PROOF_REQUIRED')
-    require(pool['identity'].get('sourceHost') == DC and pool['identity'].get('sourceDirectory') == '/export/primary', 'EXISTING_POOL_SOURCE_UNRECONCILED')
+    require(pool.get('allPoolNames') == [PRESERVED_POOL], 'ALL_EXISTING_POOLS_MUST_BE_RECONCILED')
+    check_native_pool_compatibility(pool['identity'])
     image = proof.get('systemVm', {}).get('image', {})
     require(proof.get('systemVm', {}).get('status') == 'OBSERVED_NOT_AUTHENTICATED'
             and re.fullmatch(r'[0-9a-f]{64}', str(image.get('sha256', ''))) is not None, 'IMAGE_OBSERVATION_REQUIRED')
@@ -150,9 +155,27 @@ def validate_proof(proof):
             and image.get('name') == '13f22f9c-61e2-4d88-93c0-5735212bccd0.qcow2', 'IMAGE_IDENTITY_MISMATCH')
 
 
-def preserve_live_pool(proof):
+def check_native_pool_compatibility(identity):
+    """Native create may undefine a target-path collision or reject a source collision."""
+    require(identity.get('uuid') == PRESERVED_POOL, 'EXISTING_POOL_CHANGED')
+    target = str(identity.get('targetPath', '')).rstrip('/')
+    same_source = (identity.get('type') == 'netfs' and identity.get('sourceHost') == DC
+                   and str(identity.get('sourceDirectory', '')).rstrip('/') == '/export/primary')
+    require(target != '/export/primary', 'NATIVE_CREATE_WOULD_REDEFINE_EXISTING_TARGET_POOL')
+    require(not same_source or identity['uuid'] == NATIVE_PRIMARY_UUID, 'NFS_SOURCE_UUID_COLLISION_REQUIRES_RECONCILIATION')
+
+
+def preserve_live_pool(proof, primary_intent_recorded=False):
     """Check the pre-existing pool identity without redefining, starting or deleting it."""
     try:
+        names = subprocess.run(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-list', '--all', '--name'],
+                               capture_output=True, text=True, timeout=10, check=True)
+        observed = names.stdout.split()
+        expected_names = {PRESERVED_POOL}
+        if primary_intent_recorded:
+            expected_names.add(NATIVE_PRIMARY_UUID)
+        require(PRESERVED_POOL in observed and len(observed) == len(set(observed))
+                and set(observed).issubset(expected_names), 'EXISTING_POOL_SET_CHANGED')
         p = subprocess.run(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-dumpxml', PRESERVED_POOL],
                            capture_output=True, text=True, timeout=10, check=True)
         require(len(p.stdout) < 65536 and '<!DOCTYPE' not in p.stdout and '<!ENTITY' not in p.stdout, 'POOL_XML_INVALID')
@@ -161,8 +184,18 @@ def preserve_live_pool(proof):
         require(tree.tag == 'pool' and tree.findtext('uuid') == PRESERVED_POOL
                 and tree.findtext('name') == expected.get('name') and tree.get('type') == expected.get('type')
                 and tree.findtext('target/path') == expected.get('targetPath')
-                and tree.find('source/host').get('name') == DC
-                and tree.find('source/dir').get('path') == '/export/primary', 'EXISTING_POOL_CHANGED')
+                and (tree.find('source/host').get('name') if tree.find('source/host') is not None else None) == expected.get('sourceHost')
+                and (tree.find('source/dir').get('path') if tree.find('source/dir') is not None else None) == expected.get('sourceDirectory'), 'EXISTING_POOL_CHANGED')
+        check_native_pool_compatibility(expected)
+        if NATIVE_PRIMARY_UUID in observed:
+            created = subprocess.run(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-dumpxml', NATIVE_PRIMARY_UUID],
+                                     capture_output=True, text=True, timeout=10, check=True)
+            require(len(created.stdout) < 65536 and '<!DOCTYPE' not in created.stdout and '<!ENTITY' not in created.stdout, 'POOL_XML_INVALID')
+            native = ET.fromstring(created.stdout)
+            require(native.tag == 'pool' and native.get('type') == 'netfs'
+                    and native.findtext('uuid') == NATIVE_PRIMARY_UUID
+                    and native.find('source/host').get('name') == DC
+                    and native.find('source/dir').get('path').rstrip('/') == '/export/primary', 'CREATED_POOL_IDENTITY_MISMATCH')
     except GateError:
         raise
     except Exception:
@@ -203,7 +236,8 @@ def main():
         evidence = {'schema': 1, 'target': DC, 'executeRequested': args.execute, 'preservedPool': PRESERVED_POOL,
                     'zoneEnabled': False, 'templateReadiness': 'NOT_ESTABLISHED', 'recoveryReadiness': 'NOT_TESTED', 'resources': {}}
         for key in ('primary', 'image'):
-            evidence['resources'][key] = register_one(api, journal, key, args.execute, lambda: preserve_live_pool(proof))
+            evidence['resources'][key] = register_one(api, journal, key, args.execute,
+                                                      lambda: preserve_live_pool(proof, 'primary' in journal.data['operations']))
         print(json.dumps(evidence, sort_keys=True))
         return 0
     except GateError as exc:
