@@ -126,21 +126,24 @@ def collect(target=TARGET):
                        for addr in link.get('addr_info', [])] if isinstance(addresses.get('data'), list) else []
     if os.geteuid() != 0 or target not in local_addresses:
         return {'schemaVersion': '1.0', 'target': target, 'status': 'TARGET_BINDING_FAILED', 'mutationPerformed': False}
-    services = ('cloudstack-management', 'cloudstack-agent', 'libvirtd', 'virtqemud', 'nfs-server', 'rpcbind')
+    services = ('cloudstack-management', 'cloudstack-agent', 'libvirtd', 'virtqemud', 'virtnetworkd', 'virtstoraged', 'nfs-server', 'rpcbind', 'firewalld')
     packages = ('cloudstack-management', 'cloudstack-agent', 'cloudstack-common', 'libvirt', 'qemu-kvm', 'nfs-utils')
     return {
         'schemaVersion': '1.0', 'target': target, 'status': 'COLLECTED', 'mutationPerformed': False,
         'hostname': text_inventory(['hostname', '-f']),
         'rockyRelease': text_inventory(['rpm', '-q', '--qf', '%{NAME} %{VERSION}', 'rocky-release']),
         'kernel': text_inventory(['uname', '-r']),
+        'selinuxEnforcement': text_inventory(['getenforce']),
         'addresses': addresses,
         'bridges': json_inventory(['ip', '-j', 'link', 'show', 'type', 'bridge'], {'ifname', 'operstate', 'mtu', 'master', 'link_type'}),
+        'links': json_inventory(['ip', '-j', '-d', 'link', 'show'], {'ifname', 'operstate', 'mtu', 'master', 'address', 'link_type', 'linkinfo', 'info_kind'}),
         'bridgePorts': json_inventory(['bridge', '-j', 'link', 'show'], {'ifname', 'master', 'state', 'operstate'}),
         'filesystems': json_inventory(['findmnt', '--json', '--output', 'TARGET,SOURCE,FSTYPE'], {'filesystems', 'children', 'target', 'source', 'fstype'}),
         'blockDevices': json_inventory(['lsblk', '--json', '--bytes', '--output', 'NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT'], {'blockdevices', 'children', 'name', 'type', 'size', 'fstype', 'mountpoint'}),
         'nfsExports': text_inventory(['showmount', '--no-headers', '--exports', '127.0.0.1']),
         'services': {name: text_inventory(['systemctl', 'show', '--property=ActiveState', '--value', name]) for name in services},
         'packages': {name: text_inventory(['rpm', '-q', '--qf', '%{NAME} %{VERSION} %{RELEASE}', name]) for name in packages},
+        'hypervisorPackageVersions': text_inventory(['rpm', '-qa', '--qf', '%{NAME} %{VERSION} %{RELEASE}.%{ARCH}\\n', 'libvirt*', 'qemu*']),
         'libvirtDomains': text_inventory(['virsh', '--readonly', '-c', 'qemu:///system', 'list', '--all', '--name']),
         'libvirtPools': text_inventory(['virsh', '--readonly', '-c', 'qemu:///system', 'pool-list', '--all', '--name']),
         'paths': [path_inventory(Path(path)) for path in PATHS],
