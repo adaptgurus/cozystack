@@ -1,13 +1,28 @@
-param([ValidateSet('Plan','Prepare','Install','Activate','Firewall')][string]$Mode='Plan', [string]$PlanPath='', [string]$PlanSha256='', [string[]]$FirewallSources=@())
+param([ValidateSet('ObserveIdentity','Plan','Prepare','Install','Activate','Firewall')][string]$Mode='Plan', [string]$PlanPath='', [string]$PlanSha256='', [string[]]$FirewallSources=@())
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $out = Join-Path $env:RUNNER_TEMP "layersentry-dc-native-tls-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$Mode"
 New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
 $summary = Join-Path $out 'summary.json'
-$state = [ordered]@{ target = '10.10.10.14'; user = 'root'; runnerCommit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; status = 'PENDING'; mode = $Mode; nativeTlsMutationRequested = ($Mode -cne 'Plan'); tlsJournalWritesPossible = ($Mode -cne 'Plan') }
+$state = [ordered]@{ target = '10.10.10.14'; user = 'root'; runnerCommit = $env:GITHUB_SHA; runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; status = 'PENDING'; mode = $Mode; nativeTlsMutationRequested = ($Mode -cnotin @('ObserveIdentity','Plan')); tlsJournalWritesPossible = ($Mode -cnotin @('ObserveIdentity','Plan')) }
 $private = Join-Path $env:RUNNER_TEMP ([Guid]::NewGuid().ToString('N'))
 try {
+    if($Mode -ceq 'ObserveIdentity') {
+        if($env:COMPUTERNAME -cne 'TESTSER') {throw 'Hyper-V host identity mismatch.'}
+        Import-Module Hyper-V -ErrorAction Stop
+        $vmId='29ba176b-b81a-4f47-8f51-ecec869f247f'
+        $vms=@(Get-VM -Name 'sen' -ErrorAction Stop)
+        if($vms.Count -ne 1 -or [string]$vms[0].Id -cne $vmId -or [string]$vms[0].State -cne 'Running') {throw 'Exact sen VM identity unavailable.'}
+        $systems=@(Get-CimInstance -Namespace root/virtualization/v2 -ClassName Msvm_ComputerSystem -Filter "Name='$vmId'" -ErrorAction Stop)
+        if($systems.Count -ne 1 -or $systems[0].ElementName -cne 'sen') {throw 'Exact sen CIM system unavailable.'}
+        $settings=@(Get-CimAssociatedInstance -InputObject $systems[0] -ResultClassName Msvm_VirtualSystemSettingData -ErrorAction Stop | Where-Object {$_.VirtualSystemType -ceq 'Microsoft:Hyper-V:System:Realized'})
+        if($settings.Count -ne 1 -or $settings[0].VirtualSystemIdentifier -ine $vmId) {throw 'Exact realized sen settings unavailable.'}
+        $bios=[Guid]::Parse($settings[0].BIOSGUID).ToString('D')
+        if($bios -ceq [Guid]::Empty.ToString('D')) {throw 'Empty BIOS identity.'}
+        $state['hypervVmId']=$vmId
+        $state['hypervBiosGuid']=$bios
+    }
     $sshCommand = Get-Command ssh.exe -CommandType Application -ErrorAction Stop
     $sshExecutable = $sshCommand.Source
     if (-not [IO.Path]::IsPathRooted($sshExecutable) -or -not (Test-Path -LiteralPath $sshExecutable -PathType Leaf)) { throw 'SSH executable resolution failed.' }
@@ -49,7 +64,7 @@ try {
     $env:SSH_ASKPASS = $askPass
     $env:SSH_ASKPASS_REQUIRE = 'force'
     $env:DISPLAY = 'layersentry-noninteractive'
-    if ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)) {
+    if ($Mode -cne 'ObserveIdentity' -and ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY))) {
         $state.status = 'API_CREDENTIAL_PREREQUISITE_MISSING'
         throw 'Protected runtime API credentials are unavailable.'
     }
@@ -68,15 +83,17 @@ try {
     }
     # Credentials are sent exclusively through encrypted SSH stdin. They never enter command arguments or disk files.
     $plan=@{}
-    if($Mode -cne 'Plan') {
+    if($Mode -cnotin @('ObserveIdentity','Plan')) {
         if($PlanSha256 -cnotmatch '^[0-9a-f]{64}$' -or [string]::IsNullOrWhiteSpace($PlanPath)) {throw 'Reviewed TLS Plan binding required.'}
         $receipt=Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8|ConvertFrom-Json
         if($receipt.target -cne '10.10.10.14' -or $receipt.phase -cne 'Plan' -or $receipt.planSha256 -cne $PlanSha256) {throw 'TLS Plan receipt mismatch.'}
         $plan=$receipt.plan
         $FirewallSources=@($plan.firewallSources)
     }
+    $apiKey=''; $apiSecret=''
+    if($Mode -cne 'ObserveIdentity') {$apiKey=$env:CLOUDSTACK_API_KEY; $apiSecret=$env:CLOUDSTACK_SECRET_KEY}
     $envelope = @{ schema = 1; target = '10.10.10.14'; mode = $Mode; sources = $sources; proof = $proof.base64;
-                   apiKey = $env:CLOUDSTACK_API_KEY; apiSecret = $env:CLOUDSTACK_SECRET_KEY; plan=$plan; planSha256=$PlanSha256; firewallSources=@($FirewallSources) } | ConvertTo-Json -Depth 8 -Compress
+                   apiKey = $apiKey; apiSecret = $apiSecret; plan=$plan; planSha256=$PlanSha256; firewallSources=@($FirewallSources) } | ConvertTo-Json -Depth 8 -Compress
     $loader = (Get-Content -LiteralPath 'hack/layersentry/run-dc-native-tls-stdin.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $loaderEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($loader))
     $remote = "timeout 360 python3 <(printf %s $loaderEncoded | base64 -d)"
@@ -105,6 +122,12 @@ try {
     if ($sshExit -ne 0) { throw 'Pinned-host native TLS phase failed; inspect durable journal before any next execution.' }
     if ($result.schema -ne 1 -or $result.target -cne '10.10.10.14' -or $result.phase -cne $Mode -or $result.productionCertified -ne $false -or $result.automaticReplay -ne $false) { throw 'TLS evidence binding failed.' }
     if($joined -match 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY') {throw 'Private key output refused.'}
+    if($Mode -ceq 'ObserveIdentity') {
+        if($result.guestProductUuid -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {throw 'Guest public UUID shape invalid.'}
+        $state['guestProductUuid']=$result.guestProductUuid
+        $state['biosEqualsGuest']=($state.hypervBiosGuid -ceq $result.guestProductUuid)
+        $state['vmIdEqualsGuest']=($state.hypervVmId -ceq $result.guestProductUuid)
+    }
     $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $out 'dc-native-tls.json') -Encoding UTF8
     $state.status = 'OBSERVED'
 } catch {

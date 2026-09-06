@@ -119,6 +119,16 @@ def ca_read(api):
     return pem, sha(cert_der(pem))
 
 
+def observe_guest_identity():
+    # Public observation only: never treat Hyper-V VMId as a BIOS UUID.
+    local_dc_binding()
+    value = read_file(Path('/sys/devices/virtual/dmi/id/product_uuid')).decode('ascii').strip().lower()
+    require(re.fullmatch('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value) is not None,
+            'TLS_GUEST_UUID_SHAPE')
+    return {'status': 'PARTIAL', 'guestProductUuid': value, 'mutationPerformed': False,
+            'identityBindingEstablished': False}
+
+
 def native_identity(api):
     local_dc_binding()
     require(read_file(Path('/sys/devices/virtual/dmi/id/product_uuid')).decode().strip().lower() == VM_ID, 'TLS_DC_VM_UUID_MISMATCH')

@@ -17,7 +17,7 @@ def parse_payload(raw):
     if len(raw) > 524288: raise ValueError('INPUT_LIMIT')
     data = json.loads(raw)
     if set(data) != {'schema', 'target', 'mode', 'sources', 'proof', 'apiKey', 'apiSecret', 'plan', 'planSha256', 'firewallSources'}: raise ValueError('INPUT_FIELDS')
-    if data['schema'] != 1 or data['target'] != '10.10.10.14' or data['mode'] not in ('Plan', 'Prepare', 'Install', 'Activate', 'Firewall'): raise ValueError('INPUT_SCOPE')
+    if data['schema'] != 1 or data['target'] != '10.10.10.14' or data['mode'] not in ('ObserveIdentity', 'Plan', 'Prepare', 'Install', 'Activate', 'Firewall'): raise ValueError('INPUT_SCOPE')
     if set(data['sources']) != set(SOURCES): raise ValueError('SOURCE_SCOPE')
     for value in data['sources'].values():
         if set(value) != {'base64', 'sha256'} or len(value['base64']) > 131072: raise ValueError('SOURCE_SIZE')
@@ -26,8 +26,10 @@ def parse_payload(raw):
     proof = base64.b64decode(data['proof'], validate=True)
     if hashlib.sha256(proof).hexdigest() != PROOF_SHA256: raise ValueError('PROOF_DIGEST')
     for key in ('apiKey', 'apiSecret'):
-        if not isinstance(data[key], str) or not 1 <= len(data[key]) <= 4096 or '\x00' in data[key]: raise ValueError('CREDENTIAL_SHAPE')
-    if data['mode'] != 'Plan' and not re.fullmatch('[0-9a-f]{64}', data['planSha256']): raise ValueError('PLAN_FINGERPRINT_REQUIRED')
+        if data['mode'] == 'ObserveIdentity':
+            if data[key] != '': raise ValueError('OBSERVATION_CREDENTIALS_FORBIDDEN')
+        elif not isinstance(data[key], str) or not 1 <= len(data[key]) <= 4096 or '\x00' in data[key]: raise ValueError('CREDENTIAL_SHAPE')
+    if data['mode'] not in ('ObserveIdentity', 'Plan') and not re.fullmatch('[0-9a-f]{64}', data['planSha256']): raise ValueError('PLAN_FINGERPRINT_REQUIRED')
     return data
 
 
@@ -42,9 +44,14 @@ def main():
             exec(compile(source, '<reviewed-' + name + '>', 'exec'), module.__dict__)
         native = sys.modules['dr_recovery_acceptance']; storage = sys.modules['dc_native_storage_registration']; tls = sys.modules['dc_native_tls']
         storage.local_dc_binding()
-        api = native.Client(storage.ENDPOINT, payload.pop('apiKey'), payload.pop('apiSecret'))
         mode = payload['mode']
-        if mode == 'Plan':
+        if mode == 'ObserveIdentity':
+            result = tls.observe_guest_identity()
+        else:
+            api = native.Client(storage.ENDPOINT, payload.pop('apiKey'), payload.pop('apiSecret'))
+        if mode == 'ObserveIdentity':
+            pass
+        elif mode == 'Plan':
             expected = tls.plan(api, firewall_sources=payload['firewallSources'])
             result = {'status': 'PARTIAL', 'plan': expected, 'planSha256': native.digest(expected)}
         else:

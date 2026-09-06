@@ -11,7 +11,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [Plan]
+        options: [ObserveIdentity, Plan]
         default: Plan
         required: true
       plan_path:
@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   native-tls:
-    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/dc-native-tls' && github.event_name == 'workflow_dispatch' && inputs.mode == 'Plan'
+    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/dc-native-tls' && github.event_name == 'workflow_dispatch' && (inputs.mode == 'Plan' || inputs.mode == 'ObserveIdentity')
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 12
     steps:
@@ -56,8 +56,8 @@ jobs:
           CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
         run: |
           $ErrorActionPreference='Stop'
-          if($env:MODE -cne 'Plan') {throw 'Only read-only Plan is enabled in this workflow.'}
-          if($env:MODE -cne 'Plan' -and $env:PLAN_PATH -cnotmatch '^hack/layersentry/dc-native-tls-plans/[A-Za-z0-9_-]+\.json$') {throw 'Reviewed TLS Plan path required.'}
+          if($env:MODE -cnotin @('ObserveIdentity','Plan')) {throw 'Only read-only observation is enabled in this workflow.'}
+          if($env:MODE -cnotin @('ObserveIdentity','Plan') -and $env:PLAN_PATH -cnotmatch '^hack/layersentry/dc-native-tls-plans/[A-Za-z0-9_-]+\.json$') {throw 'Reviewed TLS Plan path required.'}
           $sources=@()
           if($env:FIREWALL_SOURCES) {$sources=@($env:FIREWALL_SOURCES.Split(',')|ForEach-Object{$_.Trim()})}
           & ./hack/layersentry/invoke-dc-native-tls-ssh.ps1 -Mode $env:MODE -PlanPath $env:PLAN_PATH -PlanSha256 $env:PLAN_SHA256 -FirewallSources $sources

@@ -150,8 +150,22 @@ class TlsCase(unittest.TestCase):
         code = b'# source-contract-only'
         data = {'schema': 1, 'target': tls.TARGET, 'mode': 'Plan', 'sources': {name: {'base64': base64.b64encode(code).decode(), 'sha256': tls.sha(code)} for name in loader.SOURCES}, 'proof': proof, 'apiKey': 'unit-key', 'apiSecret': 'unit-secret', 'plan': {}, 'planSha256': '', 'firewallSources': []}
         self.assertEqual(loader.parse_payload(json.dumps(data).encode())['mode'], 'Plan')
+        observation = {**data, 'mode': 'ObserveIdentity', 'apiKey': '', 'apiSecret': ''}
+        self.assertEqual(loader.parse_payload(json.dumps(observation).encode())['mode'], 'ObserveIdentity')
+        with self.assertRaisesRegex(ValueError, 'CREDENTIALS_FORBIDDEN'):
+            loader.parse_payload(json.dumps({**observation, 'apiKey': 'not-needed'}).encode())
         for change in ({'target': '10.10.10.20'}, {'mode': 'Shell'}, {'sources': {}}, {'mode': 'Install'}, {'apiKey': ''}):
             with self.assertRaises(ValueError): loader.parse_payload(json.dumps({**data, **change}).encode())
+
+    def test_public_identity_observation_never_accepts_vm_id_as_binding(self):
+        observed = '12345678-abcd-abcd-abcd-123456789abc'
+        with patch.object(tls, 'local_dc_binding'), patch.object(tls, 'read_file', return_value=(observed + '\n').encode()):
+            value = tls.observe_guest_identity()
+        self.assertEqual(value['guestProductUuid'], observed)
+        self.assertFalse(value['identityBindingEstablished'])
+        self.assertFalse(value['mutationPerformed'])
+        with patch.object(tls, 'local_dc_binding'), patch.object(tls, 'read_file', return_value=b'not-public-uuid'):
+            with self.assertRaisesRegex(GateError, 'GUEST_UUID_SHAPE'): tls.observe_guest_identity()
 
     def test_file_and_firewall_scope_guards(self):
         file = self.root / 'sample'; file.write_text('bytes'); file.chmod(0o600)
