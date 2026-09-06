@@ -157,6 +157,14 @@ class TlsCase(unittest.TestCase):
         for change in ({'target': '10.10.10.20'}, {'mode': 'Shell'}, {'sources': {}}, {'mode': 'Install'}, {'apiKey': ''}):
             with self.assertRaises(ValueError): loader.parse_payload(json.dumps({**data, **change}).encode())
 
+    def test_native_bios_binding_rejects_vm_id_and_other_guest(self):
+        tls.require_guest_bios('ccbcac90-c8e3-4091-90a0-7e2e8cf2f7e5')
+        for value in (tls.VM_ID, '12345678-abcd-abcd-abcd-123456789abc', ''):
+            with self.assertRaisesRegex(GateError, 'BIOS_UUID_MISMATCH'): tls.require_guest_bios(value)
+        with patch.object(tls, 'local_dc_binding'), patch.object(tls, 'read_file', return_value=tls.VM_ID.encode()), patch.object(tls, 'run') as commands:
+            with self.assertRaisesRegex(GateError, 'BIOS_UUID_MISMATCH'): tls.native_identity(Mock())
+            commands.assert_not_called()
+
     def test_public_identity_observation_never_accepts_vm_id_as_binding(self):
         observed = '12345678-abcd-abcd-abcd-123456789abc'
         with patch.object(tls, 'local_dc_binding'), patch.object(tls, 'read_file', return_value=(observed + '\n').encode()):

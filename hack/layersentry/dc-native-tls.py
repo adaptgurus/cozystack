@@ -19,6 +19,8 @@ from dc_native_storage_registration import preflight, rows, local_dc_binding, EN
 
 TARGET = '10.10.10.14'
 VM_ID = '29ba176b-b81a-4f47-8f51-ecec869f247f'
+BIOS_UUID = 'ccbcac90-c8e3-4091-90a0-7e2e8cf2f7e5'
+IDENTITY_EVIDENCE = {'runId': '34062671636', 'source': '591272077e47d52d52aaf54b3f012bcf4a776520'}
 CONFIG = Path('/etc/cloudstack/management/server.properties')
 KEYSTORE = Path('/etc/cloudstack/management/layersentry-dc-native-tls.jks')
 ALIAS = 'layersentry-dc-native-tls'
@@ -129,9 +131,13 @@ def observe_guest_identity():
             'identityBindingEstablished': False}
 
 
+def require_guest_bios(value):
+    require(value == BIOS_UUID, 'TLS_DC_BIOS_UUID_MISMATCH')
+
+
 def native_identity(api):
     local_dc_binding()
-    require(read_file(Path('/sys/devices/virtual/dmi/id/product_uuid')).decode().strip().lower() == VM_ID, 'TLS_DC_VM_UUID_MISMATCH')
+    require_guest_bios(read_file(Path('/sys/devices/virtual/dmi/id/product_uuid')).decode().strip().lower())
     links = json.loads(run(['ip', '-j', 'link', 'show', 'eth0']))
     require(isinstance(links, list) and len(links) == 1 and links[0].get('address', '').lower() == '00:15:5d:00:39:0a'
             and links[0].get('master') == 'cloudbr0', 'TLS_MANAGEMENT_NIC_CHANGED')
@@ -153,7 +159,7 @@ def plan(api, config=CONFIG, firewall_sources=()):
     require(info.st_uid == 0 and not (info.st_mode & 0o022), 'TLS_CONFIG_OWNERSHIP_UNSAFE')
     require(not KEYSTORE.exists() and not KEYSTORE.is_symlink(), 'TLS_UNOWNED_KEYSTORE_EXISTS')
     ca, fingerprint = ca_read(api)
-    return {'schema': 1, 'target': TARGET, 'vmId': VM_ID, 'hostname': hostname,
+    return {'schema': 1, 'target': TARGET, 'vmId': VM_ID, 'biosUuid': BIOS_UUID, 'identityEvidence': dict(IDENTITY_EVIDENCE), 'hostname': hostname,
             'caSha256': fingerprint, 'caCertificate': ca.decode('ascii'), 'firewallSources': sources, 'serverPropertiesSha256': sha(original),
             'originalMetadata': {'uid': info.st_uid, 'gid': info.st_gid, 'mode': stat.S_IMODE(info.st_mode)},
             'httpPort': 8080, 'httpsPort': 8443, 'caProvider': 'root', 'durationDays': 30,
@@ -162,7 +168,7 @@ def plan(api, config=CONFIG, firewall_sources=()):
 
 def validate_plan(value):
     require(isinstance(value, dict) and value.get('schema') == 1 and value.get('target') == TARGET
-            and value.get('vmId') == VM_ID and value.get('httpPort') == 8080 and value.get('httpsPort') == 8443
+            and value.get('vmId') == VM_ID and value.get('biosUuid') == BIOS_UUID and value.get('identityEvidence') == IDENTITY_EVIDENCE and value.get('httpPort') == 8080 and value.get('httpsPort') == 8443
             and value.get('caProvider') == 'root' and value.get('durationDays') == 30
             and value.get('zoneEnabled') is False and value.get('guestVmCount') == 0
             and value.get('systemVmCount') == 0 and value.get('productionCertified') is False, 'TLS_PLAN_SCOPE')
