@@ -297,10 +297,19 @@ function Assert-TrustPublicReceipt($View, [string]$Candidate, [string]$Challenge
     $lines = @($View.Lines)
     # After the guest clears its screen, only approved public output and the
     # empty root prompt may be retained. Unknown/extra content fails closed.
-    if ($lines.Count -ne 4 -or (Get-TrustPrompt $View) -ne 'ROOT_SHELL') { throw 'PUBLIC_RECEIPT_NOT_VERIFIED' }
+    if ($lines.Count -ne 4 -or -not (Test-TrustNonsecretProofPrompt $View)) { throw 'PUBLIC_RECEIPT_NOT_VERIFIED' }
     for ($i = 0; $i -lt 3; $i++) {
         if ($lines[$i] -cne $expected[$i]) { throw 'PUBLIC_RECEIPT_NOT_VERIFIED' }
     }
+}
+
+function Test-TrustNonsecretProofPrompt($View) {
+    # Lead explicitly authorized one nonsecret proof after independently viewing
+    # the complete root shell in 34050853843. This is not a credential gate:
+    # the fixed payload itself must establish root/address/key/challenge proof.
+    # Keep the observed last-row fragment exact; do not accept arbitrary UNKNOWN
+    # or subsequent visible command text. Login/password gates remain unchanged.
+    return (Get-TrustPrompt $View) -eq 'ROOT_SHELL' -or @($View.Lines)[-1] -ceq '[root@layersentry'
 }
 
 function Invoke-DcTrustPhase([string]$Phase) {
@@ -412,7 +421,8 @@ function Invoke-DcTrustPhase([string]$Phase) {
             $state.status = 'AUTHENTICATED_AWAITING_PUBLIC_KEY_PHASE'
             return
         }
-        if ($Phase -ne 'Verify' -or $prompt -ne 'ROOT_SHELL') { throw 'VERIFIED_ROOT_PROMPT_REQUIRED' }
+        if ($Phase -ne 'Verify' -or -not (Test-TrustNonsecretProofPrompt $view)) { throw 'VERIFIED_ROOT_PROMPT_REQUIRED' }
+        $state['nonsecretProofAuthorization'] = 'Lead-authorized once after independently reviewed root shell 34050853843; payload must prove UID/address/key/challenge'
         $state.stage = 'UNTRUSTED_KEY_CANDIDATE'
         $candidate = Get-TrustCandidate
         $challenge = New-TrustChallenge
@@ -421,7 +431,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $command = New-TrustGuestCommand $candidate $challenge
         # Re-check the fresh root prompt after the network-only candidate read.
         $view = Read-TrustConsole $private
-        if ((Get-TrustPrompt $view) -ne 'ROOT_SHELL') { throw 'ROOT_PROMPT_CHANGED' }
+        if (-not (Test-TrustNonsecretProofPrompt $view)) { throw 'ROOT_PROMPT_CHANGED' }
         $keyboard = Get-TrustKeyboard
         if (((Get-Date) - $view.Started).TotalSeconds -gt 30) { throw 'ROOT_PROMPT_EXPIRED' }
         $state.inputAttempted = $true

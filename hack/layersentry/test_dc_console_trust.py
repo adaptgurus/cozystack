@@ -73,6 +73,24 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_nonsecret_proof_authority_does_not_weaken_credentials_or_challenge(self):
+        command = r'''
+$view=[pscustomobject]@{Lines=@('[root@layersentry')}
+if (-not (Test-TrustNonsecretProofPrompt $view)) { throw 'Lost authorized fragment' }
+if ((Get-TrustPrompt $view) -cne 'UNKNOWN') { throw 'Changed credential classifier' }
+$view.Lines=@('[root@layersentry','unexpected command')
+if (Test-TrustNonsecretProofPrompt $view) { throw 'Accepted competing visible input' }
+$view.Lines=@('layersentry login:')
+if (Test-TrustNonsecretProofPrompt $view) { throw 'Accepted getty' }
+$nonce=$env:TEST_CHALLENGE
+$view.Lines=@("LS-DC-$nonce-BEGIN", 'TARGET 10.10.10.14 ROOT KEY MATCH', "LS-DC-$nonce-END", '[root@layersentry')
+Assert-TrustPublicReceipt $view $env:TEST_KEY $nonce
+try { Assert-TrustPublicReceipt $view $env:TEST_KEY 'wrong'; throw 'accepted wrong challenge' }
+catch { if ($_.Exception.Message -cne 'PUBLIC_RECEIPT_NOT_VERIFIED') { throw } }
+'''
+        result = self.run_function(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_root_fingerprint_allows_only_cursor_blink_after_prompt(self):
         command = r'''
 $bitmap=[pscustomobject]@{Width=192;X=-1;Y=-1}
