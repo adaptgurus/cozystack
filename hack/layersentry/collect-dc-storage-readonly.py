@@ -171,6 +171,37 @@ def plugin_package():
             'nasPluginPackagePaths': names, 'pluginLoaded': 'NOT_ESTABLISHED'}
 
 
+def registration_journal():
+    try:
+        directory_fd = open_directory('/var/lib/layersentry/native-dc-storage-r0')
+    except FileNotFoundError:
+        return {'status': 'DIRECTORY_ABSENT'}
+    except OSError:
+        return {'status': 'DIRECTORY_UNAVAILABLE'}
+    try:
+        try:
+            fd = open_public_file(directory_fd, 'journal.json', 65536)
+        except FileNotFoundError:
+            return {'status': 'JOURNAL_ABSENT'}
+        with os.fdopen(fd, 'rb') as stream:
+            raw = stream.read(65537)
+        data = json.loads(raw)
+        operations = data.get('operations')
+        if not isinstance(operations, dict) or not set(operations).issubset({'primary', 'image'}):
+            raise ValueError('journal shape')
+        public = {}
+        for name, item in operations.items():
+            if not isinstance(item, dict):
+                raise ValueError('journal shape')
+            public[name] = {key: value for key, value in item.items() if key in {'command', 'state', 'resource_id'}
+                            and isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value)}
+        return {'status': 'OBSERVED', 'operations': public}
+    except (OSError, ValueError, TypeError):
+        return {'status': 'JOURNAL_UNAVAILABLE_OR_INVALID'}
+    finally:
+        os.close(directory_fd)
+
+
 def collect():
     result = {'schemaVersion': '1.0', 'target': TARGET, 'mutationPerformed': False}
     raw = command(['ip', '-j', '-4', 'address', 'show'])
@@ -188,6 +219,7 @@ def collect():
     result['pool'] = pool_identity()
     result['routes'] = public_routes()
     result['managementPlugin'] = plugin_package()
+    result['registrationJournal'] = registration_journal()
     return dict(result, status='COLLECTED')
 
 
