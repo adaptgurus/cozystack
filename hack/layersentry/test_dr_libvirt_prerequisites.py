@@ -90,6 +90,22 @@ class PrerequisiteTests(unittest.TestCase):
         self.assertEqual(result['reason'], 'HOST_BASELINE_CHANGED')
         self.assertNotIn('securityPreserved', result)
 
+    def test_reconciliation_requires_exact_single_unfinished_attempt(self):
+        (self.root / '111-started.json').write_text('{}')
+        with patch.object(module, 'baseline', lambda: self.before), \
+             patch.object(module, 'journal_directory', lambda: os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)), \
+             patch.object(module, 'command', self.command):
+            result = module.reconcile_socket('222', '110')
+        self.assertEqual(result['reason'], 'EXACT_UNFINISHED_ATTEMPT_REQUIRED')
+        self.assertFalse(result['mutationAttempted'])
+        self.assertEqual(self.calls, [])
+
+    def test_reconciliation_rejects_same_or_non_numeric_attempt(self):
+        for run, prior in [('123', '123'), ('124', '../123')]:
+            with self.assertRaises(module.Refused):
+                module.reconcile_socket(run, prior)
+        self.assertEqual(self.calls, [])
+
     def test_run_identity_rejected_before_commands(self):
         with self.assertRaises(module.Refused):
             self.run_prepare('../124')

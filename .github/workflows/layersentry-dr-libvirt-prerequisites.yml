@@ -4,9 +4,12 @@ on:
     inputs:
       phase:
         type: choice
-        options: [inspect, prepare]
+        options: [inspect, prepare, reconcile-socket]
         default: inspect
         required: true
+      prior-run:
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -25,6 +28,7 @@ jobs:
       - name: Install signed libvirt prerequisites on exact disposable DR host
         shell: powershell
         env:
+          DR_PRIOR_RUN: ${{ inputs.prior-run }}
           DR_PHASE: ${{ inputs.phase }}
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}

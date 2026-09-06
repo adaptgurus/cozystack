@@ -127,13 +127,66 @@ def prepare(run_id):
     return state
 
 
+def reconcile_socket(run_id, prior_run):
+    require(re.fullmatch(r"[0-9]{1,20}", run_id) and re.fullmatch(r"[0-9]{1,20}", prior_run) and run_id != prior_run, "INVALID_RUN_BINDING")
+    state = {"schemaVersion": "1.0", "runId": run_id, "priorRunId": prior_run, "target": TARGET,
+             "status": "PENDING", "mutationAttempted": False, "guestCreated": False, "diskFormatted": False, "networkChanged": False}
+    folder = None
+    try:
+        before = baseline()
+        state["security"] = before["security"]
+        folder = journal_directory()
+        fcntl.flock(folder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        names = set(os.listdir(folder))
+        unfinished = {name for name in names if name.endswith("-started.json") and name.replace("-started", "-finished") not in names}
+        require(unfinished == {prior_run + "-started.json"}, "EXACT_UNFINISHED_ATTEMPT_REQUIRED")
+        fd = os.open(prior_run + "-started.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+        try:
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and info.st_size < 8192, "UNSAFE_PRIOR_JOURNAL")
+            prior = json.loads(os.read(fd, 8192))
+        finally:
+            os.close(fd)
+        require(prior.get("target") == TARGET and prior.get("runId") == prior_run, "PRIOR_SCOPE_MISMATCH")
+        # The observed failure is the missing read-only endpoint. Refuse any
+        # broader repair: all previously started local sockets must be active.
+        for name in SOCKETS:
+            require(command(["systemctl", "is-active", name]) == "active", "ORIGINAL_SOCKET_STATE_CHANGED")
+        require(command(["systemctl", "show", "--property=LoadState", "--value", "virtqemud-ro.socket"]) == "loaded", "READONLY_SOCKET_UNIT_MISSING")
+        require(command(["systemctl", "show", "--property=ActiveState", "--value", "virtqemud-ro.socket"]) == "inactive", "READONLY_SOCKET_NOT_CAUSAL")
+        require(not Path("/run/libvirt/virtqemud-sock-ro").exists(), "READONLY_LISTENER_ALREADY_PRESENT")
+        state["packages"] = command(["rpm", "-q", "--qf", "%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n", *PACKAGES]).splitlines()
+        write_state(folder, run_id + "-started.json", state)
+        state.update(mutationAttempted=True, stage="READONLY_SOCKET_START")
+        command(["systemctl", "start", "virtqemud-ro.socket"], timeout=60)
+        require(not command(["virsh", "--readonly", "-c", "qemu:///system", "list", "--all", "--uuid"]), "EXISTING_DOMAIN_CONFLICT")
+        state["provider"] = json.loads(command(["python3", "-c", "import json,libvirt; c=libvirt.openReadOnly('qemu:///system'); print(json.dumps({'libvirt':c.getLibVersion(),'qemu':c.getVersion(),'domains':c.numOfDomains()})); c.close() "]))
+        state["stage"] = "SIGNED_NOCLOUD_ISO_TOOL"
+        command(["dnf", "-y", "--disablerepo=*", "--enablerepo=baseos,appstream,crb",
+                 "--setopt=*.gpgcheck=1", "--setopt=localpkg_gpgcheck=1", "--setopt=*.sslverify=1",
+                 "--setopt=install_weak_deps=False", "--setopt=timeout=30", "--setopt=retries=1",
+                 "install", "genisoimage"], timeout=600)
+        state["isoTool"] = command(["rpm", "-q", "--qf", "%{NAME} %{VERSION}-%{RELEASE}.%{ARCH}", "genisoimage"])
+        require(baseline() == before, "HOST_BASELINE_CHANGED")
+        state.update(status="PREREQUISITES_VERIFIED", securityPreserved=True)
+        write_state(folder, run_id + "-finished.json", state)
+        write_state(folder, prior_run + "-finished.json", {"status": "PREREQUISITES_VERIFIED", "reconciledByRun": run_id, "target": TARGET})
+    except BaseException as error:
+        state["status"] = "FAILED_REQUIRES_INSPECTION" if state["mutationAttempted"] else "REFUSED_BEFORE_MUTATION"
+        state["reason"] = str(error) if isinstance(error, Refused) else type(error).__name__
+    finally:
+        if folder is not None:
+            os.close(folder)
+    return state
+
+
 def inspect(run_id):
     require(re.fullmatch(r"[0-9]{1,20}", run_id), "INVALID_RUN_ID")
     before = baseline()
     result = {"schemaVersion": "1.0", "runId": run_id, "target": TARGET,
               "status": "INSPECTED", "mutationAttempted": False,
               "security": before["security"], "units": {}, "packages": {}}
-    for name in (*SOCKETS, "virtqemud.service", "virtlogd.service", "virtlockd.service"):
+    for name in (*SOCKETS, "virtqemud-ro.socket", "virtqemud.service", "virtlogd.service", "virtlockd.service"):
         value = command(["systemctl", "show", "--property=LoadState,ActiveState,Result,FragmentPath", name])
         result["units"][name] = value.splitlines()
     for name in (*PACKAGES, "libvirt-daemon-log", "libvirt-daemon-lock", "libvirt-daemon-driver-qemu"):
@@ -150,8 +203,12 @@ def inspect(run_id):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[2] not in {"prepare", "inspect"}:
+    if len(sys.argv) not in (3, 4) or sys.argv[2] not in {"prepare", "inspect", "reconcile-socket"}:
         raise SystemExit("RUN_ID_REQUIRED")
-    result = inspect(sys.argv[1]) if sys.argv[2] == "inspect" else prepare(sys.argv[1])
+    if sys.argv[2] == "reconcile-socket":
+        require(len(sys.argv) == 4, "PRIOR_RUN_REQUIRED")
+        result = reconcile_socket(sys.argv[1], sys.argv[3])
+    else:
+        result = inspect(sys.argv[1]) if sys.argv[2] == "inspect" else prepare(sys.argv[1])
     print(json.dumps(result, sort_keys=True))
     raise SystemExit(0 if result["status"] in {"PREREQUISITES_VERIFIED", "INSPECTED"} else 1)

@@ -21,9 +21,14 @@ try {
     [IO.File]::WriteAllText($known, ($keys -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     $script = (Get-Content -LiteralPath 'hack/layersentry/prepare-dr-libvirt-validation.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
-    if ($env:DR_PHASE -cnotin @('prepare', 'inspect')) { throw 'Invalid phase.' }
+    if ($env:DR_PHASE -cnotin @('prepare', 'inspect', 'reconcile-socket')) { throw 'Invalid phase.' }
     if ($env:GITHUB_RUN_ID -cnotmatch '^[0-9]{1,20}$') { throw 'Run identity invalid.' }
-    $remote = "printf '%s' '$encoded' | base64 -d | timeout 1100 python3 - $env:GITHUB_RUN_ID $env:DR_PHASE"
+    $prior = ''
+    if ($env:DR_PHASE -ceq 'reconcile-socket') {
+        if ($env:DR_PRIOR_RUN -cnotmatch '^[0-9]{1,20}$') { throw 'Prior run invalid.' }
+        $prior = ' ' + $env:DR_PRIOR_RUN
+    }
+    $remote = "printf '%s' '$encoded' | base64 -d | timeout 1100 python3 - $env:GITHUB_RUN_ID $env:DR_PHASE$prior"
     $sshArgs = @('-F','NUL','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes',
         '-o',"UserKnownHostsFile=$known",'-o','GlobalKnownHostsFile=NUL','-o','UpdateHostKeys=no','-o','LogLevel=ERROR',
         '-o','ConnectTimeout=15','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=2','-i',$key,'root@10.10.10.20',$remote)
