@@ -70,6 +70,23 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_ocr_column_reading_order_cannot_hide_lower_terminal_prompt(self):
+        source = (ROOT / 'read-console-ocr.ps1').read_text()
+        sorter = source[source.index('function Sort-ConsoleOcrLines'):source.index('[void][Windows.Storage.StorageFile')]
+        command = sorter + r'''
+function Line($text, $x, $y) { [pscustomobject]@{ text=$text; words=@([pscustomobject]@{boundingRect=[pscustomobject]@{x=$x;y=$y}}) } }
+$readingOrder = @((Line 'old kernel start' 0 60), (Line 'layersentry login:' 0 130), (Line 'old continuation' 500 60))
+$visual = @(Sort-ConsoleOcrLines $readingOrder)
+if (($visual.text -join '|') -cne 'old kernel start|old continuation|layersentry login:') { throw 'Wrong visual order' }
+$view=[pscustomobject]@{Lines=@($visual.text)}
+if ((Get-TrustPrompt $view) -cne 'EMPTY_LOGIN') { throw 'Lost fresh prompt' }
+$readingOrder[1].text = 'layersentry login: unexpected'
+$visual = @(Sort-ConsoleOcrLines $readingOrder)
+if ((Get-TrustPrompt ([pscustomobject]@{Lines=@($visual.text)})) -cne 'UNKNOWN') { throw 'Accepted nonempty login' }
+'''
+        result = self.run_function(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_keyboard_uuid_identity_accepts_case_but_rejects_wrong_scope(self):
         command = r'''
 function Assert-TrustDcIdentity {}

@@ -47,6 +47,13 @@ function Wait-WinRtOperation {
     return $task.Result
 }
 
+function Sort-ConsoleOcrLines($Lines) {
+    # OCR reading order may put a right-hand kernel continuation after the
+    # lower terminal prompt. Preserve text, order by the visible coordinates.
+    return @($Lines | Sort-Object @{Expression={($_.words | ForEach-Object { $_.boundingRect.y } | Measure-Object -Minimum).Minimum}},
+        @{Expression={($_.words | ForEach-Object { $_.boundingRect.x } | Measure-Object -Minimum).Minimum}})
+}
+
 [void][Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 [void][Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
@@ -104,7 +111,7 @@ try {
         image = $resolvedPath
         language = $LanguageTag
         text = $result.Text
-        lines = $lines
+        lines = @(Sort-ConsoleOcrLines $lines)
     } | ConvertTo-Json -Depth 10
 }
 finally {
