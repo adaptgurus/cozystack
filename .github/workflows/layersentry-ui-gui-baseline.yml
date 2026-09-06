@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: ce1e19934f6ce9eb9f336b97e83f7ae2c890b720
+          ref: 3b80513ce14639b2926e145a9653c605a0f3b90a
           path: ui-qualification-source
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -63,6 +63,7 @@ jobs:
           LAYERSENTRY_GUI_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
           LAYERSENTRY_GUI_PASSWORD: ${{ secrets.LAYERSENTRY_CLOUDSTACK_PASSWORD }}
           LAYERSENTRY_GUI_TARGETS: 10.10.10.20
+          LAYERSENTRY_GUI_ROUTES: kubernetes-data-services
           LAYERSENTRY_GUI_EVIDENCE: ${{ runner.temp }}/layersentry-gui-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = 'Stop'
