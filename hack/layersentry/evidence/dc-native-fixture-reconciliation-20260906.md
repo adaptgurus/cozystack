@@ -1,6 +1,6 @@
 # DC native recovery fixture reconciliation
 
-Status: native DC storage registration is complete and independently verified. Run `34058013796` passed; fresh API `34058157069` confirms primary storage Up, the NFS image store and the exact official SystemVM template `isready=true`. The source Basic Zone remains Disabled, with no SystemVM or user VM instances. Guest-network setup, address exclusions, SystemVM boot, GUI validation and same-database Advanced recovery are still pending. The next source-only controller adds only a dedicated guest NIC/bridge; no guest-network change has been dispatched.
+Status: native DC storage registration is complete and independently verified. Run `34058013796` passed; fresh API `34058157069` confirms primary storage Up, the NFS image store and the exact official SystemVM template `isready=true`. The source Basic Zone remains Disabled, with no SystemVM or user VM instances. Guest-network setup, address exclusions, SystemVM boot, GUI validation and same-database Advanced recovery are still pending. The first guest-network Apply stopped during journal persistence before NIC submission; actual host journal and NIC observations confirm no network configuration change. The tested persistence correction is awaiting scheduled continuation.
 
 ## Current verified API and host identity
 
