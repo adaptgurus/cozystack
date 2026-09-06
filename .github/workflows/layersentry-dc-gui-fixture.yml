@@ -47,6 +47,8 @@ jobs:
           if($LASTEXITCODE -ne 0) {throw 'Private startup diagnostic ACL failed.'}
           try {
             $env:LAYERSENTRY_GUI_ACL_VERIFIED='1'
+            & node ./hack/layersentry/gui-acceptance/diagnose-powershell-launch.mjs $private (Join-Path $evidence 'launch.json')
+            if($LASTEXITCODE -ne 0) {throw 'Credential-free PowerShell launch collection failed.'}
             & node ./hack/layersentry/gui-acceptance/diagnose-ssh-startup.mjs $private (Join-Path $evidence 'startup.json')
             if($LASTEXITCODE -ne 0) {throw 'Credential-free SSH startup proof failed; no DC connection permitted.'}
           } finally {
@@ -79,5 +81,6 @@ jobs:
           path: |
             ${{ runner.temp }}/layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}/dc-fixture.json
             ${{ runner.temp }}/layersentry-ssh-startup-evidence-${{ github.run_id }}-${{ github.run_attempt }}/startup.json
+            ${{ runner.temp }}/layersentry-ssh-startup-evidence-${{ github.run_id }}-${{ github.run_attempt }}/launch.json
           if-no-files-found: warn
           retention-days: 30

@@ -1,0 +1,31 @@
+name: LayerSentry module lab network prerequisites
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-module-lab-network-inventory.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  inventory:
+    if: github.repository == 'adaptgurus/cozystack' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/modules-runtime-validation'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Collect read-only exact lab network prerequisites
+        shell: powershell
+        run: ./hack/layersentry/collect-module-lab-network.ps1
+      - name: Retain public network inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-module-lab-network-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-module-lab-network-${{ github.run_id }}-${{ github.run_attempt }}/network.json
+          if-no-files-found: error
+          retention-days: 30
