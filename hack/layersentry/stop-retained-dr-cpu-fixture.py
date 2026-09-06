@@ -19,6 +19,25 @@ def require(value):
     if not value:raise ValueError('EXACT_FIXTURE_RETIREMENT_GATE')
 
 
+def retain_intent(domain, xml):
+    """Preserve transient definitions durably before the domain can disappear."""
+    intent={'domainUuid':DOMAIN,'ownershipSha256':OWNERSHIP_SHA256,'domainXml':xml,
+            'checkpoints':{item.getName():item.XMLDesc(0) for item in domain.listAllCheckpoints(0)}}
+    require(set(intent['checkpoints'])==CHECKPOINTS)
+    path=DIRECTORY/'retirement-intent.json'
+    raw=(json.dumps(intent,sort_keys=True)+'\n').encode()
+    try:fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    except FileExistsError:
+        info=path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid==0 and info.st_nlink==1 and not info.st_mode&0o077)
+        require(path.read_bytes()==raw)
+    else:
+        with os.fdopen(fd,'wb') as output:output.write(raw);output.flush();os.fsync(output.fileno())
+        parent=os.open(DIRECTORY,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(parent)
+        finally:os.close(parent)
+
+
 def main():
     require(os.geteuid()==0)
     require(subprocess.check_output(['hostname','-f'],text=True,timeout=10).strip()=='layersentry-dr-mgmt1')
@@ -50,6 +69,7 @@ def main():
             require(not tree.findall('./devices/interface'))
             disks=[item for item in tree.findall('./devices/disk') if item.get('device')=='disk' and item.find('readonly') is None]
             require(len(disks)==1 and disks[0].find('source').get('file')==record['diskPath'])
+            retain_intent(domain,xml)
             domain.shutdown();changed=True
             deadline=time.monotonic()+60
             while any(item.UUIDString()==DOMAIN for item in connection.listAllDomains(0)) and time.monotonic()<deadline:

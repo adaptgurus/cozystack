@@ -21,7 +21,7 @@ try {
     [IO.File]::WriteAllText($known, ($keys -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     if ($env:GITHUB_RUN_ID -cnotmatch '^[0-9]{1,20}$' -or $env:IMAGE_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or $env:IMAGE_SOURCE -cnotmatch '^[0-9a-f]{40}$') { throw 'Immutable input validation failed.' }
     if ($env:CACHE_RUN -and $env:CACHE_RUN -cnotmatch '^[0-9]{1,20}$') { throw 'Invalid sealed candidate cache run.' }
-    if ($env:CACHE_RUN -and ($env:CACHE_RUN -cne '34051209929' -or $env:IMAGE_RUN -cne '34050507635' -or $env:IMAGE_ARTIFACT -cne '9994542246' -or $env:IMAGE_SOURCE -cne 'f05710874613c3a38c2704c28650a04f7bae2aef' -or $env:IMAGE_SHA256 -cne '8ee4a820fd427abf3f00e0f55b0421c8cb9d5fa054cd84bc0aab62fc1fc4bf77')) { throw 'Cached image lacks the exact prior independent artifact binding.' }
+    if ($env:CACHE_RUN -and ($env:CACHE_RUN -cne '34057059334' -or $env:IMAGE_RUN -cne '34056395384' -or $env:IMAGE_ARTIFACT -cne '9996215787' -or $env:IMAGE_SOURCE -cne '4d0d323569805ae022d6094dfa2cfa0ced0ea071' -or $env:IMAGE_SHA256 -cne '7580d64a5b9f27d930d7a5f5688f67063db042252dd43c7cf280fdb3e101a34d')) { throw 'Cached image lacks the exact prior independent artifact binding.' }
     if (-not $env:CACHE_RUN) {
     $candidate = Join-Path $env:RUNNER_TEMP "layersentry-cpu-candidate-$env:GITHUB_RUN_ID/cpu-image"
     $image = Join-Path $candidate 'layersentry-rke2-rocky9-amd64.qcow2'
