@@ -270,6 +270,13 @@ function Invoke-DcTrustPhase([string]$Phase) {
         # Never serialize raw exceptions: CIM errors may contain keyboard input.
         $state['diagnosticStage'] = $script:TrustDiagnosticStage
         $state['exceptionType'] = $_.Exception.GetType().FullName
+        $codes = @()
+        $exception = $_.Exception
+        for ($depth = 0; $depth -lt 5 -and $null -ne $exception; $depth++) {
+            $codes += [ordered]@{ type = $exception.GetType().FullName; hresult = ('0x{0:X8}' -f $exception.HResult) }
+            $exception = $exception.InnerException
+        }
+        $state['exceptionCodes'] = $codes
         $safeCodes = @('PRIVATE_ACL_FAILED', 'TARGET_BINDING_FAILED', 'CONSOLE_CAPTURE_FAILED',
             'CONSOLE_STATE_UNKNOWN_OR_EXPIRED', 'FRESH_EMPTY_LOGIN_REQUIRED', 'KEYBOARD_BINDING_FAILED',
             'INPUT_FORMAT_REFUSED', 'INPUT_OUTCOME_UNKNOWN_NO_REPLAY', 'CONSOLE_TRANSITION_NOT_OBSERVED_NO_REPLAY',
