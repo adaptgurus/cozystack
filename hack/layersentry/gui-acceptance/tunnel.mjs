@@ -1,4 +1,4 @@
-import { openOwnedSshTunnel } from './owned-tunnel.mjs'
+import { sshEnvironment, openOwnedSshTunnel } from './owned-tunnel.mjs'
 import { requireThat } from './contract.mjs'
 
 // Only the trusted wrapper supplies these protected file paths. No password,
@@ -17,6 +17,6 @@ export function tunnelArguments (binding, port) {
 
 export async function openDrTunnel (binding) {
   tunnelArguments(binding, 1024)
-  const env = Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'COMSPEC'].filter(k => process.env[k]).map(k => [k, process.env[k]]))
+  const env = sshEnvironment()
   return openOwnedSshTunnel(binding, port => tunnelArguments(binding, port), env)
 }

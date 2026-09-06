@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { readProtectedBytes, requireThat } from './contract.mjs'
-import { openOwnedSshTunnel, validateListenerProof } from './owned-tunnel.mjs'
+import { sshEnvironment, openOwnedSshTunnel, validateListenerProof } from './owned-tunnel.mjs'
 
 export const DC_FINGERPRINT = 'SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw'
 export const ASKPASS = '@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command "[Console]::Write([Environment]::GetEnvironmentVariable(\'ROCKY_PASSWORD\'))"\r\n'
@@ -38,7 +38,7 @@ export async function openDcTunnel (binding) {
   requireThat(readProtectedBytes(binding.askPassFile).toString('utf8') === ASKPASS, 'DC_ASKPASS_HELPER_MISMATCH')
   const secret = JSON.parse(readProtectedBytes(binding.passwordFile).toString('utf8'))
   requireThat(typeof secret.password === 'string' && secret.password.length > 0 && secret.password.length <= 4096 && !/[\r\n\0]/.test(secret.password), 'DC_PASSWORD_PREREQUISITE_MISSING')
-  const env = Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'COMSPEC'].filter(k => process.env[k]).map(k => [k, process.env[k]]))
+  const env = sshEnvironment()
   Object.assign(env, { SSH_ASKPASS: binding.askPassFile, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: 'layersentry-noninteractive', ROCKY_PASSWORD: secret.password })
   try {
     const tunnel = await openOwnedSshTunnel(binding, port => dcTunnelArguments(binding, port), env)

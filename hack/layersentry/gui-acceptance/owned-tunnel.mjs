@@ -17,9 +17,18 @@ export function validateListenerProof (proof, binding, pid, port, started) {
   return proof
 }
 
+export function sshEnvironment (source = process.env) {
+  // Windows OpenSSH 9.5 init_prog_paths requires ProgramData before main(),
+  // including configuration-only -G. Never inherit credential/debug variables.
+  return Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'COMSPEC', 'ProgramData'].filter(key => source[key]).map(key => [key, source[key]]))
+}
+
 export function classifySshFailure (text) {
   // Conservative categories from OpenSSH 9.5 diagnostics. Text never escapes
   // this in-memory classifier; a category is evidence, not automatic recovery.
+  if (text.includes("couldn't find ProgramData environment variable")) return 'PROGRAMDATA_MISSING'
+  if (text.includes('failed to initialize w32posix wrapper')) return 'WIN32_WRAPPER_INIT_FAILED'
+  if (/No user exists for uid [0-9]+/.test(text)) return 'LOCAL_USER_LOOKUP_FAILED'
   if (/ssh_askpass:|posix_spawn initialization failed|powershell(?:\.exe)?['"]? is not recognized/i.test(text)) return 'ASKPASS_LAUNCH_FAILED'
   if (/host key verification failed|remote host identification has changed|no .* host key is known|host key .* does not match/i.test(text)) return 'HOSTKEY_REJECTED'
   if (/cannot listen to port|could not request local forwarding|address already in use|bind .*permission denied/i.test(text)) return 'FORWARD_BIND_FAILED'
@@ -37,9 +46,10 @@ export async function openOwnedSshTunnel (binding, argumentsForPort, env) {
     reservation.listen(0, '127.0.0.1', () => { const port = reservation.address().port; reservation.close(() => resolve(port)) })
   })
   const executable = path.join(process.env.SystemRoot, 'System32', 'OpenSSH', 'ssh.exe')
-  const prerequisites = { executableExists: fs.existsSync(executable), systemRootPresent: Boolean(env.SystemRoot), pathPresent: Boolean(env.PATH), comspecPresent: Boolean(env.COMSPEC), tempPresent: Boolean(env.TEMP),
+  const prerequisites = { executableExists: fs.existsSync(executable), systemRootPresent: Boolean(env.SystemRoot), programDataPresent: Boolean(env.ProgramData), pathPresent: Boolean(env.PATH), comspecPresent: Boolean(env.COMSPEC), tempPresent: Boolean(env.TEMP),
     askpassConfigured: binding.target === 'dc' ? env.SSH_ASKPASS === binding.askPassFile && env.SSH_ASKPASS_REQUIRE === 'force' && Boolean(env.DISPLAY) : null,
     askpassFileExists: binding.target === 'dc' ? fs.existsSync(binding.askPassFile) : null, passwordEnvironmentPresent: binding.target === 'dc' ? typeof env.ROCKY_PASSWORD === 'string' && env.ROCKY_PASSWORD.length > 0 : null }
+  requireThat(prerequisites.programDataPresent, 'SSH_PROGRAMDATA_REQUIRED')
   const started = Date.now()
   const child = spawn(executable, argumentsForPort(port), { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, shell: false, env })
   let stderr = Buffer.alloc(0); let stderrTruncated = false
