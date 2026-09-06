@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: 45dac0b6d806b2d678df45e6b96b22527ba60282
+          ref: 2c758140c4c8ab37a237106f81c0c1f13233012a
           path: ui-qualification-source
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
