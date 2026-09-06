@@ -30,7 +30,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 45
     env:
-      BOOT_SOURCE: bae4285c800622b7adacba072904e80e6d1186a0
+      BOOT_SOURCE: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
       CACHE_RUN: ${{ inputs.cache-run }}
       IMAGE_RUN: ${{ inputs.image-run || '34050507635' }}
       IMAGE_ARTIFACT: ${{ inputs.image-artifact || '9994542246' }}
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: bae4285c800622b7adacba072904e80e6d1186a0
+          ref: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
           path: candidate-source
           persist-credentials: false
       - name: Boot exact candidate through verified DR SSH
