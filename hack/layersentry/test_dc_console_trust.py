@@ -87,9 +87,11 @@ $view.Lines=@("LS-DC-$nonce-BEGIN", 'TARGET 10.10.10.14 ROOT KEY MATCH', "LS-DC-
 Assert-TrustPublicReceipt $view $env:TEST_KEY $nonce
 try { Assert-TrustPublicReceipt $view $env:TEST_KEY 'wrong'; throw 'accepted wrong challenge' }
 catch { if ($_.Exception.Message -cne 'PUBLIC_RECEIPT_NOT_VERIFIED') { throw } }
+Write-Output 'PUBLIC_PROOF_GUARDS_PASSED'
 '''
         result = self.run_function(command)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'PUBLIC_PROOF_GUARDS_PASSED')
 
     def test_root_fingerprint_allows_only_cursor_blink_after_prompt(self):
         command = r'''
