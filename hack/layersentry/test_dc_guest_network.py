@@ -105,6 +105,55 @@ class GuestTests(unittest.TestCase):
                 mutation.assert_not_called()
             journal.close()
 
+    def test_complete_bridge_and_label_path_retains_management_and_reconciles_repeat(self):
+        state = {'profiles': {}, 'active': False, 'label': None, 'mutations': []}
+        def command(args):
+            if args[:3] == ['ip', '-j', '-4'] and 'route' in args:
+                return json.dumps([{'dst': 'default', 'gateway': '10.10.10.1', 'dev': 'cloudbr0'}])
+            if args[0] == 'ip' and 'address' in args:
+                info = [{'local': '10.10.10.14', 'prefixlen': 24}] if args[-1] == 'cloudbr0' else []
+                return json.dumps([{'addr_info': info}])
+            if args[0] == 'ip':
+                links = [{'ifname': 'cloudbr0', 'ifindex': 4}, {'ifname': 'eth0', 'ifindex': 2, 'master': 'cloudbr0', 'address': '00:15:5d:00:39:0a'}, {'ifname': 'ens8', 'ifindex': 8, 'address': network.MAC}]
+                if state['active']:
+                    links[-1]['master'] = network.BRIDGE
+                    links.append({'ifname': network.BRIDGE, 'ifindex': 9, 'linkinfo': {'info_kind': 'bridge'}, 'flags': ['UP']})
+                return json.dumps(links)
+            if args[:3] == ['nmcli', '-g', 'UUID']:
+                return '\n'.join(state['profiles'])
+            if args[:2] == ['nmcli', '-g']:
+                return state['profiles'][args[-1]][args[2]]
+            state['mutations'].append(args)
+            if args[:3] == ['nmcli', 'connection', 'add']:
+                fields = dict(zip(args[5::2], args[6::2]))
+                fields['connection.type'] = 'bridge' if args[4] == 'bridge' else '802-3-ethernet'
+                state['profiles'][fields['connection.uuid']] = fields
+                return ''
+            if args == ['nmcli', '--wait', '20', 'connection', 'up', 'uuid', network.PORT_UUID]:
+                state['active'] = True
+                return ''
+            raise AssertionError(args)
+        def api(command, **params):
+            self.assertEqual(command, 'updateTrafficType')
+            self.assertEqual(params, {'id': network.GUEST, 'kvmnetworklabel': network.BRIDGE})
+            state['mutations'].append(command)
+            state['label'] = network.BRIDGE
+            return {}
+        with tempfile.TemporaryDirectory() as directory:
+            journal = self.journal(directory)
+            with patch.object(network, 'run', side_effect=command), patch.object(network, 'api_scope', side_effect=lambda _: state['label']):
+                result = network.execute(api, journal, 'Bridge')
+                self.assertTrue(result['managementPreserved'])
+                self.assertFalse(state['active'])
+                self.assertIsNone(state['label'])
+                result = network.execute(api, journal, 'Label')
+                self.assertEqual(result['guestLabel'], network.BRIDGE)
+                self.assertTrue(result['managementPreserved'])
+                count = len(state['mutations'])
+                network.execute(api, journal, 'Label')
+                self.assertEqual(len(state['mutations']), count)
+            journal.close()
+
 
 @unittest.skipUnless(os.environ.get('POWERSHELL_TEST_BINARY'), 'PowerShell execution required')
 class HyperVTests(unittest.TestCase):
