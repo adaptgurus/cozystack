@@ -30,12 +30,12 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 45
     env:
-      BOOT_SOURCE: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
+      BOOT_SOURCE: 2b7f06773216d76c455be1ab32d483cebbd38804
       CACHE_RUN: ${{ inputs.cache-run }}
-      IMAGE_RUN: ${{ inputs.image-run || '34050507635' }}
-      IMAGE_ARTIFACT: ${{ inputs.image-artifact || '9994542246' }}
-      IMAGE_SOURCE: ${{ inputs.image-source || 'f05710874613c3a38c2704c28650a04f7bae2aef' }}
-      IMAGE_SHA256: ${{ inputs.image-sha256 || '8ee4a820fd427abf3f00e0f55b0421c8cb9d5fa054cd84bc0aab62fc1fc4bf77' }}
+      IMAGE_RUN: ${{ inputs.image-run }}
+      IMAGE_ARTIFACT: ${{ inputs.image-artifact }}
+      IMAGE_SOURCE: ${{ inputs.image-source }}
+      IMAGE_SHA256: ${{ inputs.image-sha256 }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -58,15 +58,15 @@ jobs:
         if: inputs.cache-run == ''
         with:
           repository: adaptgurus/cloudstack
-          run-id: ${{ inputs.image-run || '34050507635' }}
-          artifact-ids: ${{ inputs.image-artifact || '9994542246' }}
+          run-id: ${{ inputs.image-run }}
+          artifact-ids: ${{ inputs.image-artifact }}
           github-token: ${{ github.token }}
           merge-multiple: true
           path: ${{ runner.temp }}/layersentry-cpu-candidate-${{ github.run_id }}
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: 9dcd8ea01be5b6463488e7e9660f7106f0f4fdda
+          ref: 2b7f06773216d76c455be1ab32d483cebbd38804
           path: candidate-source
           persist-credentials: false
       - name: Boot exact candidate through verified DR SSH
