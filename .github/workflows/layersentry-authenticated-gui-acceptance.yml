@@ -1,0 +1,93 @@
+name: LayerSentry Authenticated GUI Acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      request_path:
+        description: Reviewed public GUI request in hack/layersentry/gui-acceptance-requests/
+        required: true
+        type: string
+      artifact_run_id:
+        description: Successful same-repository UI build run
+        required: true
+        type: string
+      artifact_name:
+        description: Exact UI deployment artifact name
+        required: true
+        type: string
+      credential_source:
+        required: true
+        default: protected-personas
+        type: choice
+        options: [protected-personas, existing-operator]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: layersentry-authenticated-gui-acceptance
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate fixed public request and artifact identity
+        shell: powershell
+        env:
+          REQUEST_PATH: ${{ inputs.request_path }}
+          ARTIFACT_RUN: ${{ inputs.artifact_run_id }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:REQUEST_PATH -cnotmatch '^hack/layersentry/gui-acceptance-requests/[A-Za-z0-9_-]+\.json$') {throw 'Request path rejected.'}
+          if($env:ARTIFACT_RUN -cnotmatch '^[0-9]+$' -or $env:ARTIFACT_NAME -cnotmatch '^[A-Za-z0-9_-]{1,160}$') {throw 'Artifact input rejected.'}
+          $r=Get-Content -LiteralPath $env:REQUEST_PATH -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$r.artifactRunId -cne $env:ARTIFACT_RUN -or [string]$r.artifactName -cne $env:ARTIFACT_NAME) {throw 'Artifact request binding mismatch.'}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.20.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.artifact_run_id }}
+          name: ${{ inputs.artifact_name }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/layersentry-gui-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install locked harness and browsers
+        shell: powershell
+        working-directory: hack/layersentry/gui-acceptance
+        run: |
+          $ErrorActionPreference='Stop'
+          npm ci --ignore-scripts --no-audit --no-fund
+          if($LASTEXITCODE -ne 0) {throw 'Harness dependency installation failed.'}
+          node node_modules/playwright/cli.js install chrome firefox
+          if($LASTEXITCODE -ne 0) {throw 'Browser installation failed.'}
+          npm test
+          if($LASTEXITCODE -ne 0) {throw 'Harness source qualification failed.'}
+      - name: Authenticate and inspect exact served UI without provisioning
+        shell: powershell
+        env:
+          REQUEST_PATH: ${{ inputs.request_path }}
+          CREDENTIAL_SOURCE: ${{ inputs.credential_source }}
+          DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+          DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+          DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+          DR_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DR_SSH_KNOWN_HOSTS }}
+          LAYERSENTRY_CLOUDSTACK_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
+          LAYERSENTRY_CLOUDSTACK_PASSWORD: ${{ secrets.LAYERSENTRY_CLOUDSTACK_PASSWORD }}
+        run: |
+          & ./hack/layersentry/gui-acceptance/invoke-acceptance.ps1 -RequestPath $env:REQUEST_PATH -ArtifactDirectory "$env:RUNNER_TEMP/layersentry-gui-artifact-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -EvidenceDirectory "$env:RUNNER_TEMP/layersentry-gui-evidence-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" -CredentialSource $env:CREDENTIAL_SOURCE
+          exit $LASTEXITCODE
+      - name: Upload only allowlisted public evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-gui-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/layersentry-gui-evidence-${{ github.run_id }}-${{ github.run_attempt }}/acceptance.json
+            ${{ runner.temp }}/layersentry-gui-evidence-${{ github.run_id }}-${{ github.run_attempt }}/*-module-title.png
+          if-no-files-found: warn
+          retention-days: 14

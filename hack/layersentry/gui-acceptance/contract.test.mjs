@@ -1,0 +1,50 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { validateRequest, readProtectedCredentials, classifyGate, allowedRequest, publicFailure } from './contract.mjs'
+const origin = 'http://10.10.10.20:8080'
+const uuid = '11111111-1111-4111-8111-111111111111'
+const request = () => ({ schema: 1, artifactRunId: '123', artifactName: 'test-artifact', target: 'dr', transport: 'strict-ssh-loopback', cloudstackUiCommit: 'a'.repeat(40), artifactSha256: 'b'.repeat(64), personas: [{ id: 'operator', expectedUserId: uuid, projectId: uuid, projectName: 'Disposable project' }] })
+test('exact lab and immutable artifact binding is mandatory', () => {
+  assert.equal(validateRequest(request()), 'dr')
+  for (const change of [{ target: 'http://evil' }, { transport: 'http' }, { target: 'dc' }, { cloudstackUiCommit: 'main' }, { artifactSha256: 'latest' }, { personas: [] }]) assert.throws(() => validateRequest({ ...request(), ...change }))
+  const duplicate = request(); duplicate.personas.push(duplicate.personas[0]); assert.throws(() => validateRequest(duplicate))
+})
+test('route guard rejects all module/native mutations and cross-origin credentials', () => {
+  assert.equal(allowedRequest(origin + '/client/api?command=listProjects&sessionkey=private', 'GET', null, origin), true)
+  assert.equal(allowedRequest(origin + '/client/api', 'POST', 'command=login&password=private', origin), true)
+  for (const [url, method, data] of [[origin + '/client/api?command=deleteProject', 'GET'], [origin + '/client/api', 'POST', 'command=deployVirtualMachine'], [origin + '/client/layersentry-k8s/v1/kubernetes/clusters', 'POST'], ['https://evil.invalid/client/api', 'POST', 'command=login'], [origin + '/client/layersentry-k8s/v1/kubernetes/admin', 'GET'], [origin + '/client/layersentry-dr/v1/promote', 'GET']]) assert.equal(allowedRequest(url, method, data, origin), false)
+})
+test('accepted or partially configured service never becomes ready evidence', () => {
+  assert.equal(classifyGate(202, { kubernetes: true }).status, 'BLOCKED')
+  assert.equal(classifyGate(200, { kubernetes: true }).status, 'BLOCKED')
+  assert.equal(classifyGate(200, { kubernetes: true, gates: { capc_volume_ownership_safe: true } }).status, 'NOT_TESTED')
+  assert.equal(classifyGate(200, '<html>').status, 'BLOCKED')
+})
+test('public errors never expose browser URLs, headers, passwords or bodies', () => {
+  for (const message of ['password=top-secret', 'GET http://host?sessionkey=private', '{"token":"private"}', 'Timeout 20s waiting for username']) assert.equal(publicFailure(new Error(message)), 'GUI_CHECK_FAILED')
+  assert.equal(publicFailure(new Error('SERVED_ARTIFACT_MISMATCH')), 'SERVED_ARTIFACT_MISMATCH')
+})
+test('private file permissions, ownership, links and bounded input are checked', { skip: process.platform === 'win32' }, t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-gui-contract-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'credentials.json'); fs.writeFileSync(file, '{}', { mode: 0o600 })
+  assert.deepEqual(readProtectedCredentials(file), {})
+  fs.chmodSync(file, 0o644); assert.throws(() => readProtectedCredentials(file), /PERMISSIONS/); fs.chmodSync(file, 0o600)
+  fs.symlinkSync(file, path.join(dir, 'alias')); assert.throws(() => readProtectedCredentials(path.join(dir, 'alias')), /SYMLINK/)
+  fs.linkSync(file, path.join(dir, 'hard')); assert.throws(() => readProtectedCredentials(file), /UNSAFE/); fs.unlinkSync(path.join(dir, 'hard'))
+  fs.writeFileSync(file, 'x'.repeat(32769)); assert.throws(() => readProtectedCredentials(file), /UNSAFE/)
+})
+
+
+test('SSH transport binds only the reviewed DR host and loopback destination', async () => {
+  const { tunnelArguments } = await import('./tunnel.mjs')
+  const binding = { target: 'dr', host: '10.10.10.20', user: 'root', keyFile: '/private/key', knownHostsFile: '/private/known_hosts' }
+  const args = tunnelArguments(binding, 23456)
+  assert.ok(args.includes('127.0.0.1:23456:127.0.0.1:8080'))
+  assert.ok(args.includes('StrictHostKeyChecking=yes')); assert.ok(args.includes('ExitOnForwardFailure=yes'))
+  assert.ok(args.includes('ForwardAgent=no')); assert.equal(args.at(-1), 'root@10.10.10.20')
+  for (const change of [{ target: 'dc' }, { host: '10.10.10.14' }, { host: 'untrusted.invalid' }, { user: 'root -o ProxyCommand=bad' }]) assert.throws(() => tunnelArguments({ ...binding, ...change }, 23456))
+  for (const port of [22, 65536, '8080', -1]) assert.throws(() => tunnelArguments(binding, port))
+})

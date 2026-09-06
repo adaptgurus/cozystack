@@ -1,0 +1,9 @@
+{
+  "name": "layersentry-live-gui-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "scripts": { "test": "node --test contract.test.mjs", "accept": "node accept.mjs" },
+  "dependencies": { "playwright": "1.63.0" }
+}
