@@ -4,7 +4,7 @@ $ast=[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'ha
 if($errors.Count){throw 'parse failed'}
 $definition=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-RetainedBoot'},$true)
 . ([scriptblock]::Create($definition.Extent.Text))
-$env:BOOT_RUN='123';$env:BOOT_RUNNER_SOURCE='a'*40;$env:BOOT_SOURCE='2b7f06773216d76c455be1ab32d483cebbd38804';$env:CAPTURE_SOURCE='2b7f06773216d76c455be1ab32d483cebbd38804';$env:IMAGE_SHA256='b'*64
+$env:BOOT_RUN='123';$env:BOOT_RUNNER_SOURCE='a'*40;$env:BOOT_SOURCE='2b7f06773216d76c455be1ab32d483cebbd38804';$env:CAPTURE_SOURCE='8f94ee6e2ac1e360e39b71b8247e64b62187ef0d';$env:IMAGE_SHA256='b'*64
 $id=[Guid]::NewGuid().ToString('D');$base="/var/lib/libvirt/images/layersentry-cpuqc-$id";$owned="$base/ownership.json"
 $summary=@{status='LIVE_VERIFIED';target='10.10.10.20';runId='123';runnerCommit=$env:BOOT_RUNNER_SOURCE;bootSource=$env:BOOT_SOURCE;imageSha256=$env:IMAGE_SHA256;bootExitCode=0;ownershipManifest=$owned}
 $result=@{status='LIVE_VERIFIED';scope='networkless Rocky CPU image boot and QGA';domainUuid=$id;sourceSha256=$env:IMAGE_SHA256;ownershipManifest=$owned;productionQualified=$false;rke2Started=$false}

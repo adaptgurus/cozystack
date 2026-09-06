@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 55
     env:
       BOOT_SOURCE: 2b7f06773216d76c455be1ab32d483cebbd38804
-      CAPTURE_SOURCE: 2b7f06773216d76c455be1ab32d483cebbd38804
+      CAPTURE_SOURCE: 8f94ee6e2ac1e360e39b71b8247e64b62187ef0d
       IMAGE_SHA256: 7580d64a5b9f27d930d7a5f5688f67063db042252dd43c7cf280fdb3e101a34d
       BOOT_RUN: ${{ inputs.boot-run }}
       BOOT_ARTIFACT: ${{ inputs.boot-artifact }}
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: 2b7f06773216d76c455be1ab32d483cebbd38804
+          ref: 8f94ee6e2ac1e360e39b71b8247e64b62187ef0d
           path: capture-source
           persist-credentials: false
       - name: Capture retained fixture once through verified DR SSH
