@@ -87,11 +87,14 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'TRUNCATED')
         self.assertEqual(len(result['files']), 128)
 
-    def test_workflow_is_dispatch_only_and_requires_pinned_target_trust(self):
+    def test_workflow_requires_explicit_request_and_pinned_target_trust(self):
         workflow = (ROOT.parents[1] / '.github/workflows/layersentry-dc-r0-host-inventory.yml').read_text()
         wrapper = (ROOT / 'invoke-dc-r0-host-inventory.ps1').read_text()
         self.assertIn('workflow_dispatch:', workflow)
-        self.assertNotIn('push:', workflow)
+        self.assertIn('branches: [codex/dr-dc-trust]', workflow)
+        self.assertIn('Exactly one new immutable inventory request is required.', workflow)
+        self.assertIn('DC-R0-READ-ONLY-INVENTORY', workflow)
+        self.assertIn('ref: ${{ github.sha }}', workflow)
         self.assertIn('StrictHostKeyChecking=yes', wrapper)
         self.assertIn('LAYERSENTRY_DC_SSH_KNOWN_HOSTS', workflow)
         self.assertLess(wrapper.index('SSH_TRUST_PREREQUISITE_MISSING'), wrapper.index('& ssh.exe'))

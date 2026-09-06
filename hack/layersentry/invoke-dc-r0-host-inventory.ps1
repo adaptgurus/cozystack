@@ -1,3 +1,4 @@
+param([ValidateSet('collect-dc-r0-readonly.py', 'collect-dc-storage-readonly.py')][string]$Collector = 'collect-dc-r0-readonly.py')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -39,7 +40,7 @@ try {
     $env:SSH_ASKPASS = $askPass
     $env:SSH_ASKPASS_REQUIRE = 'force'
     $env:DISPLAY = 'layersentry-noninteractive'
-    $script = (Get-Content -LiteralPath 'hack/layersentry/collect-dc-r0-readonly.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
+    $script = (Get-Content -LiteralPath (Join-Path 'hack/layersentry' $Collector) -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
     $remote = "printf '%s' '$encoded' | base64 -d | timeout 120 python3 -"
     $sshArgs = @('-F', 'NUL', '-o', 'BatchMode=no', '-o', 'PreferredAuthentications=password',

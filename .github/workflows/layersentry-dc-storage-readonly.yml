@@ -1,0 +1,54 @@
+name: LayerSentry DC Storage Read-only Proof
+
+on:
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-storage-proof-actions/*.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout collector
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind explicit read-only inventory request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -notin @('refs/heads/codex/dr-dc-trust','refs/heads/ops/layersentry-hyperv-inventory')) { throw 'Repository/ref binding failed.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $files = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-storage-proof-actions | Where-Object { $_ -cmatch '^hack/layersentry/dc-storage-proof-actions/[a-z0-9-]+\.json$' })
+            if ($LASTEXITCODE -ne 0 -or $files.Count -ne 1) { throw 'Exactly one new immutable inventory request is required.' }
+            $request = Get-Content -LiteralPath $files[0] -Raw | ConvertFrom-Json
+            $fields = @($request.PSObject.Properties.Name | Sort-Object)
+            if (($fields -join ',') -cne 'authorization,schema,target' -or $request.schema -ne 1 -or $request.target -cne '10.10.10.14' -or $request.authorization -cne 'DC-STORAGE-READ-ONLY-PROOF') { throw 'Read-only inventory request binding failed.' }
+          } elseif ($env:GITHUB_EVENT_NAME -ne 'workflow_dispatch') { throw 'Unsupported event.' }
+      - name: Collect DC read-only inventory
+        shell: powershell
+        env:
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+        run: ./hack/layersentry/invoke-dc-r0-host-inventory.ps1 -Collector collect-dc-storage-readonly.py
+      - name: Upload sanitized DC inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-storage-readonly-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-r0-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
