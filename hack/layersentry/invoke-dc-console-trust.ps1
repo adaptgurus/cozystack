@@ -98,6 +98,19 @@ function Get-TrustKeyboard {
     return $keyboards[0]
 }
 
+function Get-TrustPromptDiagnostics($View) {
+    # Never return arbitrary credential-phase text. Only fixed username/host
+    # spellings plus a small punctuation alphabet may form a prompt candidate.
+    $candidates = @($View.Lines | Where-Object {
+        $_.Length -le 80 -and $_ -cmatch '^[\[\](){|Il1 ]*root[@][l1I]ayersentry[ ~_\-\[\]{}()|Il1#]*$'
+    })
+    return [ordered]@{
+        rootPromptCandidates = $candidates
+        loginRejectedMessage = @($View.Lines | Where-Object { $_ -cmatch '^[Ll]ogin\s+incorrect[.!]?$' }).Count -gt 0
+        rootAndHostRecognized = @($View.Lines | Where-Object { $_ -cmatch 'root' -and $_ -cmatch '[l1I]ayersentry' }).Count -gt 0
+    }
+}
+
 function Send-TrustText($Keyboard, [string]$Text) {
     # Linux rejected TypeText as unknown ASCII scan codes. Use the existing
     # reviewed US virtual-key mapping; no input, key codes or errors are logged.
@@ -237,6 +250,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $prompt = Get-TrustPrompt $view
         $state['initialPrompt'] = $prompt
         if ($Phase -eq 'Observe') {
+            $state['promptDiagnostics'] = Get-TrustPromptDiagnostics $view
             if ($view.KnownPublicImage) { $state['reviewedPublicImageOcrLines'] = @($view.Lines) }
             # Public identity/count diagnostics only; never invoke keyboard methods.
             $systems = @(Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName 'Msvm_ComputerSystem' -Filter "Name='$script:DcVmId'" -ErrorAction Stop)

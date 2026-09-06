@@ -73,6 +73,18 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_prompt_diagnostics_never_disclose_arbitrary_credential_phase_text(self):
+        command = r'''
+$view=[pscustomobject]@{Lines=@($env:TEST_PRIVATE_TEXT, '[root@layersentry ~l#', 'Login incorrect')}
+Get-TrustPromptDiagnostics $view | ConvertTo-Json -Compress
+'''
+        result = self.run_function(command, TEST_PRIVATE_TEXT=PASSWORD)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value['rootPromptCandidates'], ['[root@layersentry ~l#'])
+        self.assertTrue(value['loginRejectedMessage'])
+
     def test_observed_password_ocr_alias_requires_exact_public_image_and_root(self):
         command = r'''
 $view=[pscustomobject]@{Lines=@('layersentry login: root','Passuord :');ImageSha256='274d45c7f0fca8b8db796963c1c4c1675139c52480322f67af185909457c6bf0'}
