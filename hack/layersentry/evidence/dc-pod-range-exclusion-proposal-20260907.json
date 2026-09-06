@@ -15,10 +15,10 @@
       "podid": "020dc658-af4e-4e2e-bed5-0607de8a787f",
       "currentstartip": "10.10.10.2",
       "currentendip": "10.10.10.254",
-      "newstartip": "10.10.10.21",
-      "newendip": "10.10.10.254"
+      "newstartip": "10.10.10.2",
+      "newendip": "10.10.10.9"
     },
-    "basis": "Strict subset of the existing registered allocation range; no new IP addresses or subnet introduced."
+    "basis": "Existing Pod intersection with the complement of trusted Hyper-V DHCP10.10.10.10\u2013250 and fixed host addresses;2\u20139 is the largest remaining contiguous subset (8 addresses), with no new subnet or DHCP change."
   },
   "requiredBeforeApproval": [
     "Exact current listPods ipranges including CIDR/VLAN/forsystemvms, not deprecated unpaired endpoints only",
@@ -36,7 +36,33 @@
     "Keep Zone Disabled; do not enable SystemVM allocation in this step"
   ],
   "unresolved": [
-    "DHCP and private-IP allocated-count evidence not yet collected",
-    "Candidate is not approved address availability or SystemVM readiness"
-  ]
+    "Fresh native private-IP allocated count and full Pod ipranges role/VLAN not yet collected",
+    "Separate DHCP exclusions for static .14/.20 require review; this proposal does not change DHCP or revoke existing leases",
+    "Candidate is not authorized for update or SystemVM readiness"
+  ],
+  "rejectedCandidate": {
+    "start": "10.10.10.21",
+    "end": "10.10.10.254",
+    "reason": "Fresh trusted DHCP scope10\u2013250 overlaps21\u2013250; rejected before any mutation."
+  },
+  "trustedHyperVInventory": {
+    "run": "34059957658",
+    "dhcpScope": [
+      "10.10.10.10",
+      "10.10.10.250"
+    ],
+    "dhcpExclusions": [],
+    "dhcpReservations": [
+      "10.10.10.11",
+      "10.10.10.12",
+      "10.10.10.13"
+    ],
+    "staticDC": "10.10.10.14",
+    "staticDR": "10.10.10.20",
+    "gateway": "10.10.10.1",
+    "attachedGuestVms": [
+      "sen",
+      "layersentry-dr-rocky9"
+    ]
+  }
 }
