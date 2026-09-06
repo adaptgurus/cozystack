@@ -63,6 +63,12 @@ function Get-TrustPrompt($View) {
     $lines = @($View.Lines)
     $last = $lines[-1]
     if ($last -cmatch '^\[root@layersentry\s+[^\r\n\]]+\]#\s*$') { return 'ROOT_SHELL' }
+    if ($last -ceq '[root@layersentry' -and $null -ne $View.PSObject.Properties['Ocr']) {
+        # Observe 34050853843 visually proved the complete empty root prompt;
+        # OCR alone omitted its suffix. Bind to the exact bounded row pixels.
+        $row = Export-TrustRootPromptCrop $View ([IO.Path]::GetDirectoryName($View.Image))
+        if ($null -ne $row -and $row.sha256 -ceq 'cb0b9b7ee94a363233c9f84436a03f0e9ad3454d560621e0c87a3a76f7c997e9') { return 'ROOT_SHELL' }
+    }
     if ($last -cmatch '^[Pp]assword:\s*$') { return 'PASSWORD_PROMPT' }
     # Exact OCR error proved by username-only run 34050130232. This alias
     # requires its reviewed public image and preceding root username; no fuzzy

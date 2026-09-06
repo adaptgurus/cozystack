@@ -73,6 +73,19 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_root_suffix_ocr_loss_requires_reviewed_crop_and_last_row(self):
+        command = r'''
+function Export-TrustRootPromptCrop { [pscustomobject]@{sha256=$env:TEST_CROP_HASH} }
+$view=[pscustomobject]@{Lines=@('[root@layersentry');Ocr=@{};Image='/tmp/private.png'}
+Get-TrustPrompt $view
+$view.Lines=@('[root@layersentry','unexpected command')
+Get-TrustPrompt $view
+'''
+        good = self.run_function(command, TEST_CROP_HASH='cb0b9b7ee94a363233c9f84436a03f0e9ad3454d560621e0c87a3a76f7c997e9')
+        self.assertEqual(good.stdout.splitlines(), ['ROOT_SHELL', 'UNKNOWN'])
+        bad = self.run_function(command, TEST_CROP_HASH='wrong')
+        self.assertEqual(bad.stdout.splitlines(), ['UNKNOWN', 'UNKNOWN'])
+
     def test_ocr_fragments_join_only_overlapping_terminal_rows(self):
         source = (ROOT / 'read-console-ocr.ps1').read_text()
         helpers = source[source.index('function Sort-ConsoleOcrLines'):source.index('[void][Windows.Storage.StorageFile')]
