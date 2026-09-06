@@ -70,6 +70,25 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_keyboard_uuid_identity_accepts_case_but_rejects_wrong_scope(self):
+        command = r'''
+function Assert-TrustDcIdentity {}
+function Get-CimInstance { [pscustomobject]@{ Name=$env:TEST_SYSTEM_UUID; ElementName='sen' } }
+function Get-CimAssociatedInstance {
+    $key = [pscustomobject]@{ SystemName=$env:TEST_KEY_UUID; CreationClassName=$env:TEST_KEY_CLASS }
+    $key
+    if ($env:TEST_DUPLICATE -eq 'true') { $key }
+}
+$null = Get-TrustKeyboard
+'''
+        uuid = '29BA176B-B81A-4F47-8F51-ECEC869F247F'
+        valid = dict(TEST_SYSTEM_UUID=uuid, TEST_KEY_UUID=uuid, TEST_KEY_CLASS='Msvm_Keyboard', TEST_DUPLICATE='false')
+        self.assertEqual(self.run_function(command, **valid).returncode, 0)
+        for field, value in (('TEST_SYSTEM_UUID', 'not-a-guid'), ('TEST_KEY_UUID', '00000000-0000-0000-0000-000000000000'),
+                             ('TEST_KEY_CLASS', 'Other'), ('TEST_DUPLICATE', 'true')):
+            with self.subTest(field=field):
+                self.assertNotEqual(self.run_function(command, **dict(valid, **{field: value})).returncode, 0)
+
     def test_open_async_uses_its_declared_random_access_stream_result(self):
         source = (ROOT / 'read-console-ocr.ps1').read_text()
         selection = source[source.index('$asTaskMethod ='):source.index('if ($null -eq $asTaskMethod)')]

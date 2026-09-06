@@ -7,10 +7,15 @@ $DebugPreference = 'SilentlyContinue'
 Set-PSDebug -Off
 $script:DcVmId = '29ba176b-b81a-4f47-8f51-ecec869f247f'
 
+function Test-TrustDcUuid([string]$Value) {
+    $parsed = [Guid]::Empty
+    return [Guid]::TryParse($Value, [ref]$parsed) -and $parsed -eq [Guid]$script:DcVmId
+}
+
 function Assert-TrustDcIdentity {
     if ($env:COMPUTERNAME -cne 'TESTSER') { throw 'TARGET_BINDING_FAILED' }
     $vms = @(Get-VM -Name 'sen' -ErrorAction Stop)
-    if ($vms.Count -ne 1 -or [string]$vms[0].Id -cne $script:DcVmId -or
+    if ($vms.Count -ne 1 -or -not (Test-TrustDcUuid ([string]$vms[0].Id)) -or
         [string]$vms[0].Name -cne 'sen' -or [string]$vms[0].State -cne 'Running') { throw 'TARGET_BINDING_FAILED' }
 }
 
@@ -77,9 +82,10 @@ function Get-TrustPrompt($View) {
 function Get-TrustKeyboard {
     Assert-TrustDcIdentity
     $systems = @(Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName 'Msvm_ComputerSystem' -Filter "Name='$script:DcVmId'" -ErrorAction Stop)
-    if ($systems.Count -ne 1 -or [string]$systems[0].Name -cne $script:DcVmId -or $systems[0].ElementName -cne 'sen') { throw 'KEYBOARD_BINDING_FAILED' }
+    if ($systems.Count -ne 1 -or -not (Test-TrustDcUuid ([string]$systems[0].Name)) -or $systems[0].ElementName -cne 'sen') { throw 'KEYBOARD_BINDING_FAILED' }
     $keyboards = @(Get-CimAssociatedInstance -InputObject $systems[0] -ResultClassName 'Msvm_Keyboard' -ErrorAction Stop)
-    if ($keyboards.Count -ne 1) { throw 'KEYBOARD_BINDING_FAILED' }
+    if ($keyboards.Count -ne 1 -or -not (Test-TrustDcUuid ([string]$keyboards[0].SystemName)) -or
+        $keyboards[0].CreationClassName -cne 'Msvm_Keyboard') { throw 'KEYBOARD_BINDING_FAILED' }
     return $keyboards[0]
 }
 
