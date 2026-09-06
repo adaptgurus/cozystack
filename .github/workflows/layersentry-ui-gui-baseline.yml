@@ -1,0 +1,63 @@
+name: LayerSentry DC DR GUI baseline
+
+on:
+  push:
+    branches: [codex/ui-gui-qualification]
+    paths: [.github/workflows/layersentry-ui-gui-baseline.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  gui:
+    if: github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/ui-gui-qualification'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact reviewed GUI test source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: adaptgurus/cloudstack
+          ref: 45dac0b6d806b2d678df45e6b96b22527ba60282
+          path: ui-qualification-source
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.20.0
+      - name: Install locked browser harness
+        working-directory: ui-qualification-source/tools/layersentry-ui-acceptance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & npm.cmd ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Browser dependency installation failed.' }
+          & npx.cmd --no-install playwright install chrome firefox
+          if ($LASTEXITCODE -ne 0) { throw 'Browser installation failed.' }
+      - name: Exercise both lab GUIs without infrastructure mutations
+        working-directory: ui-qualification-source/tools/layersentry-ui-acceptance
+        shell: powershell
+        env:
+          LAYERSENTRY_GUI_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
+          LAYERSENTRY_GUI_PASSWORD: ${{ secrets.LAYERSENTRY_CLOUDSTACK_PASSWORD }}
+          LAYERSENTRY_GUI_TARGETS: 10.10.10.14,10.10.10.20
+          LAYERSENTRY_GUI_EVIDENCE: ${{ runner.temp }}/layersentry-gui-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & node.exe browser-inventory.mjs
+          $result = $LASTEXITCODE
+          $env:LAYERSENTRY_GUI_PASSWORD = ''
+          $env:LAYERSENTRY_GUI_USERNAME = ''
+          if ($result -ne 0) { throw 'GUI baseline failed; inspect bounded stage evidence.' }
+      - name: Preserve GUI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-gui-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-gui-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 14
