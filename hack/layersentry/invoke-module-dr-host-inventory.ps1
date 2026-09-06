@@ -19,7 +19,8 @@ try {
     $known = Join-Path $private 'known_hosts'
     [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($known, ($keys -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
-    $script = (Get-Content -LiteralPath 'hack/layersentry/collect-dc-r0-readonly.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
+    $collector = if ($env:CAPTURE_PROBE -ceq 'true') { 'hack/layersentry/collect-dr-capture-readonly.py' } else { 'hack/layersentry/collect-dc-r0-readonly.py' }
+    $script = (Get-Content -LiteralPath $collector -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
     $remote = "printf '%s' '$encoded' | base64 -d | timeout 120 python3 - --target 10.10.10.20"
     $sshArgs = @('-F','NUL','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes',

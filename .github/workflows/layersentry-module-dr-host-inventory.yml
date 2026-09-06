@@ -1,9 +1,11 @@
 name: LayerSentry module DR host inventory
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/modules-runtime-validation]
-    paths: [.github/workflows/layersentry-module-dr-host-inventory.yml]
+    inputs:
+      capture-probe:
+        description: Read only the exact retained capture34057792718 QCOW headers and checkpoints
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -22,6 +24,7 @@ jobs:
       - name: Collect scoped DR host facts through verified SSH
         shell: powershell
         env:
+          CAPTURE_PROBE: ${{ inputs.capture-probe }}
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
           DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
