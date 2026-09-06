@@ -51,9 +51,14 @@ async function personaChecks (browser, name, base, spec, credentials) {
   result.personas.push(record)
   const observed = (name, status = 'PASS', reason) => record.checks.push({ name, status, ...(reason ? { reason } : {}) })
   const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', acceptDownloads: false })
-  let unexpected = 0; let pageErrors = 0
+  let unexpected = 0; let pageErrors = 0; let loginSubmissions = 0
   await context.route('**/*', route => {
     const req = route.request()
+    const endpoint = new URL(req.url())
+    if (endpoint.pathname.replace(/\/$/, '') === '/client/api' && req.method() === 'POST' && new URLSearchParams(req.postData() || '').get('command') === 'login') {
+      loginSubmissions++
+      if (loginSubmissions > 1) { authenticationFailed = true; unexpected++; return route.abort('blockedbyclient') }
+    }
     if (!allowedRequest(req.url(), req.method(), req.postData(), new URL(base).origin)) { unexpected++; return route.abort('blockedbyclient') }
     return route.continue()
   })
