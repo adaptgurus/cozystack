@@ -25,6 +25,8 @@ $script:Keys = @()
 $script:Reads = 0
 function Import-Module { param($Name) }
 function Get-VM { param($Name); [pscustomobject]@{ Id=$env:TEST_VM_ID; Name='sen'; State='Running' } }
+function Get-CimInstance { [pscustomobject]@{ Name=$env:TEST_VM_ID; ElementName='sen' } }
+function Get-CimAssociatedInstance { [pscustomobject]@{ SystemName=$env:TEST_VM_ID; CreationClassName='Msvm_Keyboard' } }
 function New-TrustPrivateDirectory([string]$Path) { New-Item -ItemType Directory -Path $Path | Out-Null }
 function Get-TrustKeyboard { Assert-TrustDcIdentity; return 'keyboard' }
 function Invoke-CimMethod {

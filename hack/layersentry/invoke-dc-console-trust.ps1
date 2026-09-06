@@ -211,6 +211,15 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state['initialPrompt'] = $prompt
         if ($Phase -eq 'Observe') {
             if ($view.KnownPublicImage) { $state['reviewedPublicImageOcrLines'] = @($view.Lines) }
+            # Public identity/count diagnostics only; never invoke keyboard methods.
+            $systems = @(Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName 'Msvm_ComputerSystem' -Filter "Name='$script:DcVmId'" -ErrorAction Stop)
+            $ids = @($systems | ForEach-Object { [ordered]@{ name = [string]$_.Name; elementName = [string]$_.ElementName } })
+            $keys = @()
+            if ($systems.Count -eq 1) {
+                $keys = @(Get-CimAssociatedInstance -InputObject $systems[0] -ResultClassName 'Msvm_Keyboard' -ErrorAction Stop |
+                    ForEach-Object { [ordered]@{ systemName = [string]$_.SystemName; creationClassName = [string]$_.CreationClassName } })
+            }
+            $state['keyboardIdentity'] = [ordered]@{ systems = $ids; keyboards = $keys }
             $state.status = 'OBSERVED'; return
         }
         if ($Phase -eq 'Refresh') {
