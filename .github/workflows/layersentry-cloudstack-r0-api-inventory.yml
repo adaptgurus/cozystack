@@ -237,6 +237,18 @@ jobs:
           $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
           $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
           $vlanPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVlanIpRanges' @{ page = '1'; pagesize = '100' }) 'listVlanIpRanges'
+          $systemVmsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listSystemVms' @{ page = '1'; pagesize = '100' }) 'listSystemVms'
+          $physicalPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPhysicalNetworks' @{ page = '1'; pagesize = '100' }) 'listPhysicalNetworks'
+          $physicalNetworks = @(Select-InventoryItems $physicalPayload 'physicalnetwork' @('id', 'name', 'zoneid', 'state', 'broadcastdomainrange', 'isolationmethods', 'vlan'))
+          $trafficTypes = @()
+          foreach ($physical in $physicalNetworks) {
+            if ([string]$physical.id -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') { throw 'Invalid physical network identity.' }
+            $trafficPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listTrafficTypes' @{ physicalnetworkid = [string]$physical.id; page = '1'; pagesize = '100' }) 'listTrafficTypes'
+            $trafficTypes += @(Select-InventoryItems $trafficPayload 'traffictype' @('id', 'traffictype', 'physicalnetworkid', 'kvmnetworklabel'))
+            # Preserve each physical network's count instead of overwriting evidence.
+            $collectionObservations['traffictype:' + [string]$physical.id] = $collectionObservations['traffictype']
+          }
+          $collectionObservations.Remove('traffictype')
           $clustersPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listClusters' @{ listall = 'true' }) 'listClusters'
           $hostsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listHosts' @{ listall = 'true'; type = 'Routing' }) 'listHosts'
           $storagePayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listStoragePools' @{ listall = 'true' }) 'listStoragePools'
@@ -276,6 +288,9 @@ jobs:
             Zones = Select-InventoryItems $zonesPayload 'zone' @('id', 'name', 'networktype', 'allocationstate', 'localstorageenabled')
             Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate', 'gateway', 'netmask', 'startip', 'endip')
             VlanIpRanges = Select-InventoryItems $vlanPayload 'vlaniprange' @('id', 'zoneid', 'podid', 'networkid', 'physicalnetworkid', 'vlan', 'gateway', 'netmask', 'startip', 'endip', 'forvirtualnetwork')
+            PhysicalNetworks = $physicalNetworks
+            TrafficTypes = $trafficTypes
+            SystemVms = Select-InventoryItems $systemVmsPayload 'systemvm' @('id', 'name', 'systemvmtype', 'zoneid', 'podid', 'hostid', 'state', 'privateip', 'publicip', 'guestip', 'linklocalip', 'templateid', 'agentstate')
             Clusters = Select-InventoryItems $clustersPayload 'cluster' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'hypervisortype', 'allocationstate', 'managedstate')
             Hosts = Select-InventoryItems $hostsPayload 'host' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'hypervisor', 'hypervisorversion', 'state', 'resourcestate', 'hahost')
             PrimaryStorage = Select-InventoryItems $storagePayload 'storagepool' @('id', 'name', 'zoneid', 'zonename', 'podid', 'podname', 'clusterid', 'clustername', 'type', 'scope', 'state', 'capacityiops', 'overprovisionfactor')
@@ -299,7 +314,7 @@ jobs:
           $jsonPath = Join-Path $evidence 'inventory.json'
           # PowerShell unrolls function results: normalize every public collection
           # after projection, including zero and singleton optional collections.
-          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
+          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'PhysicalNetworks', 'TrafficTypes', 'SystemVms', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
             $inventory[$field] = @($inventory[$field] | Where-Object { $null -ne $_ })
           }
           $inventory.BackupApiObservations.listBackupProviders.HttpStatusCode = $providersObservation.HttpStatusCode

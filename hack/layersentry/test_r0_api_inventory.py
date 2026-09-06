@@ -24,6 +24,7 @@ function Invoke-RestMethod {
   if ($Method -ne 'Get' -or $MaximumRedirection -ne 0) { throw 'Unsafe HTTP options' }
   $command = [regex]::Match($Uri, '[?&]command=([^&]+)').Groups[1].Value
   if ($command -eq 'listAsyncJobs' -and ($Uri -notmatch '[?&]page=1(?:&|$)' -or $Uri -notmatch '[?&]pagesize=100(?:&|$)')) { throw 'CloudStack requires paired page and pagesize' }
+  if ($command -eq 'listTrafficTypes' -and $Uri -notmatch '[?&]physicalnetworkid=a3182ad1-7de2-45e3-81ce-5ccbf9280421(?:&|$)') { throw 'Missing physical-network binding' }
   if ($env:STUB_HTTP_URL -and $command -eq 'listBackups') {
     return Microsoft.PowerShell.Utility\Invoke-RestMethod -Uri $env:STUB_HTTP_URL -ErrorAction Stop
   }
@@ -34,10 +35,10 @@ function Invoke-RestMethod {
     listBackups='backup'; listZones='zone'; listPods='pod'; listClusters='cluster';
     listHosts='host'; listStoragePools='storagepool'; listImageStores='imagestore';
     listBackupRepositories='backuprepository'; listBackupOfferings='backupoffering';
-    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'; listVlanIpRanges='vlaniprange'
+    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'; listVlanIpRanges='vlaniprange'; listPhysicalNetworks='physicalnetwork'; listTrafficTypes='traffictype'; listSystemVms='systemvm'
   }
   if (-not $collections.ContainsKey($command)) { throw 'Unexpected API' }
-  $item = @{ id='fixture-id'; name='fixture'; cloudstackversion='4.22.1.1'; password='SECRET_SENTINEL'; userdata='SECRET_SENTINEL'; url='SECRET_SENTINEL' }
+  $item = @{ id='a3182ad1-7de2-45e3-81ce-5ccbf9280421'; name='fixture'; cloudstackversion='4.22.1.1'; password='SECRET_SENTINEL'; userdata='SECRET_SENTINEL'; url='SECRET_SENTINEL' }
   $items = @($item)
   if ($env:STUB_ITEMS -eq 'zero') { $items = @() }
   if ($env:STUB_ITEMS -eq 'many') { $items = @($item, $item) }
@@ -80,7 +81,7 @@ class InventoryTests(unittest.TestCase):
         self.assertNotIn('fixture-secret', result.stdout + result.stderr)
 
     def test_stable_arrays_zero_singleton_many(self):
-        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'Clusters', 'Hosts',
+        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'PhysicalNetworks', 'SystemVms', 'Clusters', 'Hosts',
                   'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories',
                   'BackupOfferings', 'BackupProviders', 'Backups', 'VirtualMachines', 'RecentAsyncJobs')
         for mode, count in (('zero', 0), ('one', 1), ('many', 2)):
@@ -90,6 +91,8 @@ class InventoryTests(unittest.TestCase):
                 for field in fields:
                     self.assertIsInstance(data[field], list, field)
                     self.assertEqual(len(data[field]), count, field)
+                self.assertIsInstance(data['TrafficTypes'], list)
+                self.assertEqual(len(data['TrafficTypes']), count * count)
                 self.assertIsInstance(data['BackupConfigurations'], list)
                 self.assertEqual(len(data['BackupConfigurations']), count * 3)
 
