@@ -62,7 +62,8 @@ try {
                    apiKey = $env:CLOUDSTACK_API_KEY; apiSecret = $env:CLOUDSTACK_SECRET_KEY } | ConvertTo-Json -Depth 8 -Compress
     $loader = (Get-Content -LiteralPath 'hack/layersentry/run-dc-storage-registration-stdin.py' -Raw -Encoding UTF8).Replace("`r`n", "`n")
     $loaderEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($loader))
-    $remote = "timeout 240 python3 -c 'import base64;exec(base64.b64decode(`"$loaderEncoded`"))'"
+    $remote = "timeout 240 python3 <(printf %s $loaderEncoded | base64 -d)"
+    # A separate script FD preserves private JSON stdin and avoids nested Windows argument quotes.
     $state['proofSha256'] = $proofHash
     $sshArgs = @('-F', 'NUL', '-o', 'BatchMode=no', '-o', 'PreferredAuthentications=password',
         '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1',

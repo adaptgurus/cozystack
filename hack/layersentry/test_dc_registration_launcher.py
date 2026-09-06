@@ -1,8 +1,6 @@
 import base64
-import contextlib
 import hashlib
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -86,9 +84,10 @@ $env:CLOUDSTACK_SECRET_KEY='FAKE-API-SECRET'
 if(($sshArgs -join ' ') -match 'FAKE-API'){throw 'Credential entered command arguments'}
 $decoded=$envelope|ConvertFrom-Json
 if($decoded.apiSecret -cne 'FAKE-API-SECRET' -or $decoded.mode -cne 'Register'){throw 'Private input missing'}
-if($remote -notmatch '^timeout 240 python3 -c '){throw 'Wrong remote launcher'}
+if($remote -notmatch '^timeout 240 python3 <\(printf %s '){throw 'Wrong remote launcher'}
 if($sshArgs -notcontains 'StrictHostKeyChecking=yes'){throw 'Host trust weakened'}
 'PRIVATE_STDIN_BUNDLE_PASS'
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remote))
 '''
         with tempfile.NamedTemporaryFile('w', suffix='.ps1') as script:
             script.write(fixture + section + checks)
@@ -97,6 +96,13 @@ if($sshArgs -notcontains 'StrictHostKeyChecking=yes'){throw 'Host trust weakened
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('PRIVATE_STDIN_BUNDLE_PASS', result.stdout)
         self.assertNotIn('FAKE-API-SECRET', result.stdout + result.stderr)
+        remote = base64.b64decode(result.stdout.strip().splitlines()[-1]).decode()
+        self.assertNotIn(chr(34), remote)
+        self.assertNotIn(chr(39), remote)
+        actual = subprocess.run(['bash', '-c', remote], input=b'{}', capture_output=True, timeout=30)
+        self.assertEqual(actual.returncode, 1)
+        self.assertEqual(json.loads(actual.stdout)['status'], 'PRIVATE_INPUT_OR_JOURNAL_GATE')
+        self.assertEqual(actual.stderr, b'')
 
 
 if __name__ == '__main__':

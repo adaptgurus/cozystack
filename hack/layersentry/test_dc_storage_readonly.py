@@ -96,11 +96,26 @@ class StorageProofTests(unittest.TestCase):
             result = collector.public_routes()
         self.assertEqual(result['routes'][0]['dst'], '10.10.20.0/24')
         self.assertNotIn('never-publish', json.dumps(result))
+
         with patch.object(collector, 'command', side_effect=['cloudstack-management 4.22.1.1 1',
                                '/usr/share/cloudstack-management/lib/cloud-plugin-backup-nas-4.22.1.1.jar\n/etc/private-never-publish']):
             result = collector.plugin_package()
         self.assertEqual(len(result['nasPluginPackagePaths']), 1)
         self.assertNotIn('never-publish', json.dumps(result))
+
+    def test_registration_journal_observation_omits_private_parameters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'journal.json').write_text(json.dumps({'operations': {'primary': {
+                'command': 'createStoragePool', 'state': 'SUBMITTING', 'params': {'private': 'never-publish'}}}}))
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            with patch.object(collector, 'open_directory', return_value=fd):
+                result = collector.registration_journal()
+        self.assertEqual(result['operations']['primary']['state'], 'SUBMITTING')
+        self.assertNotIn('never-publish', json.dumps(result))
+        with patch.object(collector, 'open_directory', side_effect=FileNotFoundError):
+            self.assertEqual(collector.registration_journal()['status'], 'DIRECTORY_ABSENT')
+
 
 
 if __name__ == '__main__':
