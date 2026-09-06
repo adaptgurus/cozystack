@@ -48,7 +48,7 @@ function Wait-WinRtOperation {
 }
 
 [void][Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
-[void][Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
+[void][Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
 [void][Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
@@ -71,7 +71,7 @@ try {
     $storageFile = Wait-WinRtOperation -Operation $fileOperation -ResultType ([Windows.Storage.StorageFile])
 
     $streamOperation = $storageFile.OpenAsync([Windows.Storage.FileAccessMode]::Read)
-    $stream = Wait-WinRtOperation -Operation $streamOperation -ResultType ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+    $stream = Wait-WinRtOperation -Operation $streamOperation -ResultType ([Windows.Storage.Streams.IRandomAccessStream])
 
     $decoderOperation = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)
     $decoder = Wait-WinRtOperation -Operation $decoderOperation -ResultType ([Windows.Graphics.Imaging.BitmapDecoder])

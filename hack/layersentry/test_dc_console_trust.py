@@ -67,6 +67,36 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_open_async_uses_its_declared_random_access_stream_result(self):
+        source = (ROOT / 'read-console-ocr.ps1').read_text()
+        selection = source[source.index('$asTaskMethod ='):source.index('if ($null -eq $asTaskMethod)')]
+        selection = selection.replace('[System.WindowsRuntimeSystemExtensions]', '[TestExtensions]')
+        wait = source[source.index('function Wait-WinRtOperation'):source.index('[void][Windows.Storage.StorageFile')]
+        stream = source[source.index('    $streamOperation ='):source.index('    $decoderOperation =')]
+        code = r'''
+Add-Type -TypeDefinition @'
+using System.Threading.Tasks;
+namespace Windows.Foundation { public interface IAsyncOperation<T> {} }
+namespace Windows.Storage { public enum FileAccessMode { Read } }
+namespace Windows.Storage.Streams {
+ public interface IRandomAccessStream {}
+ public interface IRandomAccessStreamWithContentType : IRandomAccessStream {}
+}
+public class TestOperation : Windows.Foundation.IAsyncOperation<Windows.Storage.Streams.IRandomAccessStream> {}
+public class TestFile {
+ public Windows.Foundation.IAsyncOperation<Windows.Storage.Streams.IRandomAccessStream> OpenAsync(Windows.Storage.FileAccessMode mode) { return new TestOperation(); }
+}
+public static class TestExtensions {
+ public static Task<string> AsTask<T>(Windows.Foundation.IAsyncOperation<T> operation) { return Task.FromResult("stream"); }
+}
+'@
+$storageFile = [TestFile]::new()
+''' + selection + wait + stream + r'''
+if ($stream -cne 'stream') { throw 'OpenAsync result type mismatch.' }
+'''
+        result = self.run_function(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_winrt_async_operation_overload_is_selected_even_when_action_is_first(self):
         source = (ROOT / 'read-console-ocr.ps1').read_text()
         selection = source[source.index('$asTaskMethod ='):source.index('if ($null -eq $asTaskMethod)')]

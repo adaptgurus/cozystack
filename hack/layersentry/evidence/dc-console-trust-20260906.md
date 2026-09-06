@@ -1,6 +1,6 @@
 # DC host identity through the trusted Hyper-V console
 
-Status: `SOURCE_COMPLETE` for the bounded OOB trust workflow; live authentication/public-key verification is `NOT_TESTED`. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No shared integration write or guest mutation occurred during implementation.
+Status: bounded OOB trust workflow implemented; live authentication/public-key verification is `BLOCKED` at console OCR, before guest input. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No shared integration write or guest mutation occurred during implementation.
 
 ## Evidence and prerequisite
 
@@ -21,6 +21,8 @@ All working captures are in an ACL-restricted temporary folder outside the uploa
 [Microsoft TypeText documentation](https://learn.microsoft.com/en-us/windows/win32/hyperv_v2/typetext-msvm-keyboard) defines a 512-character ASCII limit; command input is bounded and split into at most 384-character calls, with one Enter only after all chunks succeed. [OpenSSH keyscan documentation](https://man.openbsd.org/ssh-keyscan) explicitly requires independent verification; the candidate-to-console comparison supplies that boundary here. A manual trusted console comparison remains an alternative if OCR fails; disabling host checks is not a fallback.
 
 ## Tests and next gate
+
+The single authorized Login run `34047745757` failed before guest input inside the existing OCR helper. Observe-only runs `34047899450`, `34048023438` and `34048165739` isolated `CONSOLE_OCR`, nested `MethodInvocationException` (`0x80131501`) and `ArgumentException` (`0x80070057`); all report input/password/SSH/configuration changes and host-trust establishment false. No Login replay occurred. Two actual reflection regressions identify independent helper defects: its broad one-generic/one-argument AsTask selector can select the action-with-progress overload, and its `StorageFile.OpenAsync` conversion incorrectly used `IRandomAccessStreamWithContentType`. The selector now requires `IAsyncOperation<T>`, and the stream result type now matches [Microsoft's documented `IRandomAccessStream` return contract](https://learn.microsoft.com/en-us/uwp/api/windows.storage.storagefile.openasync). Each new regression failed before its corresponding correction. These are source fixes; only a fresh successful live Observe can establish Windows OCR operation and permit coordinated next input.
 
 Executed PowerShell fixtures cover Observe, successful phase transitions, known kernel-output refresh, wrong VM/credential target, existing/prefilled/unknown prompts, uncertain username/password input with no Enter/replay, encoding/chunking, missing authentication and stale/wrong/extra public receipts. The fixed guest payload is also executed with fixture IP/ownership observations and real filesystem FD/link/mode operations, including symlink/hardlink/writable-key/wrong-key/address negatives. These tests do not establish real Windows OCR, console credential delivery or SSH trust. PowerShell parsing and whitespace checks pass. The integration lead must review the final source/test result before coordinating live Login/Verify.
 
