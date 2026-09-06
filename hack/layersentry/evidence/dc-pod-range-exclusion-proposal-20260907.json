@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "status": "PROPOSED_NOT_AUTHORIZED_OR_EXECUTED",
+  "target": "10.10.10.14",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "podId": "020dc658-af4e-4e2e-bed5-0607de8a787f",
+  "knownFixedAddresses": [
+    "10.10.10.1",
+    "10.10.10.14",
+    "10.10.10.20"
+  ],
+  "candidate": {
+    "command": "updatePodManagementNetworkIpRange",
+    "parameters": {
+      "podid": "020dc658-af4e-4e2e-bed5-0607de8a787f",
+      "currentstartip": "10.10.10.2",
+      "currentendip": "10.10.10.254",
+      "newstartip": "10.10.10.21",
+      "newendip": "10.10.10.254"
+    },
+    "basis": "Strict subset of the existing registered allocation range; no new IP addresses or subnet introduced."
+  },
+  "requiredBeforeApproval": [
+    "Exact current listPods ipranges including CIDR/VLAN/forsystemvms, not deprecated unpaired endpoints only",
+    "Exact scoped listCapacity type 5 with fresh derived count; zero allocations required for this simple controller",
+    "Fresh SystemVM, router, user VM and host address inventories consistent with zero Pod allocations",
+    "Trusted Hyper-V DHCP scopes/exclusions/reservations/current leases, static host/VM address and neighbor evidence; silence is not proof of vacancy",
+    "No active jobs or other allocation writers; source Zone remains Disabled"
+  ],
+  "nativeProtection": "checkIpRangeContainsTakenAddresses retains all existing taken addresses or rejects the update; never bypass this gate",
+  "submissionProtocol": [
+    "Persist exact current/new endpoints and SUBMITTING before one native async submission",
+    "Record returned async job ID and query only that job",
+    "On uncertain result re-list exact Pod ipranges; never re-submit an ambiguous earlier request",
+    "Verify start/end, original gateway/CIDR/VLAN/forsystemvms preserved, then fresh native capacity totals",
+    "Keep Zone Disabled; do not enable SystemVM allocation in this step"
+  ],
+  "unresolved": [
+    "DHCP and private-IP allocated-count evidence not yet collected",
+    "Candidate is not approved address availability or SystemVM readiness"
+  ]
+}
