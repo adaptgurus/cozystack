@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read only the exact retained failed qualification's metadata and QCOW headers."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -75,11 +76,21 @@ def main():
             checkpoints.append({'name':name,'creationTime':row.findtext('creationTime'),
                 'parent':row.findtext('parent/name'),'domainUuid':row.findtext('domain/uuid')})
         stats=domain.jobStats(0)
+        work=Path('/var/lib/libvirt/images')/('layersentry-cpuqc-'+DOMAIN)
+        ownership=work/'ownership.json'
+        fd,owner_info=regular(ownership,65536)
+        with os.fdopen(fd,'rb') as handle:owner_sha=hashlib.sha256(handle.read()).hexdigest()
+        retirement=work/'retirement-intent.json'
+        retirement_info={'exists':os.path.lexists(retirement)}
+        if retirement_info['exists']:
+            fd,info=regular(retirement,2*1024**2)
+            with os.fdopen(fd,'rb') as handle:retirement_info['sha256']=hashlib.sha256(handle.read()).hexdigest()
         result={'schemaVersion':'1.0','target':args.target,'status':'COLLECTED','mutationPerformed':False,
             'captureRun':'34057792718','domainUuid':DOMAIN,'domainActive':domain.isActive(),
             'job':{key:value for key,value in stats.items() if key in ('type','operation','time_elapsed','disk_total','disk_processed','disk_remaining')},
             'checkpoints':checkpoints,'headers':[qcow_header(ROOT/'capture'/epoch/'vda.qcow2') for epoch in (FULL,INCREMENTAL)],
-            'qemuParserInvoked':False,'checkpointMutationPerformed':False}
+            'qemuParserInvoked':False,'checkpointMutationPerformed':False,
+            'retirementIntent':retirement_info,'ownershipSha256':owner_sha,'domainPersistent':bool(domain.isPersistent())}
         print(json.dumps(result,sort_keys=True))
     finally:connection.close()
 

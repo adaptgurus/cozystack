@@ -9,7 +9,7 @@ class Fixture(unittest.TestCase):
   self.disk=self.path/'runtime.qcow2';self.disk.write_bytes(b'original disk')
   self.record={'domainUuid':m.DOMAIN,'domainName':self.path.name,'diskPath':str(self.disk),'networkInterfaces':0,'retainForDrQualification':True,'productionQualified':False}
   raw=json.dumps(self.record).encode();(self.path/'ownership.json').write_bytes(raw);(self.path/'ownership.json').chmod(0o600)
-  self.cp=[types.SimpleNamespace(getName=lambda n=n:n,XMLDesc=lambda flags,n=n:'<domaincheckpoint><name>'+n+'</name></domaincheckpoint>') for n in sorted(m.CHECKPOINTS)]
+  self.cp=[types.SimpleNamespace(getName=lambda n=n:n,getXMLDesc=lambda flags,n=n:'<domaincheckpoint><name>'+n+'</name></domaincheckpoint>') for n in sorted(m.CHECKPOINTS)]
   self.changed=0;self.closed=False;self.uuid=m.DOMAIN;self.job=0;self.persistent=False;self.nic=False
   self.dom=types.SimpleNamespace(UUIDString=lambda:self.uuid,name=lambda:self.path.name,isPersistent=lambda:self.persistent,jobStats=lambda f:{'type':self.job},listAllCheckpoints=lambda f:self.cp,XMLDesc=lambda f:'<domain><devices><disk device="disk"><source file="'+str(self.disk)+'"/></disk>'+('<interface/>' if self.nic else '')+'</devices></domain>',shutdown=self.shutdown)
   self.domains=[self.dom]

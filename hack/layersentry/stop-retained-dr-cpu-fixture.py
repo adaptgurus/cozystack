@@ -22,7 +22,7 @@ def require(value):
 def retain_intent(domain, xml):
     """Preserve transient definitions durably before the domain can disappear."""
     intent={'domainUuid':DOMAIN,'ownershipSha256':OWNERSHIP_SHA256,'domainXml':xml,
-            'checkpoints':{item.getName():item.XMLDesc(0) for item in domain.listAllCheckpoints(0)}}
+            'checkpoints':{item.getName():item.getXMLDesc(0) for item in domain.listAllCheckpoints(0)}}
     require(set(intent['checkpoints'])==CHECKPOINTS)
     path=DIRECTORY/'retirement-intent.json'
     raw=(json.dumps(intent,sort_keys=True)+'\n').encode()
