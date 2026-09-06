@@ -51,7 +51,11 @@ export async function openOwnedSshTunnel (binding, argumentsForPort, env) {
     askpassFileExists: binding.target === 'dc' ? fs.existsSync(binding.askPassFile) : null, passwordEnvironmentPresent: binding.target === 'dc' ? typeof env.ROCKY_PASSWORD === 'string' && env.ROCKY_PASSWORD.length > 0 : null }
   requireThat(prerequisites.programDataPresent, 'SSH_PROGRAMDATA_REQUIRED')
   const started = Date.now()
-  const child = spawn(executable, argumentsForPort(port), { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, shell: false, env })
+  const child = spawn(executable, argumentsForPort(port), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true, shell: false, env })
+  // Candidate valid inherited pipe at EOF for the Windows askpass chain.
+  // No command or credential is written to SSH stdin. Runtime use is gated by
+  // the separate no-network startup/dummy differential.
+  child.stdin.end()
   let stderr = Buffer.alloc(0); let stderrTruncated = false
   child.stderr.on('data', data => { const available = 32768 - stderr.length; if (data.length > available) stderrTruncated = true; if (available > 0) stderr = Buffer.concat([stderr, data.subarray(0, available)]) })
   let ended = false; let closed = false; let spawnErrorCode = null; let exitCode = null; let exitSignal = null

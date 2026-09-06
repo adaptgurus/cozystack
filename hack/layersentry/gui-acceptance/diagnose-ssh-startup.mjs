@@ -21,21 +21,23 @@ export function diagnosticEnvironments (source, helper) {
 }
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex')
-export function probeInputBinding (executable, executableSha256, args, env, captureMarker = false) {
+export function probeInputBinding (executable, executableSha256, args, env, captureMarker = false, stdinMode = 'ignore') {
+  requireThat(['ignore', 'pipe'].includes(stdinMode), 'SSH_DIAGNOSTIC_STDIN_MODE')
   const stableEnvironment = Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'ProgramData').sort(([a], [b]) => a.localeCompare(b)))
   return { executableSha256, executablePathSha256: hash(executable), argumentsSha256: hash(JSON.stringify(args)), environmentWithoutProgramDataSha256: hash(JSON.stringify(stableEnvironment)),
-    stdioSha256: hash(JSON.stringify(['ignore', captureMarker ? 'pipe' : 'ignore', 'pipe'])), programDataPresent: typeof env.ProgramData === 'string' && env.ProgramData.length > 0 }
+    stdinMode, environmentSha256: hash(JSON.stringify(Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b))))), stdioSha256: hash(JSON.stringify([stdinMode, captureMarker ? 'pipe' : 'ignore', 'pipe'])), programDataPresent: typeof env.ProgramData === 'string' && env.ProgramData.length > 0 }
 }
 
-async function probe (executable, args, env, captureMarker = false) {
+async function probe (executable, args, env, captureMarker = false, stdinMode = 'ignore') {
   const metadata = fs.statSync(executable)
   requireThat(metadata.isFile() && metadata.size <= 32 * 1024 * 1024, 'SSH_DIAGNOSTIC_EXECUTABLE_SIZE')
-  const inputBinding = probeInputBinding(executable, hash(fs.readFileSync(executable)), args, env, captureMarker)
+  const inputBinding = probeInputBinding(executable, hash(fs.readFileSync(executable)), args, env, captureMarker, stdinMode)
   return new Promise(resolve => {
     let stdoutBytes = 0; let stderrBytes = 0
     let stdout = Buffer.alloc(0); let stderr = Buffer.alloc(0); let truncated = false; let timedOut = false; let settled = false
     let spawnErrorCode = null; let exitCode = null; let exitSignal = null; let cleanupTimer
-    const child = spawn(executable, args, { env, shell: false, windowsHide: true, stdio: ['ignore', captureMarker ? 'pipe' : 'ignore', 'pipe'] })
+    const child = spawn(executable, args, { env, shell: false, windowsHide: true, stdio: [stdinMode, captureMarker ? 'pipe' : 'ignore', 'pipe'] })
+    if (stdinMode === 'pipe') child.stdin.end()
     const append = (data, current) => { if (data.length + current.length > 32768) truncated = true; return Buffer.concat([current, data.subarray(0, Math.max(0, 32768 - current.length))]) }
     child.stdout?.on('data', data => { stdoutBytes += data.length; stdout = append(data, stdout) })
     child.stderr?.on('data', data => { stderrBytes += data.length; stderr = append(data, stderr) })
@@ -58,14 +60,22 @@ async function probe (executable, args, env, captureMarker = false) {
 export function acceptStartupProof (result) {
   requireThat(result?.schema === 1 && result.networkConnectionAttempted === false && result.realCredentialsUsed === false, 'SSH_STARTUP_PROOF_SCOPE')
   const baseline = result.configuration?.baseline; const fixed = result.configuration?.fixed
-    requireThat(baseline?.exitCode === 255 && fixed?.exitCode === 0 && (baseline.stderrClass === 'PROGRAMDATA_MISSING' || (baseline.stderrClass === 'UNKNOWN' && baseline.stderrBytes === 0)), 'SSH_STARTUP_CAUSE_NOT_REPRODUCED')
+  requireThat(baseline?.exitCode === 255 && fixed?.exitCode === 0 && (baseline.stderrClass === 'PROGRAMDATA_MISSING' || (baseline.stderrClass === 'UNKNOWN' && baseline.stderrBytes === 0)), 'SSH_STARTUP_CAUSE_NOT_REPRODUCED')
   for (const pair of [result.configuration, result.askpass]) {
     requireThat(pair?.baseline?.inputBinding?.programDataPresent === false && pair?.fixed?.inputBinding?.programDataPresent === true, 'SSH_STARTUP_ENVIRONMENT_DELTA_CHANGED')
     for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentWithoutProgramDataSha256', 'stdioSha256']) requireThat(/^[0-9a-f]{64}$/.test(pair.baseline.inputBinding[key]) && pair.baseline.inputBinding[key] === pair.fixed.inputBinding[key], 'SSH_STARTUP_INVARIANTS_CHANGED')
   }
-  for (const item of [baseline, fixed, result.askpass?.baseline, result.askpass?.fixed]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && item.exitSignal === null && Number.isSafeInteger(item.stderrBytes) && item.stderrBytes >= 0 && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
-  requireThat(result.askpass.baseline.exitCode === 0 && result.askpass.baseline.dummyMarkerMatched === true && result.askpass.fixed.exitCode === 0 && result.askpass.fixed.dummyMarkerMatched === true, 'SSH_DUMMY_ASKPASS_FAILED')
-  return baseline.stderrClass === 'PROGRAMDATA_MISSING' ? 'EXACT_MESSAGE_AND_DIFFERENTIAL' : 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE'
+  const pipeHelper = result.askpassClosedPipe; const pipeConfig = result.configurationClosedPipe
+  for (const item of [baseline, fixed, result.askpass?.baseline, result.askpass?.fixed, pipeHelper, pipeConfig]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && item.exitSignal === null && Number.isSafeInteger(item.stderrBytes) && item.stderrBytes >= 0 && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
+  // Separate stdin-only comparison: no environment, executable, argument or
+  // credential substitution can make the corrected helper count as evidence.
+  for (const [nul, pipe] of [[fixed, pipeConfig], [result.askpass.fixed, pipeHelper]]) {
+    requireThat(nul.inputBinding.stdinMode === 'ignore' && pipe.inputBinding?.stdinMode === 'pipe' && pipe.inputBinding.programDataPresent === true, 'SSH_STDIN_DIFFERENTIAL_SCOPE')
+    for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentSha256']) requireThat(/^[0-9a-f]{64}$/.test(nul.inputBinding[key]) && nul.inputBinding[key] === pipe.inputBinding[key], 'SSH_STDIN_DIFFERENTIAL_CHANGED')
+  }
+  requireThat(pipeConfig.exitCode === 0 && pipeHelper.exitCode === 0 && pipeHelper.dummyMarkerMatched === true && pipeHelper.stdoutBytes > 0, 'SSH_CLOSED_PIPE_NOT_VERIFIED')
+  for (const item of [result.askpass.baseline, result.askpass.fixed]) requireThat(item.exitCode === 0 && item.stdoutBytes === 0 && item.stderrBytes === 0 && item.dummyMarkerMatched === false, 'SSH_NUL_BASELINE_NOT_REPRODUCED')
+  return { programData: baseline.stderrClass === 'PROGRAMDATA_MISSING' ? 'EXACT_MESSAGE_AND_DIFFERENTIAL' : 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE', stdin: 'NUL_EMPTY_CLOSED_PIPE_DUMMY_VERIFIED' }
 }
 
 async function main () {
@@ -88,6 +98,8 @@ async function main () {
     // its path is an environment value, never interpolated command text.
     const args = ['-NoProfile', '-NonInteractive', '-Command', '& $env:LAYERSENTRY_DUMMY_ASKPASS']
     result.askpass = { baseline: await probe(powershell, args, baseline, true), fixed: await probe(powershell, args, fixed, true) }
+    result.askpassClosedPipe = await probe(powershell, args, fixed, true, 'pipe')
+    result.configurationClosedPipe = await probe(executable, configOnlyArguments(), fixed, false, 'pipe')
     result.causalProof = acceptStartupProof(result); result.status = 'PASS'
   } catch (error) { result.reason = publicFailure(error) } finally {
     if (fs.existsSync(helper)) fs.unlinkSync(helper)

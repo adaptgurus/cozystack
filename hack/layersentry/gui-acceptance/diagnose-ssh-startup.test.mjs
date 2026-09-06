@@ -21,20 +21,29 @@ test('configuration probe never requests a connection, forward or remote command
   assert.equal(classifySshFailure('No user exists for uid 1'), 'LOCAL_USER_LOOKUP_FAILED')
 })
 
-test('diagnostic gate requires causal failure, corrected success and both dummy helper proofs', () => {
-  const item = () => ({ inputBinding: probeInputBinding('exact-executable', 'a'.repeat(64), configOnlyArguments(), { SystemRoot: 'C:\\Windows', ProgramData: 'C:\\ProgramData' }), stderrBytes: 0, exitSignal: null, exitCode: 0, spawnErrorCode: null, processClosed: true, timedOut: false, outputTruncated: false, stderrClass: 'UNKNOWN' })
-  const makeProof = () => ({ schema: 1, networkConnectionAttempted: false, realCredentialsUsed: false, configuration: { baseline: { ...item(), exitCode: 255, stderrClass: 'PROGRAMDATA_MISSING' }, fixed: item() }, askpass: { baseline: { ...item(), dummyMarkerMatched: true }, fixed: { ...item(), dummyMarkerMatched: true } } })
-  const proof = () => {
-    const value = makeProof()
-    value.configuration.baseline.inputBinding.programDataPresent = false
-    value.askpass.baseline.inputBinding.programDataPresent = false
-    value.configuration.baseline.stderrBytes = 60
-    return value
+test('diagnostic gate independently requires ProgramData and stdin-only dummy differentials', () => {
+  const entry = (kind, programData, stdinMode) => {
+    const env = { SystemRoot: 'windows', ...(programData ? { ProgramData: 'programdata' } : {}) }
+    const helper = kind === 'helper'
+    return { inputBinding: probeInputBinding(kind + '-executable', (helper ? 'b' : 'a').repeat(64), helper ? ['fixed helper command'] : configOnlyArguments(), env, helper, stdinMode), stderrBytes: 0, stdoutBytes: helper ? 0 : null,
+      exitSignal: null, exitCode: 0, spawnErrorCode: null, processClosed: true, timedOut: false, outputTruncated: false, stderrClass: 'UNKNOWN', ...(helper ? { dummyMarkerMatched: false } : {}) }
   }
-  assert.equal(acceptStartupProof(proof()), 'EXACT_MESSAGE_AND_DIFFERENTIAL')
-  const silent = proof(); silent.configuration.baseline.stderrClass = 'UNKNOWN'; silent.configuration.baseline.stderrBytes = 0
-  assert.equal(acceptStartupProof(silent), 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE')
-  for (const mutate of [p => { p.configuration.baseline.stderrClass = 'UNKNOWN' }, p => { p.configuration.baseline.exitCode = 0 }, p => { p.configuration.baseline.exitCode = 1 }, p => { p.configuration.baseline.stderrClass = 'AUTH_REJECTED' }, p => { p.configuration.fixed.inputBinding.environmentWithoutProgramDataSha256 = 'b'.repeat(64) }, p => { p.configuration.fixed.inputBinding.argumentsSha256 = 'b'.repeat(64) }, p => { p.configuration.fixed.inputBinding.executableSha256 = 'b'.repeat(64) }, p => { p.configuration.fixed.inputBinding.programDataPresent = false }, p => { p.configuration.fixed.exitCode = 255 }, p => { p.configuration.fixed.processClosed = false }, p => { p.configuration.fixed.outputTruncated = true }, p => { p.askpass.fixed.dummyMarkerMatched = false }, p => { p.askpass.baseline.timedOut = true }, p => { p.realCredentialsUsed = true }, p => { p.networkConnectionAttempted = true }]) {
-    const changed = proof(); mutate(changed); assert.throws(() => acceptStartupProof(changed))
-  }
+  const proof = () => ({ schema: 1, networkConnectionAttempted: false, realCredentialsUsed: false,
+    configuration: { baseline: { ...entry('ssh', false, 'ignore'), exitCode: 255 }, fixed: entry('ssh', true, 'ignore') },
+    askpass: { baseline: entry('helper', false, 'ignore'), fixed: entry('helper', true, 'ignore') },
+    configurationClosedPipe: entry('ssh', true, 'pipe'), askpassClosedPipe: { ...entry('helper', true, 'pipe'), dummyMarkerMatched: true, stdoutBytes: 40 } })
+  assert.equal(acceptStartupProof(proof()).stdin, 'NUL_EMPTY_CLOSED_PIPE_DUMMY_VERIFIED')
+  assert.equal(acceptStartupProof(proof()).programData, 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE')
+  const message = proof(); message.configuration.baseline.stderrClass = 'PROGRAMDATA_MISSING'; message.configuration.baseline.stderrBytes = 60
+  assert.equal(acceptStartupProof(message).programData, 'EXACT_MESSAGE_AND_DIFFERENTIAL')
+  for (const mutate of [
+    p => { p.configuration.baseline.stderrBytes = 1 }, p => { p.configuration.baseline.exitCode = 0 }, p => { p.configuration.baseline.exitCode = 1 },
+    p => { p.configuration.baseline.stderrClass = 'AUTH_REJECTED' }, p => { p.configuration.fixed.inputBinding.environmentWithoutProgramDataSha256 = 'b'.repeat(64) },
+    p => { p.configuration.fixed.inputBinding.argumentsSha256 = 'b'.repeat(64) }, p => { p.configuration.fixed.inputBinding.executableSha256 = 'b'.repeat(64) },
+    p => { p.configuration.fixed.inputBinding.programDataPresent = false }, p => { p.configuration.fixed.exitCode = 255 }, p => { p.configuration.fixed.processClosed = false },
+    p => { p.configuration.fixed.outputTruncated = true }, p => { p.askpassClosedPipe.dummyMarkerMatched = false }, p => { p.askpassClosedPipe.stdoutBytes = 0 },
+    p => { p.askpassClosedPipe.inputBinding.stdinMode = 'ignore' }, p => { p.askpassClosedPipe.inputBinding.environmentSha256 = 'f'.repeat(64) },
+    p => { p.askpassClosedPipe.inputBinding.argumentsSha256 = 'f'.repeat(64) }, p => { p.configurationClosedPipe.exitCode = 255 },
+    p => { p.askpass.fixed.stdoutBytes = 1 }, p => { p.askpass.baseline.timedOut = true }, p => { p.realCredentialsUsed = true }, p => { p.networkConnectionAttempted = true }
+  ]) { const changed = proof(); mutate(changed); assert.throws(() => acceptStartupProof(changed)) }
 })
