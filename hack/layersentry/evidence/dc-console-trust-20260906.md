@@ -1,6 +1,6 @@
 # DC host identity through the trusted Hyper-V console
 
-Status: exact-VM public key challenge completed once and was independently visually verified by both worker and integration lead. Only the proved public known_hosts entry has been enrolled; pinned-host read-only DC inventory is the next gate. Automated OCR verification remains failed and is not being relabeled as a passing workflow. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No guest configuration changes were performed by this workflow.
+Status: exact-VM public key challenge completed once and was independently visually verified by both worker and integration lead. Only the proved public known_hosts entry has been enrolled; strict pinned-host read-only DC inventory subsequently passed. DC host prerequisite observations are now established, while CloudStack registration and native recovery acceptance remain unproved. Automated OCR verification remains failed and is not being relabeled as a passing workflow. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No guest configuration changes were performed by this workflow.
 
 ## Completed public proof, 2026-09-06 UTC
 
@@ -21,6 +21,23 @@ Both markers exactly match the fresh challenge recorded before input in `summary
 ```
 
 ED25519 fingerprint: `SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw`. Public artifact `9994896529`, name `layersentry-dc-console-trust-34052058332-1`, has GitHub digest `sha256:ffc7c1686c56df3da04e58936b00d8cc19a8c004dfbd608ea387d6001235056a`. A keyscan alone was never accepted as trust. The integration lead independently viewed the same image and reviewed the proof source (lines 245–289), confirming exact nonce, target/root/key receipt and public candidate. The proved public entry was enrolled into `LAYERSENTRY_DC_SSH_KNOWN_HOSTS` under standing lab authorization. Initial inventory dispatch returned workflow-not-found before any SSH because this workflow is absent from the default branch. The isolated branch now supports an exact new immutable `.14` read-only inventory request, pinned to `github.sha`, using the existing strict collector and global runtime serialization. The actual inventory outcome will be recorded separately; none of this proves DR recovery, storage readiness or product GUI acceptance.
+
+## Verified DC read-only inventory
+
+[DC R0 inventory run 34052767019](https://github.com/adaptgurus/cozystack/actions/runs/34052767019), exact source `f793cff58e32f86e5a6762eb1f5c18ef248f78ff`, passed with `status=COLLECTED`, SSH exit 0 and `mutationPerformed=false`. SSH used the proved `.14` key with `StrictHostKeyChecking=yes`, a private known_hosts file, no global trust fallback and a single environment-only password prompt. No console command was replayed. Artifact `9995052298`, name `layersentry-dc-r0-host-inventory-34052767019-1`, digest `sha256:370f86d644cd1617c2fe0fb7872d1a58ffffc14c74df7f774b83a71015704fa8`, contains the bounded inventory and summary.
+
+Observed host prerequisites:
+
+- Rocky Linux 9.8, kernel `5.14.0-687.42.1.el9_8.x86_64`, hostname `layersentry.lab.example`.
+- `cloudstack-management`, `cloudstack-agent`, `libvirtd`, `nfs-server` and `rpcbind` active; CloudStack packages 4.22.1.1 release 1; libvirt 11.10.0 and QEMU 10.1.0 installed.
+- `cloudbr0` UP owns `10.10.10.14/24`; `eth0` is forwarding on that bridge. `cloud0` owns the link-local `169.254.0.1/16`.
+- `/export/primary` and `/export/secondary` exist as ordinary directories on the existing root XFS filesystem, exported by NFS to `10.10.10.0/24`; root has 807,265,099,776 bytes available at collection time. No separate data disk or NFS client mount was reported. No disk formatting is needed merely to establish these existing paths.
+- No libvirt domains are present. Pool `9c9fbd8f-e4ee-4e02-9767-6d1cc7a2b8c9` is listed; its XML/state/CloudStack registration were not collected.
+- `/export/secondary/template/tmpl/1/3/13f22f9c-61e2-4d88-93c0-5735212bccd0.qcow2` exists at 522,649,088 bytes, alongside `template.properties` (287 bytes). Names and sizes alone do not establish SystemVM version, signature, readiness or API registration.
+
+The earlier API run `34046294664` reported a Disabled Basic DC Zone, one Up/Enabled KVM host, and no primary/image storage or guest VM rows. This host inventory establishes existing service/filesystem prerequisites but does not contradict that narrower API observation: export existence and a libvirt pool name do not prove CloudStack storage registration. The next bounded step is to reconcile fresh API primary/image storage and SystemVM/template registration against these exact existing exports before any addition; inspect pool identity and public template version/checksum metadata if needed. Native cross-Zone recovery still needs an Advanced destination in the same management database, enabled supported B&R provider, backup offering, disposable source VM and genuine restore evidence. The integration lead owns those configuration changes. No historical storage preparation helper, formatting or registered-agent stop is required by this handoff.
+
+The authenticated console remains at the empty root shell after the proof; this worker performs no unsolicited logout or cleanup input. There are no further DC/DR runtime jobs dispatched by this worker after the completed read-only inventory. This is host trust and inventory evidence, not a claim of GUI acceptance or production-ready replication.
 
 ## Evidence and prerequisite
 

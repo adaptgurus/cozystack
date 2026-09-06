@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "verificationMethod": "independent visual review of exact Hyper-V console public challenge receipt",
+  "target": "10.10.10.14",
+  "vmId": "29ba176b-b81a-4f47-8f51-ecec869f247f",
+  "runId": "34052058332",
+  "runnerCommit": "df37f476ec3dbcd7ce45e1043ffd4b7839fc48aa",
+  "automatedWorkflowResult": "failure: OOB_PUBLIC_KEY_PROOF_NOT_VERIFIED / CONSOLE_OCR_SHAPE",
+  "challenge": "071fbb2e9d037067ebaed3b317782042",
+  "publicProofImageSha256": "4702049d8313723c4121aaf212c18e3c87e7f6e06b119b8bf5f519a43c20db52",
+  "knownHostsLine": "10.10.10.14 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBm79pqXi9hxDir8aG17FrN3itDTHLaPbad98QXAvlL2",
+  "hostKeyFingerprint": "SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw",
+  "workerVisualReview": "matches challenge BEGIN/END, expected target ROOT KEY MATCH and empty root shell",
+  "leadVisualReview": "root independently viewed exact image and reviewed proof source; exact nonce, expected target/root/key match and candidate confirmed",
+  "commandReplay": false,
+  "guestConfigurationChanged": false,
+  "proofArtifact": {
+    "id": 9994896529,
+    "digest": "sha256:ffc7c1686c56df3da04e58936b00d8cc19a8c004dfbd608ea387d6001235056a"
+  },
+  "strictReadOnlyInventory": {
+    "runId": "34052767019",
+    "runnerCommit": "f793cff58e32f86e5a6762eb1f5c18ef248f78ff",
+    "status": "COLLECTED",
+    "sshExitCode": 0,
+    "mutationPerformed": false,
+    "artifactId": 9995052298,
+    "artifactDigest": "sha256:370f86d644cd1617c2fe0fb7872d1a58ffffc14c74df7f774b83a71015704fa8"
+  }
+}
