@@ -35,7 +35,7 @@ function Invoke-RestMethod {
     listBackups='backup'; listZones='zone'; listPods='pod'; listClusters='cluster';
     listHosts='host'; listStoragePools='storagepool'; listImageStores='imagestore';
     listBackupRepositories='backuprepository'; listBackupOfferings='backupoffering';
-    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'; listVlanIpRanges='vlaniprange'; listPhysicalNetworks='physicalnetwork'; listTrafficTypes='traffictype'; listSystemVms='systemvm'
+    listVirtualMachines='virtualmachine'; listAsyncJobs='asyncjobs'; listConfigurations='configuration'; listCapacity='capacity'; listRouters='router'; listVlanIpRanges='vlaniprange'; listPhysicalNetworks='physicalnetwork'; listTrafficTypes='traffictype'; listSystemVms='systemvm'
   }
   if (-not $collections.ContainsKey($command)) { throw 'Unexpected API' }
   $item = @{ id='a3182ad1-7de2-45e3-81ce-5ccbf9280421'; name='fixture'; cloudstackversion='4.22.1.1'; password='SECRET_SENTINEL'; userdata='SECRET_SENTINEL'; url='SECRET_SENTINEL' }
@@ -80,8 +80,14 @@ class InventoryTests(unittest.TestCase):
         self.assertNotIn('SECRET_SENTINEL', json.dumps(data))
         self.assertNotIn('fixture-secret', result.stdout + result.stderr)
 
+    def test_explicit_derived_capacity_refresh_is_reported_as_database_write(self):
+        result, data = self.collect(REFRESH_PRIVATE_IP_CAPACITY='true')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(data['MutationPerformed'])
+        self.assertEqual(data['MutationScope'], 'DERIVED_CAPACITY_COUNTERS_ONLY')
+
     def test_stable_arrays_zero_singleton_many(self):
-        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'PhysicalNetworks', 'SystemVms', 'Clusters', 'Hosts',
+        fields = ('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'PrivateIpCapacity', 'VirtualRouters', 'VlanIpRanges', 'PhysicalNetworks', 'SystemVms', 'Clusters', 'Hosts',
                   'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories',
                   'BackupOfferings', 'BackupProviders', 'Backups', 'VirtualMachines', 'RecentAsyncJobs')
         for mode, count in (('zero', 0), ('one', 1), ('many', 2)):

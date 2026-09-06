@@ -9,6 +9,10 @@ on:
         default: dc
         type: choice
         options: [dc, dr]
+      refresh_private_ip_capacity:
+        description: Refresh derived native Pod IP counters only; no network allocation changes
+        type: boolean
+        default: false
       api_endpoint:
         description: CloudStack API endpoint, including /client/api
         required: true
@@ -34,6 +38,7 @@ jobs:
     timeout-minutes: 15
     env:
       CLOUDSTACK_API_ENDPOINT: ${{ inputs.api_endpoint || 'http://10.10.10.14:8080/client/api' }}
+      REFRESH_PRIVATE_IP_CAPACITY: ${{ inputs.refresh_private_ip_capacity || 'false' }}
       TARGET_PROFILE: ${{ inputs.target_profile || 'dc' }}
       CLOUDSTACK_API_KEY: ${{ secrets[inputs.target_profile == 'dr' && 'LAYERSENTRY_DR_CLOUDSTACK_API_KEY' || 'LAYERSENTRY_CLOUDSTACK_API_KEY'] }}
       CLOUDSTACK_SECRET_KEY: ${{ secrets[inputs.target_profile == 'dr' && 'LAYERSENTRY_DR_CLOUDSTACK_SECRET_KEY' || 'LAYERSENTRY_CLOUDSTACK_SECRET_KEY'] }}
@@ -228,6 +233,8 @@ jobs:
             }
           }
 
+          $refreshPrivateIpCapacity = $env:REFRESH_PRIVATE_IP_CAPACITY -ceq 'true'
+          if ($refreshPrivateIpCapacity -and $env:TARGET_PROFILE -cne 'dc') { throw 'Derived counter refresh is bound to DC only.' }
           $capabilities = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listCapabilities') 'listCapabilities'
           $managementPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listManagementServers') 'listManagementServers'
           $networksPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listNetworks' @{ listall = 'true' }) 'listNetworks'
@@ -236,6 +243,24 @@ jobs:
           $backupsObservation = Invoke-OptionalCloudStackReadOnlyApi 'listBackups' @{ listall = 'true' }
           $zonesPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listZones' @{ listall = 'true' }) 'listZones'
           $podsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPods' @{ listall = 'true' }) 'listPods'
+          $podIpRanges = @()
+          $podProperty = $podsPayload.PSObject.Properties['pod']
+          if ($null -ne $podProperty) {
+            foreach ($pod in @($podProperty.Value)) {
+              $rangesProperty = $pod.PSObject.Properties['ipranges']
+              if ($null -ne $rangesProperty) {
+                foreach ($range in @($rangesProperty.Value)) {
+                  $safe = $range | Select-Object startip, endip, gateway, cidr, vlanid, forsystemvms
+                  $safe | Add-Member -NotePropertyName podid -NotePropertyValue $pod.id
+                  $podIpRanges += $safe
+                }
+              }
+            }
+          }
+          $capacityParams = @{ type = '5'; fetchlatest = $refreshPrivateIpCapacity.ToString().ToLowerInvariant(); page = '1'; pagesize = '100' }
+          if ($env:TARGET_PROFILE -ceq 'dc') { $capacityParams.podid = '020dc658-af4e-4e2e-bed5-0607de8a787f'; $capacityParams.zoneid = '929d1f2c-d629-41ed-96b4-6c48a288d056' }
+          $capacityPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listCapacity' $capacityParams) 'listCapacity'
+          $routersPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listRouters' @{ listall = 'true'; page = '1'; pagesize = '100' }) 'listRouters'
           $vlanPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listVlanIpRanges' @{ page = '1'; pagesize = '100' }) 'listVlanIpRanges'
           $systemVmsPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listSystemVms' @{ page = '1'; pagesize = '100' }) 'listSystemVms'
           $physicalPayload = Get-ResponsePayload (Invoke-CloudStackReadOnlyApi 'listPhysicalNetworks' @{ page = '1'; pagesize = '100' }) 'listPhysicalNetworks'
@@ -271,13 +296,14 @@ jobs:
           }
 
           $inventory = [ordered]@{
-            EvidenceClass = 'R0_READ_ONLY_AUTHENTICATED_API'
+            EvidenceClass = if ($refreshPrivateIpCapacity) { 'NATIVE_DERIVED_CAPACITY_REFRESH_AND_API_INVENTORY' } else { 'R0_READ_ONLY_AUTHENTICATED_API' }
             RunId = $env:GITHUB_RUN_ID
             Repository = $env:GITHUB_REPOSITORY
             Commit = $env:GITHUB_SHA
             CapturedUtc = [DateTime]::UtcNow.ToString('o')
             Endpoint = '{0}://{1}{2}' -f $endpoint.Scheme, $endpoint.Authority, $endpoint.AbsolutePath
-            MutationPerformed = $false
+            MutationPerformed = $refreshPrivateIpCapacity
+            MutationScope = if ($refreshPrivateIpCapacity) { 'DERIVED_CAPACITY_COUNTERS_ONLY' } else { 'NONE' }
             TargetProfile = $env:TARGET_PROFILE
             SupportClusterUuidStatus = 'UNKNOWN'
             CollectionScope = 'Single API page per collection; counts below expose truncation. Not a readiness certification.'
@@ -287,6 +313,9 @@ jobs:
             Templates = Select-InventoryItems $templatesPayload 'template' @('id', 'name', 'zoneid', 'isready', 'hypervisor', 'format', 'size', 'templatetype', 'checksum')
             Zones = Select-InventoryItems $zonesPayload 'zone' @('id', 'name', 'networktype', 'allocationstate', 'localstorageenabled')
             Pods = Select-InventoryItems $podsPayload 'pod' @('id', 'name', 'zoneid', 'zonename', 'allocationstate', 'gateway', 'netmask', 'startip', 'endip')
+            PodIpRanges = $podIpRanges
+            PrivateIpCapacity = Select-InventoryItems $capacityPayload 'capacity' @('type', 'zoneid', 'podid', 'capacityused', 'capacityallocated', 'capacitytotal', 'percentused')
+            VirtualRouters = Select-InventoryItems $routersPayload 'router' @('id', 'name', 'zoneid', 'podid', 'hostid', 'state', 'privateip', 'publicip', 'guestip', 'linklocalip')
             VlanIpRanges = Select-InventoryItems $vlanPayload 'vlaniprange' @('id', 'zoneid', 'podid', 'networkid', 'physicalnetworkid', 'vlan', 'gateway', 'netmask', 'startip', 'endip', 'forvirtualnetwork')
             PhysicalNetworks = $physicalNetworks
             TrafficTypes = $trafficTypes
@@ -314,7 +343,7 @@ jobs:
           $jsonPath = Join-Path $evidence 'inventory.json'
           # PowerShell unrolls function results: normalize every public collection
           # after projection, including zero and singleton optional collections.
-          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'VlanIpRanges', 'PhysicalNetworks', 'TrafficTypes', 'SystemVms', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
+          foreach ($field in @('Capabilities', 'ManagementServers', 'Zones', 'Pods', 'PodIpRanges', 'PrivateIpCapacity', 'VirtualRouters', 'VlanIpRanges', 'PhysicalNetworks', 'TrafficTypes', 'SystemVms', 'Clusters', 'Hosts', 'PrimaryStorage', 'ImageStores', 'Networks', 'Templates', 'BackupRepositories', 'BackupOfferings', 'BackupProviders', 'Backups', 'BackupConfigurations', 'VirtualMachines', 'RecentAsyncJobs')) {
             $inventory[$field] = @($inventory[$field] | Where-Object { $null -ne $_ })
           }
           $inventory.BackupApiObservations.listBackupProviders.HttpStatusCode = $providersObservation.HttpStatusCode
@@ -340,7 +369,8 @@ jobs:
             "BACKUP_OFFERINGS_API_STATUS=$($inventory.BackupApiObservations.listBackupOfferings.Status)"
             "ASYNC_JOBS_API_STATUS=$($inventory.AsyncJobsApiObservation.Status)"
             "VM_COUNT=$(@($inventory.VirtualMachines).Count)"
-            'MUTATION_PERFORMED=false'
+            "MUTATION_PERFORMED=$($inventory.MutationPerformed)"
+            "MUTATION_SCOPE=$($inventory.MutationScope)"
             "INVENTORY_COMPLETE=$($inventory.InventoryComplete)"
           ) | Set-Content -Path $summaryPath -Encoding UTF8
           Get-Content -LiteralPath $summaryPath

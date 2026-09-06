@@ -51,7 +51,30 @@ function Save-DcGuestJournal([string]$Path, [object]$Journal) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($Journal | ConvertTo-Json -Depth 10))
     $file = [IO.File]::Open($tmp, 'CreateNew', 'Write', 'None')
     try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
-    if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($tmp, $Path, $null) } else { [IO.File]::Move($tmp, $Path) }
+    if (Test-Path -LiteralPath $Path) {
+        # PowerShell coerces a null string argument to an empty path in this overload.
+        $backup = "$Path.$([guid]::NewGuid().ToString('N')).previous"
+        [IO.File]::Replace($tmp, $Path, $backup)
+        [IO.File]::Delete($backup)
+    } else { [IO.File]::Move($tmp, $Path) }
+}
+
+function Get-DcGuestJournalObservation {
+    param([string]$Path=(Join-Path $env:ProgramData 'LayerSentry\dc-guest-network-r0\journal.json'))
+    try {
+        $ancestor=[IO.FileInfo]$Path
+        if($ancestor.Exists -and ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'REPARSE_POINT'}
+        $directory=$ancestor.Directory
+        while($directory){if($directory.Exists -and ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'REPARSE_POINT'};$directory=$directory.Parent}
+        if(-not $ancestor.Exists){return [ordered]@{status='JOURNAL_ABSENT'}}
+        if($ancestor.Length -gt 16384){throw 'SIZE_LIMIT'}
+        $value=Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        if($value.schema -ne 1 -or $value.vmId -cne $script:VmId -or $value.guestMac -cne $script:GuestMac -or $value.planSha256 -cnotmatch '^[0-9a-f]{64}$'){throw 'BINDING_MISMATCH'}
+        foreach($key in @('prepareIntent','spoofIntent','connectIntent')){if($value.$key -isnot [bool]){throw 'INTENT_TYPE_INVALID'}}
+        if($value.guestId -and $value.guestId -cnotmatch '^Microsoft:[0-9A-Fa-f-]{36}\\[0-9A-Fa-f-]{36}$'){throw 'IDENTITY_INVALID'}
+        return [ordered]@{status='OBSERVED';vmId=$value.vmId;guestMac=$value.guestMac;planSha256=$value.planSha256;guestId=$value.guestId;
+            prepareIntent=$value.prepareIntent;spoofIntent=$value.spoofIntent;connectIntent=$value.connectIntent}
+    } catch { return [ordered]@{status='JOURNAL_UNAVAILABLE_OR_INVALID'} }
 }
 
 function Invoke-DcGuestNicPhase {
@@ -99,4 +122,4 @@ function Invoke-DcGuestNicPhase {
     return $after
 }
 
-Export-ModuleMember -Function Get-DcGuestNetworkSnapshot, Save-DcGuestJournal, Invoke-DcGuestNicPhase
+Export-ModuleMember -Function Get-DcGuestNetworkSnapshot, Save-DcGuestJournal, Get-DcGuestJournalObservation, Invoke-DcGuestNicPhase

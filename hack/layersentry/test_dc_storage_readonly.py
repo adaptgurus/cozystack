@@ -116,6 +116,16 @@ class StorageProofTests(unittest.TestCase):
         with patch.object(collector, 'open_directory', side_effect=FileNotFoundError):
             self.assertEqual(collector.registration_journal()['status'], 'DIRECTORY_ABSENT')
 
+    def test_tls_inventory_is_presence_only_and_listener_absence_is_not_trust(self):
+        service = 'LoadState=loaded\nActiveState=active\nPrivateKey=never-publish'
+        listeners = 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*\nLISTEN 0 4096 [::]:8080 [::]:*\nLISTEN 0 10 0.0.0.0:22 0.0.0.0:*'
+        with patch.object(collector, 'command', side_effect=[service] * 4 + [listeners]), patch.object(collector.os, 'lstat', side_effect=FileNotFoundError):
+            result = collector.tls_presence()
+        self.assertEqual([r['port'] for r in result['listeners']], [443, 8080])
+        self.assertEqual(result['trustedHttpsEndpoint'], 'NOT_ESTABLISHED')
+        self.assertFalse(result['configContentsRead'])
+        self.assertNotIn('never-publish', json.dumps(result))
+
 
 
 if __name__ == '__main__':

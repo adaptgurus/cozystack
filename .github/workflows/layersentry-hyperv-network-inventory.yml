@@ -19,6 +19,11 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 10
     steps:
+      - name: Checkout exact read-only journal observer
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Collect read-only switch and NAT state
         shell: powershell
         run: |
@@ -26,26 +31,60 @@ jobs:
           Set-StrictMode -Version Latest
           if ($env:COMPUTERNAME -cne 'TESTSER') { throw 'Exact Hyper-V host binding failed.' }
           Import-Module Hyper-V -ErrorAction Stop
+          Import-Module ./hack/layersentry/DcGuestNetwork.psm1 -Force
           $evidence = Join-Path $env:RUNNER_TEMP "network-inventory-$env:GITHUB_RUN_ID"
           New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+          $services = @(Get-Service -ErrorAction Stop | Where-Object Name -in @('DHCPServer','SharedAccess','hns') | Select-Object Name, Status)
+          $dhcp = [ordered]@{ status = 'NOT_OBSERVED'; scopes = @(); exclusions = @(); reservations = @(); leases = @() }
+          if (@($services | Where-Object Name -eq 'DHCPServer').Count -eq 0) {
+            $dhcp.status = 'WINDOWS_DHCP_SERVER_SERVICE_NOT_INSTALLED'
+          } else {
+            try {
+              Import-Module DhcpServer -ErrorAction Stop
+              $scopes = @(Get-DhcpServerv4Scope -ComputerName TESTSER -ErrorAction Stop | Where-Object { [string]$_.ScopeId -in @('10.10.10.0','10.10.20.0') })
+              foreach ($scope in $scopes) {
+                $id = [string]$scope.ScopeId
+                $dhcp.scopes += [ordered]@{ scopeId=$id; start=[string]$scope.StartRange; end=[string]$scope.EndRange; mask=[string]$scope.SubnetMask; state=[string]$scope.State }
+                foreach ($row in @(Get-DhcpServerv4ExclusionRange -ComputerName TESTSER -ScopeId $id -ErrorAction Stop)) { $dhcp.exclusions += [ordered]@{scopeId=$id;start=[string]$row.StartRange;end=[string]$row.EndRange} }
+                foreach ($row in @(Get-DhcpServerv4Reservation -ComputerName TESTSER -ScopeId $id -ErrorAction Stop)) { $dhcp.reservations += [ordered]@{scopeId=$id;address=[string]$row.IPAddress;clientId=[string]$row.ClientId;type=[string]$row.Type} }
+                foreach ($row in @(Get-DhcpServerv4Lease -ComputerName TESTSER -ScopeId $id -AllLeases -ErrorAction Stop)) { $dhcp.leases += [ordered]@{scopeId=$id;address=[string]$row.IPAddress;clientId=[string]$row.ClientId;state=[string]$row.AddressState} }
+              }
+              $dhcp.status = 'OBSERVED'
+            } catch { $dhcp.status = 'DHCP_CONFIGURATION_UNAVAILABLE' }
+          }
           $report = [ordered]@{
             status = 'READ_ONLY_OBSERVATION'
             mutationPerformed = $false
             host = $env:COMPUTERNAME
+            dcGuestNetworkJournal = Get-DcGuestJournalObservation
+            dhcp = $dhcp
+            addressServices = $services
+            ipv4Interfaces = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop | Select-Object InterfaceAlias, InterfaceIndex, Forwarding, Dhcp)
+            neighbors = @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -like '10.10.10.*' -or $_.IPAddress -like '10.10.20.*' } | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, LinkLayerAddress, State)
             switches = @(Get-VMSwitch | Select-Object Name, Id, SwitchType, AllowManagementOS)
             adapters = @(Get-NetAdapter | Where-Object Name -like 'vEthernet*' | Select-Object Name, InterfaceIndex, Status, MacAddress)
             addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength, AddressState)
             routes = @(Get-NetRoute -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, DestinationPrefix, NextHop, RouteMetric, State)
             nats = @(Get-NetNat -ErrorAction Stop | Select-Object Name, InternalIPInterfaceAddressPrefix, Active, Store)
             mappings = @(Get-NetNatStaticMapping -ErrorAction Stop | Select-Object NatName, Protocol, ExternalIPAddress, ExternalPort, InternalIPAddress, InternalPort)
-            vmNics = @(Get-VMNetworkAdapter -All | Select-Object VMName, Name, Id, SwitchName, SwitchId, Status, MacAddress, IPAddresses)
+            vmNics = @(Get-VMNetworkAdapter -All | Select-Object VMName, Name, Id, SwitchName, SwitchId, Status, MacAddress, MacAddressSpoofing, DynamicMacAddressEnabled, IPAddresses)
           }
           $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'network-inventory.json') -Encoding UTF8
+      - name: Collect strict DC storage and TLS presence
+        shell: powershell
+        env:
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+        run: ./hack/layersentry/invoke-dc-r0-host-inventory.ps1 -Collector collect-dc-storage-readonly.py
       - name: Upload sanitized network inventory
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: network-inventory-${{ github.run_id }}
-          path: ${{ runner.temp }}/network-inventory-${{ github.run_id }}/network-inventory.json
+          path: |
+            ${{ runner.temp }}/network-inventory-${{ github.run_id }}/network-inventory.json
+            ${{ runner.temp }}/layersentry-dc-r0-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 30

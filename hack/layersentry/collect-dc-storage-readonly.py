@@ -202,6 +202,38 @@ def registration_journal():
         os.close(directory_fd)
 
 
+def tls_presence():
+    services = {}
+    for name in ('nginx', 'httpd', 'haproxy', 'cloudstack-management'):
+        value = command(['systemctl', 'show', name, '--property=LoadState,ActiveState', '--no-pager'])
+        fields = {}
+        for line in (value or '').splitlines():
+            key, _, item = line.partition('=')
+            if key in ('LoadState', 'ActiveState') and re.fullmatch(r'[a-z-]{1,30}', item):
+                fields[key] = item
+        services[name] = fields or {'status': 'UNAVAILABLE'}
+    raw = command(['ss', '-H', '-ltn'])
+    listeners = []
+    for line in (raw or '').splitlines():
+        fields = line.split()
+        if len(fields) >= 5 and fields[0] == 'LISTEN':
+            address, _, port = fields[3].rpartition(':')
+            if port in ('443', '8443', '8080') and re.fullmatch(r'[0-9a-fA-F.:*\[\]]{1,64}', address):
+                listeners.append({'address': address, 'port': int(port)})
+    paths = {}
+    for path in ('/etc/nginx/nginx.conf', '/etc/httpd/conf/httpd.conf', '/etc/haproxy/haproxy.cfg',
+                 '/etc/cloudstack/management/server.properties', '/usr/share/cloudstack-management/conf/server.xml'):
+        try:
+            metadata = os.lstat(path)
+            paths[path] = 'REGULAR_FILE_PRESENT' if stat.S_ISREG(metadata.st_mode) else 'NONREGULAR_OR_SYMLINK_PRESENT'
+        except FileNotFoundError:
+            paths[path] = 'ABSENT'
+        except OSError:
+            paths[path] = 'UNAVAILABLE'
+    return {'services': services, 'listeners': listeners, 'listenerStatus': 'OBSERVED' if raw is not None else 'UNAVAILABLE',
+            'configPaths': paths, 'configContentsRead': False, 'trustedHttpsEndpoint': 'NOT_ESTABLISHED'}
+
+
 def collect():
     result = {'schemaVersion': '1.0', 'target': TARGET, 'mutationPerformed': False}
     raw = command(['ip', '-j', '-4', 'address', 'show'])
@@ -220,6 +252,7 @@ def collect():
     result['routes'] = public_routes()
     result['managementPlugin'] = plugin_package()
     result['registrationJournal'] = registration_journal()
+    result['tlsPresence'] = tls_presence()
     return dict(result, status='COLLECTED')
 
 

@@ -37,6 +37,20 @@ $module=Get-Module DcGuestNetwork
     }
     function New-TestJournal { [pscustomobject]@{vmId=$script:VmId;guestMac=$script:GuestMac;guestId='';prepareIntent=$false;spoofIntent=$false;connectIntent=$false} }
     $persist={$script:saves++}
+    $path=Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString()+'.json')
+    try {
+        $diskJournal=New-TestJournal
+        $diskJournal|Add-Member schema 1
+        $diskJournal|Add-Member planSha256 ('f'*64)
+        Save-DcGuestJournal $path $diskJournal
+        $diskJournal.prepareIntent=$true
+        Save-DcGuestJournal $path $diskJournal
+        $observed=Get-DcGuestJournalObservation $path
+        if($observed.status -cne 'OBSERVED' -or -not $observed.prepareIntent -or $observed.connectIntent){throw 'DURABLE_REPLACEMENT_OR_PROJECTION_FAILED'}
+        $diskJournal|Add-Member privateField 'PRIVATE_JOURNAL_SENTINEL'
+        Save-DcGuestJournal $path $diskJournal
+        if((Get-DcGuestJournalObservation $path|ConvertTo-Json) -match 'PRIVATE_JOURNAL_SENTINEL'){throw 'JOURNAL_PROJECTION_LEAKED'}
+    } finally {Remove-Item $path -ErrorAction SilentlyContinue}
     $j=New-TestJournal
     $snapshot=Get-DcGuestNetworkSnapshot
     if($snapshot.guest -or $snapshot.managementMacSpoofing -cne 'On' -or $script:mutations){throw 'PLAN_MUTATED'}
