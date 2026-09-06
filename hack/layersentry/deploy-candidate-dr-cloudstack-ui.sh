@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-EXPECTED_UI_COMMIT='53bf7c1bf7a82fc8a99f8592f96ed31a3bf75615'
+EXPECTED_UI_COMMIT='bfc9089a56ad1eacbb64d3f863cb91d69dccfe7d'
 EXPECTED_CLOUDSTACK_VERSION='4.22.1.1'
 EXPECTED_PRODUCT='LayerSentry'
 EXPECTED_PROFILE='layersentry-kvm'
