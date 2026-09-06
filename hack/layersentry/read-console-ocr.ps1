@@ -4,7 +4,10 @@ param(
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })]
     [string]$ImagePath,
 
-    [string]$LanguageTag = 'en-US'
+    [string]$LanguageTag = 'en-US',
+
+    [ValidateRange(1, 2)]
+    [int]$ImageScale = 1
 )
 
 Set-StrictMode -Version Latest
@@ -58,6 +61,7 @@ function Sort-ConsoleOcrLines($Lines) {
 [void][Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+[void][Windows.Graphics.Imaging.BitmapTransform, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
 [void][Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
 [void][Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime]
 [void][Windows.Media.Ocr.OcrResult, Windows.Media.Ocr, ContentType = WindowsRuntime]
@@ -83,7 +87,22 @@ try {
     $decoderOperation = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)
     $decoder = Wait-WinRtOperation -Operation $decoderOperation -ResultType ([Windows.Graphics.Imaging.BitmapDecoder])
 
-    $bitmapOperation = $decoder.GetSoftwareBitmapAsync()
+    if ($ImageScale -eq 1) { $bitmapOperation = $decoder.GetSoftwareBitmapAsync() }
+    else {
+        $width = [uint32]($decoder.PixelWidth * $ImageScale)
+        $height = [uint32]($decoder.PixelHeight * $ImageScale)
+        if ($width -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension -or $height -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {
+            throw 'Scaled console exceeds the OCR dimension limit.'
+        }
+        $transform = [Windows.Graphics.Imaging.BitmapTransform]::new()
+        $transform.ScaledWidth = $width
+        $transform.ScaledHeight = $height
+        $transform.InterpolationMode = [Windows.Graphics.Imaging.BitmapInterpolationMode]::NearestNeighbor
+        $bitmapOperation = $decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+            [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied, $transform,
+            [Windows.Graphics.Imaging.ExifOrientationMode]::IgnoreExifOrientation,
+            [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage)
+    }
     $bitmap = Wait-WinRtOperation -Operation $bitmapOperation -ResultType ([Windows.Graphics.Imaging.SoftwareBitmap])
 
     $recognizeOperation = $engine.RecognizeAsync($bitmap)

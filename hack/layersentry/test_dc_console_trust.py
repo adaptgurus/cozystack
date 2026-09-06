@@ -51,10 +51,10 @@ function Read-TrustConsole([string]$Private) {
     $script:Reads++
     $prompt = $env:TEST_PROMPT
     if ($env:TEST_PHASE -eq 'Refresh' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
-    if ($env:TEST_PHASE -eq 'Login' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
-    if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Text') { $prompt = 'layersentry login: root' }
-    if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Enter') { $prompt = 'Password:' }
-    if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Password' -and $script:Keys[-1] -eq 'Enter') { $prompt = '[root@layersentry ~]#' }
+    if ($env:TEST_PHASE -in @('Login', 'ProbeLogin') -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
+    if ($env:TEST_PHASE -in @('Login', 'ProbeLogin') -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Text') { $prompt = 'layersentry login: root' }
+    if ($env:TEST_PHASE -in @('Login', 'ProbeLogin') -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Enter') { $prompt = 'Password:' }
+    if ($env:TEST_PHASE -in @('Login', 'ProbeLogin') -and $script:Keys -contains 'Password' -and $script:Keys[-1] -eq 'Enter') { $prompt = '[root@layersentry ~]#' }
     $lines = @($prompt.Split("`n"))
     if ($env:TEST_PHASE -eq 'Verify' -and $script:Keys -contains 'Enter') {
         $nonce = $env:TEST_CHALLENGE
@@ -211,7 +211,7 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
             for path in evidence.rglob('*'):
                 if path.is_file():
                     self.assertNotIn(PASSWORD.encode(), path.read_bytes())
-                    if phase != 'Verify':
+                    if phase not in ('Verify', 'ProbeLogin'):
                         self.assertNotIn(b'private-image-sentinel', path.read_bytes())
             self.assertEqual(list(root.glob('dc-trust-private-*')), [])
             self.assertFalse(state['sshAuthenticationAttempted'])
@@ -235,6 +235,14 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
         state = self.run_phase('Login', 'layersentry login:', ['Text', 'Enter', 'Password', 'Enter'])
         self.assertEqual(state['status'], 'AUTHENTICATED_AWAITING_PUBLIC_KEY_PHASE')
         self.assertTrue(state['passwordSent'])
+        self.assertFalse(state['hostTrustEstablished'])
+
+    def test_username_probe_never_sends_password(self):
+        state = self.run_phase('ProbeLogin', 'layersentry login:', ['Text', 'Enter'])
+        self.assertEqual(state['status'], 'USERNAME_DELIVERY_VERIFIED_NO_PASSWORD_INPUT')
+        self.assertTrue(state['usernameEchoVerified'])
+        self.assertTrue(state['freshPasswordPromptVerified'])
+        self.assertFalse(state['passwordSent'])
         self.assertFalse(state['hostTrustEstablished'])
 
     def test_existing_password_prompt_never_receives_credentials(self):

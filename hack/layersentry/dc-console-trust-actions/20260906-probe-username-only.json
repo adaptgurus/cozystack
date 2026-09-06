@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "phase": "ProbeLogin",
+  "target": "10.10.10.14",
+  "vmId": "29ba176b-b81a-4f47-8f51-ecec869f247f",
+  "authorization": "DC-CONSOLE-PROBELOGIN"
+}

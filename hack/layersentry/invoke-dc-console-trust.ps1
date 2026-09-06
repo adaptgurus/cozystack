@@ -1,4 +1,4 @@
-param([ValidateSet('Observe', 'Refresh', 'Login', 'Verify')][string]$Phase = 'Observe')
+param([ValidateSet('Observe', 'Refresh', 'ProbeLogin', 'Login', 'Verify')][string]$Phase = 'Observe')
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -44,7 +44,7 @@ function Read-TrustConsole([string]$Private) {
         throw 'CONSOLE_CAPTURE_FAILED'
     }
     $script:TrustDiagnosticStage = 'CONSOLE_OCR'
-    $ocr = & (Join-Path $PSScriptRoot 'read-console-ocr.ps1') -ImagePath $image | ConvertFrom-Json
+    $ocr = & (Join-Path $PSScriptRoot 'read-console-ocr.ps1') -ImagePath $image -ImageScale 2 | ConvertFrom-Json
     $script:TrustDiagnosticStage = 'CONSOLE_OCR_SHAPE'
     Assert-TrustDcIdentity
     $lines = @($ocr.lines | ForEach-Object { ([string]$_.text).Trim() } | Where-Object { $_ })
@@ -256,7 +256,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
             $state.status = 'EMPTY_LOGIN_REFRESHED_NO_CREDENTIAL_INPUT'
             return
         }
-        if ($Phase -eq 'Login') {
+        if ($Phase -in @('Login', 'ProbeLogin')) {
             if ($prompt -eq 'ROOT_SHELL') { $state.status = 'ALREADY_AUTHENTICATED'; return }
             if ($prompt -notin @('EMPTY_LOGIN', 'LOGIN_WITH_KERNEL_OUTPUT')) { throw 'FRESH_EMPTY_LOGIN_REQUIRED' }
             if ($env:DC_HOST -cne '10.10.10.14' -or $env:DC_USER -cne 'root' -or
@@ -274,9 +274,37 @@ function Invoke-DcTrustPhase([string]$Phase) {
             $state.inputAttempted = $true
             $state.stage = 'USERNAME_INPUT'
             Send-TrustText $keyboard 'root'
+            $state['usernameInputCompletedUtc'] = (Get-Date).ToUniversalTime().ToString('o')
+            $state.stage = 'USERNAME_ECHO_OBSERVATION'
+            if ($Phase -eq 'ProbeLogin') {
+                $view = Read-TrustConsole $private
+                Copy-Item -LiteralPath $view.Image -Destination (Join-Path $out 'public-username-after-keys.png') -ErrorAction Stop
+                $state['usernameImmediatePrompt'] = Get-TrustPrompt $view
+                $state['usernameImmediateOcrLines'] = @($view.Lines)
+                $state['usernameObservationUtc'] = (Get-Date).ToUniversalTime().ToString('o')
+            }
             $null = Wait-TrustPrompt $private 'ROOT_USERNAME_ECHO'
+            $state['usernameEchoVerified'] = $true
+            $state.stage = 'USERNAME_ENTER'
             Send-TrustEnter $keyboard
+            $state['usernameEnterCompletedUtc'] = (Get-Date).ToUniversalTime().ToString('o')
+            $state.stage = 'PASSWORD_PROMPT_OBSERVATION'
+            if ($Phase -eq 'ProbeLogin') {
+                $view = Read-TrustConsole $private
+                Copy-Item -LiteralPath $view.Image -Destination (Join-Path $out 'public-username-after-enter.png') -ErrorAction Stop
+                $state['afterUsernameEnterPrompt'] = Get-TrustPrompt $view
+                $state['afterUsernameEnterOcrLines'] = @($view.Lines)
+                $state['afterUsernameEnterObservationUtc'] = (Get-Date).ToUniversalTime().ToString('o')
+            }
             $view = Wait-TrustPrompt $private 'PASSWORD_PROMPT'
+            $state['freshPasswordPromptVerified'] = $true
+            if ($Phase -eq 'ProbeLogin') {
+                # Only the public username has been sent during this phase.
+                Copy-Item -LiteralPath $view.Image -Destination (Join-Path $out 'public-username-password-prompt.png') -ErrorAction Stop
+                $state['imageSha256'] = (Get-FileHash -LiteralPath (Join-Path $out 'public-username-password-prompt.png') -Algorithm SHA256).Hash.ToLowerInvariant()
+                $state.status = 'USERNAME_DELIVERY_VERIFIED_NO_PASSWORD_INPUT'
+                return
+            }
             $state.stage = 'PASSWORD_INPUT'
             Assert-TrustDcIdentity
             if (((Get-Date) - $view.Started).TotalSeconds -gt 30) { throw 'PASSWORD_PROMPT_EXPIRED' }
