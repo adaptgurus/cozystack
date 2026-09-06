@@ -73,15 +73,34 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_root_fingerprint_allows_only_cursor_blink_after_prompt(self):
+        command = r'''
+$bitmap=[pscustomobject]@{Width=192;X=-1;Y=-1}
+$bitmap | Add-Member ScriptMethod GetPixel {
+    param($x,$y)
+    $v=0; if ($x -eq $this.X -and $y -eq $this.Y) {$v=170}
+    [pscustomobject]@{R=$v;G=$v;B=$v}
+}
+$baseline=Get-TrustRootRowPixelHash $bitmap 0 18
+$bitmap.X=177;$bitmap.Y=16
+if ((Get-TrustRootRowPixelHash $bitmap 0 18) -cne $baseline) { throw 'Cursor changed fingerprint' }
+$bitmap.Y=4
+if ($null -ne (Get-TrustRootRowPixelHash $bitmap 0 18)) { throw 'Accepted character after prompt' }
+$bitmap.X=185;$bitmap.Y=16
+if ($null -ne (Get-TrustRootRowPixelHash $bitmap 0 18)) { throw 'Accepted text past cursor' }
+'''
+        result = self.run_function(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_root_suffix_ocr_loss_requires_reviewed_crop_and_last_row(self):
         command = r'''
-function Export-TrustRootPromptCrop { [pscustomobject]@{sha256=$env:TEST_CROP_HASH} }
+function Export-TrustRootPromptCrop { [pscustomobject]@{pixelSha256=$env:TEST_CROP_HASH} }
 $view=[pscustomobject]@{Lines=@('[root@layersentry');Ocr=@{};Image='/tmp/private.png'}
 Get-TrustPrompt $view
 $view.Lines=@('[root@layersentry','unexpected command')
 Get-TrustPrompt $view
 '''
-        good = self.run_function(command, TEST_CROP_HASH='cb0b9b7ee94a363233c9f84436a03f0e9ad3454d560621e0c87a3a76f7c997e9')
+        good = self.run_function(command, TEST_CROP_HASH='0273a619a331afab2d618091c5ed64ce778db209bf0148f44c9588733a7c59ba')
         self.assertEqual(good.stdout.splitlines(), ['ROOT_SHELL', 'UNKNOWN'])
         bad = self.run_function(command, TEST_CROP_HASH='wrong')
         self.assertEqual(bad.stdout.splitlines(), ['UNKNOWN', 'UNKNOWN'])

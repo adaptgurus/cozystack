@@ -67,7 +67,7 @@ function Get-TrustPrompt($View) {
         # Observe 34050853843 visually proved the complete empty root prompt;
         # OCR alone omitted its suffix. Bind to the exact bounded row pixels.
         $row = Export-TrustRootPromptCrop $View ([IO.Path]::GetDirectoryName($View.Image))
-        if ($null -ne $row -and $row.sha256 -ceq 'cb0b9b7ee94a363233c9f84436a03f0e9ad3454d560621e0c87a3a76f7c997e9') { return 'ROOT_SHELL' }
+        if ($null -ne $row -and $row.pixelSha256 -ceq '0273a619a331afab2d618091c5ed64ce778db209bf0148f44c9588733a7c59ba') { return 'ROOT_SHELL' }
     }
     if ($last -cmatch '^[Pp]assword:\s*$') { return 'PASSWORD_PROMPT' }
     # Exact OCR error proved by username-only run 34050130232. This alias
@@ -141,15 +141,39 @@ function Export-TrustRootPromptCrop($View, [string]$Out) {
         $y = [Math]::Max(0, [int][Math]::Floor($top / 2) - 2)
         $height = [Math]::Min(24, [int][Math]::Ceiling($bottom / 2) - $y + 3)
         if ($y + $height -gt $bitmap.Height -or $bitmap.Width -lt 192) { return $null }
+        $pixelHash = Get-TrustRootRowPixelHash $bitmap $y $height
+        if ($null -eq $pixelHash) { return $null }
         $rectangle = [Drawing.Rectangle]::new(0, $y, 192, $height)
         $crop = $bitmap.Clone($rectangle, [Drawing.Imaging.PixelFormat]::Format24bppRgb)
         $path = Join-Path $Out 'public-root-prompt-row.png'
         $crop.Save($path, [Drawing.Imaging.ImageFormat]::Png)
-        return [ordered]@{ sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); width=192; height=$height }
+        return [ordered]@{ sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); pixelSha256=$pixelHash; width=192; height=$height }
     } finally {
         if ($null -ne $crop) { $crop.Dispose() }
         $bitmap.Dispose()
     }
+}
+
+function Get-TrustRootRowPixelHash($Bitmap, [int]$Top, [int]$Height) {
+    if ($Height -ne 18 -or $Bitmap.Width -lt 192) { return $null }
+    $pixels = New-Object byte[] (176 * $Height * 3)
+    $offset = 0
+    for ($y = 0; $y -lt $Height; $y++) {
+        for ($x = 0; $x -lt $Bitmap.Width; $x++) {
+            $color = $Bitmap.GetPixel($x, $Top + $y)
+            if ($x -lt 176) {
+                $pixels[$offset++] = $color.R; $pixels[$offset++] = $color.G; $pixels[$offset++] = $color.B
+            } elseif (-not ($x -ge 176 -and $x -le 184 -and $y -ge 15) -and
+                ($color.R -ne 0 -or $color.G -ne 0 -or $color.B -ne 0)) {
+                # Only the final underline cursor may blink; any other visible
+                # content after the fixed prompt means it is not empty.
+                return $null
+            }
+        }
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($pixels))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
 }
 
 function Send-TrustText($Keyboard, [string]$Text) {
@@ -384,6 +408,8 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state.stage = 'UNTRUSTED_KEY_CANDIDATE'
         $candidate = Get-TrustCandidate
         $challenge = New-TrustChallenge
+        $state['challenge'] = $challenge
+        $state['untrustedPublicCandidate'] = $candidate
         $command = New-TrustGuestCommand $candidate $challenge
         # Re-check the fresh root prompt after the network-only candidate read.
         $view = Read-TrustConsole $private
@@ -394,11 +420,18 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state.stage = 'PUBLIC_KEY_CHALLENGE_INPUT'
         Send-TrustText $keyboard $command
         Send-TrustEnter $keyboard
+        $state['proofCommandSubmitted'] = $true
         $state.stage = 'PUBLIC_KEY_CONSOLE_PROOF'
         $until = (Get-Date).AddSeconds(20)
         $verified = $false
         do {
             $view = Read-TrustConsole $private
+            # A short screen with both non-echoable proof markers is public
+            # candidate evidence even if exact OCR verification refuses it.
+            if ($view.Lines.Count -le 6 -and @($view.Lines | Where-Object { $_ -cmatch '^LS-DC' }).Count -ge 2) {
+                Copy-Item -LiteralPath $view.Image -Destination (Join-Path $out 'public-proof-awaiting-validation.png') -Force -ErrorAction Stop
+                $state['publicProofCandidateRetained'] = $true
+            }
             try { Assert-TrustPublicReceipt $view $candidate $challenge; $verified = $true } catch { }
             if ($verified) { break }
             # TODO(e2e-replace-fixed-timeouts): Hyper-V offers thumbnails, not terminal-output events.
