@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: c42c09ea47b37c8b11a1b2d88f0c07cd0229a21c
+          ref: ce1e19934f6ce9eb9f336b97e83f7ae2c890b720
           path: ui-qualification-source
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -56,13 +56,13 @@ jobs:
             Remove-Item -LiteralPath $installer
           }
           if (-not (Test-Path -LiteralPath $library)) { throw 'Firefox runtime DLL remains unavailable.' }
-      - name: Exercise both lab GUIs without infrastructure mutations
+      - name: Exercise deployed candidate GUI without infrastructure mutations
         working-directory: ui-qualification-source/tools/layersentry-ui-acceptance
         shell: powershell
         env:
           LAYERSENTRY_GUI_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
           LAYERSENTRY_GUI_PASSWORD: ${{ secrets.LAYERSENTRY_CLOUDSTACK_PASSWORD }}
-          LAYERSENTRY_GUI_TARGETS: 10.10.10.14,10.10.10.20
+          LAYERSENTRY_GUI_TARGETS: 10.10.10.20
           LAYERSENTRY_GUI_EVIDENCE: ${{ runner.temp }}/layersentry-gui-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = 'Stop'
