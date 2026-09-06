@@ -67,6 +67,31 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_winrt_async_operation_overload_is_selected_even_when_action_is_first(self):
+        source = (ROOT / 'read-console-ocr.ps1').read_text()
+        selection = source[source.index('$asTaskMethod ='):source.index('if ($null -eq $asTaskMethod)')]
+        selection = selection.replace('[System.WindowsRuntimeSystemExtensions]', '[TestExtensions]')
+        code = r'''
+Add-Type -TypeDefinition @'
+using System.Threading.Tasks;
+namespace Windows.Foundation {
+ public interface IAsyncActionWithProgress<T> {}
+ public interface IAsyncOperation<T> {}
+}
+public class TestOperation : Windows.Foundation.IAsyncOperation<string> {}
+public static class TestExtensions {
+ public static Task<string> AsTask<T>(Windows.Foundation.IAsyncActionWithProgress<T> action) { return Task.FromResult("wrong"); }
+ public static Task<string> AsTask<T>(Windows.Foundation.IAsyncOperation<T> operation) { return Task.FromResult("operation"); }
+}
+'@
+''' + selection + r'''
+$method = $asTaskMethod.MakeGenericMethod([string])
+$task = $method.Invoke($null, @([TestOperation]::new()))
+if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected.' }
+'''
+        result = self.run_function(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def run_phase(self, phase, prompt, expected_keys, success=True, **override):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

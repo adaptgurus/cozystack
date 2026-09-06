@@ -17,7 +17,9 @@ $asTaskMethod = [System.WindowsRuntimeSystemExtensions].GetMethods() |
         $_.Name -eq 'AsTask' -and
         $_.IsGenericMethodDefinition -and
         $_.GetGenericArguments().Count -eq 1 -and
-        $_.GetParameters().Count -eq 1
+        $_.GetParameters().Count -eq 1 -and
+        $_.GetParameters()[0].ParameterType.IsGenericType -and
+        $_.GetParameters()[0].ParameterType.GetGenericTypeDefinition().FullName -ceq 'Windows.Foundation.IAsyncOperation`1'
     } |
     Select-Object -First 1
 
