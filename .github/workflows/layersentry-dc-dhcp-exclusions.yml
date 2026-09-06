@@ -1,0 +1,57 @@
+name: LayerSentry DC DHCP Exclusions
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [Plan, Apply]
+        default: Plan
+        required: true
+      plan_sha256:
+        type: string
+        default: ''
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-dhcp-exclusion-actions/*.json]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  exclusions:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact bounded exclusion source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind exact phase and execute
+        shell: powershell
+        env:
+          REQUEST_MODE: ${{ inputs.mode }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -cne 'refs/heads/codex/dr-dc-trust'){throw 'Exact source ref required.'}
+          $mode=$env:REQUEST_MODE;$hash=$env:PLAN_SHA256
+          if($env:GITHUB_EVENT_NAME -ceq 'push'){
+            $files=@(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-dhcp-exclusion-actions | Where-Object {$_ -cmatch '^hack/layersentry/dc-dhcp-exclusion-actions/[a-z0-9-]+\.json$'})
+            if($LASTEXITCODE -ne 0 -or $files.Count -ne 1){throw 'One immutable request required.'}
+            $r=Get-Content -LiteralPath $files[0] -Raw|ConvertFrom-Json
+            if((@($r.PSObject.Properties.Name|Sort-Object)-join ',') -cne 'authorization,mode,planSha256,schema,target' -or $r.schema -ne 1 -or $r.target -cne 'TESTSER' -or $r.authorization -cne 'DC-DHCP-EXCLUSIONS-PHASE'){throw 'Request scope failed.'}
+            $mode=$r.mode;$hash=$r.planSha256
+          }elseif($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch'){throw 'Unsupported event.'}
+          if($mode -cnotin @('Plan','Apply') -or ($mode -ceq 'Plan' -and $hash)){throw 'Invalid phase.'}
+          ./hack/layersentry/invoke-dc-dhcp-exclusions.ps1 -Mode $mode -PlanReceiptPath hack/layersentry/evidence/dc-dhcp-reviewed-plan.json -PlanReceiptSha256 $hash
+      - name: Upload public exclusion evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-dhcp-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-dhcp-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
