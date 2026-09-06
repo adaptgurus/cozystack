@@ -1,6 +1,26 @@
 # DC host identity through the trusted Hyper-V console
 
-Status: fresh live `EMPTY_LOGIN` confirmed; authentication/public-key verification remains unproved. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. One authorized Enter refreshed the login; no credential input, SSH authentication or guest configuration changes occurred before the next separately scheduled Login phase.
+Status: exact-VM public key challenge completed once and was independently visually verified by both worker and integration lead. Only the proved public known_hosts entry has been enrolled; pinned-host read-only DC inventory is the next gate. Automated OCR verification remains failed and is not being relabeled as a passing workflow. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No guest configuration changes were performed by this workflow.
+
+## Completed public proof, 2026-09-06 UTC
+
+[Verify run 34052058332](https://github.com/adaptgurus/cozystack/actions/runs/34052058332), exact source `df37f476ec3dbcd7ce45e1043ffd4b7839fc48aa`, submitted the nonsecret command exactly once to `sen`, UUID `29ba176b-b81a-4f47-8f51-ecec869f247f`. Its summary records `inputAttempted=true`, `proofCommandSubmitted=true`, `passwordSent=false`, `guestConfigurationChanged=false`, `sshAuthenticationAttempted=false`. The guest completed the proof and returned to an empty root shell. Automated OCR rejected the receipt shape; therefore the run remains **failure**, `hostTrustEstablished=false`, with no automated `verified_known_hosts` output. The retained public screenshot supports the separately authorized independent visual verification without command replay.
+
+The worker viewed `public-proof-awaiting-validation.png`, SHA-256 `4702049d8313723c4121aaf212c18e3c87e7f6e06b119b8bf5f519a43c20db52`. It visibly contains the following three lines followed by the root shell:
+
+```text
+LS-DC-071fbb2e9d037067ebaed3b317782042-BEGIN
+TARGET 10.10.10.14 ROOT KEY MATCH
+LS-DC-071fbb2e9d037067ebaed3b317782042-END
+```
+
+Both markers exactly match the fresh challenge recorded before input in `summary.json`. The proof program only emits them after effective-UID, local-address, safe root-owned public-file and exact candidate-byte checks. The candidate bound by that receipt is:
+
+```text
+10.10.10.14 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBm79pqXi9hxDir8aG17FrN3itDTHLaPbad98QXAvlL2
+```
+
+ED25519 fingerprint: `SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw`. Public artifact `9994896529`, name `layersentry-dc-console-trust-34052058332-1`, has GitHub digest `sha256:ffc7c1686c56df3da04e58936b00d8cc19a8c004dfbd608ea387d6001235056a`. A keyscan alone was never accepted as trust. The integration lead independently viewed the same image and reviewed the proof source (lines 245–289), confirming exact nonce, target/root/key receipt and public candidate. The proved public entry was enrolled into `LAYERSENTRY_DC_SSH_KNOWN_HOSTS` under standing lab authorization. Initial inventory dispatch returned workflow-not-found before any SSH because this workflow is absent from the default branch. The isolated branch now supports an exact new immutable `.14` read-only inventory request, pinned to `github.sha`, using the existing strict collector and global runtime serialization. The actual inventory outcome will be recorded separately; none of this proves DR recovery, storage readiness or product GUI acceptance.
 
 ## Evidence and prerequisite
 
@@ -40,7 +60,7 @@ Refresh `34048780697` accepted the exact reviewed image but failed `KEYBOARD_BIN
 
 The single authorized Login run `34047745757` failed before guest input inside the existing OCR helper. Observe-only runs `34047899450`, `34048023438` and `34048165739` isolated `CONSOLE_OCR`, nested `MethodInvocationException` (`0x80131501`) and `ArgumentException` (`0x80070057`); all report input/password/SSH/configuration changes and host-trust establishment false. No Login replay occurred. Two actual reflection regressions identify independent helper defects: its broad one-generic/one-argument AsTask selector can select the action-with-progress overload, and its `StorageFile.OpenAsync` conversion incorrectly used `IRandomAccessStreamWithContentType`. The selector now requires `IAsyncOperation<T>`, and the stream result type now matches [Microsoft's documented `IRandomAccessStream` return contract](https://learn.microsoft.com/en-us/uwp/api/windows.storage.storagefile.openasync). Each new regression failed before its corresponding correction. These are source fixes; only a fresh successful live Observe can establish Windows OCR operation and permit coordinated next input.
 
-Executed PowerShell fixtures cover Observe, successful phase transitions, known kernel-output refresh, wrong VM/credential target, existing/prefilled/unknown prompts, uncertain username/password input with no Enter/replay, encoding/chunking, missing authentication and stale/wrong/extra public receipts. The fixed guest payload is also executed with fixture IP/ownership observations and real filesystem FD/link/mode operations, including symlink/hardlink/writable-key/wrong-key/address negatives. These tests do not establish real Windows OCR, console credential delivery or SSH trust. PowerShell parsing and whitespace checks pass. The integration lead must review the final source/test result before coordinating live Login/Verify.
+Executed PowerShell fixtures cover Observe, successful phase transitions, known kernel-output refresh, wrong VM/credential target, existing/prefilled/unknown prompts, uncertain username/password input with no Enter/replay, encoding/chunking, missing authentication and stale/wrong/extra public receipts. The fixed guest payload is also executed with fixture IP/ownership observations and real filesystem FD/link/mode operations, including symlink/hardlink/writable-key/wrong-key/address negatives. These tests do not establish real Windows OCR, console credential delivery or SSH trust. PowerShell parsing and whitespace checks pass. Final source `1f2e078b6270c39ef7fdf8725cf18cd49778f109` passed all 25 executed console-trust tests in 66.520 seconds. The earlier expected-rejection fixture status was corrected without runtime changes. The integration lead reviewed and coordinated the bounded live phases described above.
 
 After successful public-key evidence, the lead may provision only that verified known_hosts line into the existing named trust secret, then dispatch `.github/workflows/layersentry-dc-r0-host-inventory.yml`. That collector provides real guest bridge, mount/block-device, NFS, package/service and SystemVM-file observations. Only those fresh observations can define safe storage/Zone/B&R fixture changes. No Hyper-V disk should be reformatted from an old size or device-name assumption; no registered agent should be stopped by the historical storage helper.
 

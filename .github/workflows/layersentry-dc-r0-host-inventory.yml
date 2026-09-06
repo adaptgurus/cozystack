@@ -1,6 +1,9 @@
 name: LayerSentry DC R0 Host Inventory
 
 on:
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-r0-inventory-actions/*.json]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +21,21 @@ jobs:
       - name: Checkout collector
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
+      - name: Bind explicit read-only inventory request
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -notin @('refs/heads/codex/dr-dc-trust','refs/heads/ops/layersentry-hyperv-inventory')) { throw 'Repository/ref binding failed.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $files = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-r0-inventory-actions | Where-Object { $_ -cmatch '^hack/layersentry/dc-r0-inventory-actions/[a-z0-9-]+\.json$' })
+            if ($LASTEXITCODE -ne 0 -or $files.Count -ne 1) { throw 'Exactly one new immutable inventory request is required.' }
+            $request = Get-Content -LiteralPath $files[0] -Raw | ConvertFrom-Json
+            $fields = @($request.PSObject.Properties.Name | Sort-Object)
+            if (($fields -join ',') -cne 'authorization,schema,target' -or $request.schema -ne 1 -or $request.target -cne '10.10.10.14' -or $request.authorization -cne 'DC-R0-READ-ONLY-INVENTORY') { throw 'Read-only inventory request binding failed.' }
+          } elseif ($env:GITHUB_EVENT_NAME -ne 'workflow_dispatch') { throw 'Unsupported event.' }
       - name: Collect DC read-only inventory
         shell: powershell
         env:
