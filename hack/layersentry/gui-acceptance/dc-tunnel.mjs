@@ -1,15 +1,9 @@
 import crypto from 'node:crypto'
-import net from 'node:net'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { readProtectedBytes, requireThat } from './contract.mjs'
+import { openOwnedSshTunnel, validateListenerProof } from './owned-tunnel.mjs'
 
 export const DC_FINGERPRINT = 'SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw'
 export const ASKPASS = '@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command "[Console]::Write([Environment]::GetEnvironmentVariable(\'ROCKY_PASSWORD\'))"\r\n'
-const exec = promisify(execFile)
-const directory = path.dirname(fileURLToPath(import.meta.url))
 
 export function verifyDcHostKey (raw) {
   const lines = raw.trim().split(/\r?\n/)
@@ -34,10 +28,7 @@ export function dcTunnelArguments (binding, port) {
 }
 
 export function validateDcListenerProof (proof, pid, port, started) {
-  requireThat(proof?.schema === 1 && proof.target === 'dc' && proof.sshHost === '10.10.10.14' && proof.remoteLoopbackPort === 8080 &&
-    proof.processId === pid && proof.localLoopbackPort === port && proof.listenerOwnerVerified === true && proof.processPathVerified === true &&
-    Number.isSafeInteger(proof.processStartedAt) && proof.processStartedAt >= started - 1000 && proof.processStartedAt <= started + 15000, 'DC_LISTENER_OWNER_MISMATCH')
-  return proof
+  return validateListenerProof(proof, { target: 'dc', host: '10.10.10.14' }, pid, port, started)
 }
 
 export async function openDcTunnel (binding) {
@@ -47,50 +38,11 @@ export async function openDcTunnel (binding) {
   requireThat(readProtectedBytes(binding.askPassFile).toString('utf8') === ASKPASS, 'DC_ASKPASS_HELPER_MISMATCH')
   const secret = JSON.parse(readProtectedBytes(binding.passwordFile).toString('utf8'))
   requireThat(typeof secret.password === 'string' && secret.password.length > 0 && secret.password.length <= 4096 && !/[\r\n\0]/.test(secret.password), 'DC_PASSWORD_PREREQUISITE_MISSING')
-  const port = await new Promise((resolve, reject) => {
-    const reservation = net.createServer()
-    reservation.once('error', () => reject(new Error('LOOPBACK_PORT_UNAVAILABLE')))
-    reservation.listen(0, '127.0.0.1', () => { const port = reservation.address().port; reservation.close(() => resolve(port)) })
-  })
   const env = Object.fromEntries(['SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'COMSPEC'].filter(k => process.env[k]).map(k => [k, process.env[k]]))
   Object.assign(env, { SSH_ASKPASS: binding.askPassFile, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: 'layersentry-noninteractive', ROCKY_PASSWORD: secret.password })
-  const started = Date.now()
-  const child = spawn(path.join(process.env.SystemRoot, 'System32', 'OpenSSH', 'ssh.exe'), dcTunnelArguments(binding, port), { stdio: 'ignore', windowsHide: true, shell: false, env })
-  delete env.ROCKY_PASSWORD
-  secret.password = null
-  let ended = false
-  child.on('error', () => { ended = true }); child.on('exit', () => { ended = true })
-  const inspect = async absent => {
-    const args = ['-NoProfile', '-NonInteractive', '-File', path.join(directory, 'dc-listener-proof.ps1'), '-SshProcessId', String(child.pid), '-LocalPort', String(port), '-StartedAfterEpochMs', String(started)]
-    if (absent) args.push('-ExpectAbsent')
-    const { stdout } = await exec(path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), args, { windowsHide: true, timeout: 8000, maxBuffer: 8192 })
-    return JSON.parse(stdout)
-  }
-  const assertReady = async () => {
-    requireThat(!ended && Number.isInteger(child.pid), 'DC_SSH_TUNNEL_FAILED')
-    const proof = validateDcListenerProof(await inspect(false), child.pid, port, started)
-    requireThat(!ended, 'DC_SSH_TUNNEL_FAILED')
-    return proof
-  }
-  const close = async () => {
-    if (!ended) {
-      child.kill()
-      await new Promise(resolve => { const timer = setTimeout(resolve, 5000); child.once('exit', () => { clearTimeout(timer); resolve() }) })
-    }
-    requireThat(ended, 'DC_SSH_CLEANUP_UNVERIFIED')
-    const proof = await inspect(true)
-    requireThat(proof.schema === 1 && proof.listenerAbsent === true && proof.localLoopbackPort === port, 'DC_LISTENER_CLEANUP_UNVERIFIED')
-  }
   try {
-    const deadline = Date.now() + 20000
-    while (Date.now() < deadline) {
-      requireThat(!ended, 'DC_SSH_TUNNEL_FAILED')
-      try {
-        const proof = await assertReady()
-        return { base: `http://127.0.0.1:${port}/client/`, proof: { ...proof, hostKeyFingerprint: DC_FINGERPRINT, strictHostVerification: true }, alive: () => !ended, assertReady, close }
-      } catch { requireThat(!ended, 'DC_SSH_TUNNEL_FAILED') }
-      await new Promise(resolve => setTimeout(resolve, 150))
-    }
-    throw new Error('DC_SSH_TUNNEL_TIMEOUT')
-  } catch (error) { await close(); throw error }
+    const tunnel = await openOwnedSshTunnel(binding, port => dcTunnelArguments(binding, port), env)
+    tunnel.proof.hostKeyFingerprint = DC_FINGERPRINT
+    return tunnel
+  } finally { delete env.ROCKY_PASSWORD; secret.password = null }
 }

@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { openDrTunnel } from './tunnel.mjs'
-import { validateRequest, readProtectedCredentials, readProtectedBytes, requireThat, classifyGate, allowedRequest, publicFailure } from './contract.mjs'
+import { openDcTunnel } from './dc-tunnel.mjs'
+import { validateRequest, validateDcFixture, withVerifiedCredentialTransport, readProtectedCredentials, readProtectedBytes, requireThat, classifyGate, allowedRequest, publicFailure } from './contract.mjs'
 
 // No Playwright test reporter, trace, video, HAR, console forwarding, raw DOM,
 // request headers/bodies, cookies or storageState are written to evidence.
@@ -52,7 +53,7 @@ async function personaChecks (browser, name, base, spec, credentials) {
   const observed = (name, status = 'PASS', reason) => record.checks.push({ name, status, ...(reason ? { reason } : {}) })
   const context = await browser.newContext({ locale: 'en-US', viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', acceptDownloads: false })
   let unexpected = 0; let pageErrors = 0; let loginSubmissions = 0
-  await context.route('**/*', route => {
+  await context.route('**/*', async route => {
     const req = route.request()
     const endpoint = new URL(req.url())
     if (endpoint.pathname.replace(/\/$/, '') === '/client/api' && req.method() === 'POST' && new URLSearchParams(req.postData() || '').get('command') === 'login') {
@@ -60,6 +61,9 @@ async function personaChecks (browser, name, base, spec, credentials) {
       if (loginSubmissions > 1) { authenticationFailed = true; unexpected++; return route.abort('blockedbyclient') }
     }
     if (!allowedRequest(req.url(), req.method(), req.postData(), new URL(base).origin)) { unexpected++; return route.abort('blockedbyclient') }
+    if (endpoint.pathname.replace(/\/$/, '') === '/client/api' && req.method() === 'POST' && new URLSearchParams(req.postData() || '').get('command') === 'login') {
+      try { return await withVerifiedCredentialTransport(tunnel, result.target, () => route.continue()) } catch { authenticationFailed = true; unexpected++; return route.abort('blockedbyclient') }
+    }
     return route.continue()
   })
   const page = await context.newPage()
@@ -71,7 +75,7 @@ async function personaChecks (browser, name, base, spec, credentials) {
     requireThat(secret && typeof secret.username === 'string' && typeof secret.password === 'string' && secret.password.length > 0 && typeof secret.domain === 'string', 'PERSONA_CREDENTIAL_MISSING')
     await page.goto(base + '#/user/login', { waitUntil: 'domcontentloaded', timeout: remaining() })
     await page.locator('#formLogin input[autocomplete="username"]').fill(secret.username)
-    await page.locator('#formLogin input[autocomplete="current-password"]').fill(secret.password)
+    try { await withVerifiedCredentialTransport(tunnel, result.target, () => page.locator('#formLogin input[autocomplete="current-password"]').fill(secret.password)) } catch { authenticationFailed = true; throw new Error('SSH_CREDENTIAL_TRANSPORT_UNVERIFIED') }
     await page.locator('#formLogin input[aria-label="Domain"]').fill(secret.domain)
     const login = page.waitForResponse(response => {
       try { const req = response.request(); return new URLSearchParams(req.postData() || '').get('command') === 'login' } catch { return false }
@@ -80,7 +84,7 @@ async function personaChecks (browser, name, base, spec, credentials) {
     const reply = await login
     if (!reply || reply.status() !== 200) { authenticationFailed = true; throw new Error('GUI_LOGIN_REJECTED') }
     const identity = await reply.json()
-    if (identity.loginresponse?.userid !== spec.expectedUserId || typeof identity.loginresponse?.sessionkey !== 'string') { authenticationFailed = true; throw new Error('GUI_IDENTITY_MISMATCH') }
+    if (identity.loginresponse?.userid !== spec.expectedUserId || typeof identity.loginresponse?.sessionkey !== 'string' || (spec.accountType !== undefined && identity.loginresponse?.type !== String(spec.accountType))) { authenticationFailed = true; throw new Error('GUI_IDENTITY_MISMATCH') }
     await page.locator('#formLogin').waitFor({ state: 'hidden', timeout: remaining() })
     observed('authenticated-gui-login'); authenticatedPersonas.add(spec.id)
     await page.goto(base + '#/kubernetes-data-services', { waitUntil: 'domcontentloaded', timeout: remaining() })
@@ -181,15 +185,25 @@ try {
   requireThat(Array.isArray(inventory.assets) && inventory.assets.length > 0 && inventory.assets.length <= 10000, 'INVALID_ASSET_INVENTORY')
   const credentials = readProtectedCredentials(credentialPath)
   const binding = readProtectedCredentials(tunnelBindingPath)
-  requireThat(binding.target === request.target && path.dirname(path.resolve(binding.keyFile)) === path.dirname(path.resolve(tunnelBindingPath)) && path.dirname(path.resolve(binding.knownHostsFile)) === path.dirname(path.resolve(tunnelBindingPath)), 'SSH_TARGET_BINDING_REQUIRED')
-  readProtectedBytes(binding.keyFile); readProtectedBytes(binding.knownHostsFile)
+  requireThat(binding.target === request.target, 'SSH_TARGET_BINDING_REQUIRED')
+  const files = request.target === 'dc' ? ['passwordFile', 'askPassFile', 'knownHostsFile', 'nativeFixtureFile'] : ['keyFile', 'knownHostsFile']
+  for (const key of files) {
+    requireThat(typeof binding[key] === 'string' && path.dirname(path.resolve(binding[key])) === path.dirname(path.resolve(tunnelBindingPath)), 'SSH_TARGET_BINDING_REQUIRED')
+    readProtectedBytes(binding[key])
+  }
+  if (request.target === 'dc') {
+    const fixture = readProtectedBytes(binding.nativeFixtureFile)
+    requireThat(digest(fixture) === request.dcFixtureSha256, 'DC_FIXTURE_HASH_MISMATCH')
+    const domain = validateDcFixture(request, JSON.parse(fixture), credentials['platform-admin']?.username)
+    requireThat(credentials['platform-admin']?.domain === domain, 'DC_FIXTURE_LOGIN_DOMAIN_MISMATCH')
+  }
   out = path.resolve(output); fs.mkdirSync(out, { mode: 0o700 })
   result.personaCoverage = Object.fromEntries(['platform-admin', 'department-admin', 'operator', 'auditor'].map(id => [id, request.personas.some(p => p.id === id) ? 'PENDING' : 'NOT_TESTED']))
   result.artifactRunId = request.artifactRunId; result.artifactName = request.artifactName
   result.target = request.target; result.cloudstackUiCommit = request.cloudstackUiCommit; result.artifactSha256 = request.artifactSha256
   result.runnerCommit = /^[0-9a-f]{40}$/.test(process.env.GITHUB_SHA || '') ? process.env.GITHUB_SHA : null
   result.workflowRunId = /^\d+$/.test(process.env.GITHUB_RUN_ID || '') ? process.env.GITHUB_RUN_ID : null
-  tunnel = await openDrTunnel(binding)
+  tunnel = request.target === 'dc' ? await openDcTunnel(binding) : await openDrTunnel(binding)
   const base = tunnel.base
   result.security = { transport: 'STRICT_SSH_LOOPBACK', tunnel: tunnel.proof, productionTlsVerified: false, privateStatePersisted: false }
   for (const [name, engine, options] of [['chrome', chromium, { channel: 'chrome' }], ['firefox', firefox, {}]]) {
@@ -226,6 +240,10 @@ try {
   console.log(JSON.stringify({ status: result.status, moduleCompletionApproved: false }))
   process.exitCode = failed ? 1 : 2
 } catch (error) {
+  if (out && error.tunnelDiagnostic) {
+    result.status = 'BLOCKED'; result.reason = publicFailure(error); result.transportDiagnostic = error.tunnelDiagnostic
+    fs.writeFileSync(path.join(out, 'acceptance.json'), JSON.stringify(result, null, 2), { mode: 0o600, flag: 'wx' })
+  }
   console.error(publicFailure(error)); process.exitCode = 1
 } finally {
   if (tunnel) { try { await tunnel.close() } catch { console.error('SSH_TUNNEL_CLEANUP_UNVERIFIED'); process.exitCode = 1 } }

@@ -15,8 +15,35 @@ export function validateRequest (r) {
     requireThat(uuid(p.expectedUserId) && uuid(p.projectId) && typeof p.projectName === 'string' && p.projectName.length > 0 && p.projectName.length <= 200, 'INVALID_PERSONA_SCOPE')
     requireThat(!p.foreignProjectId || (uuid(p.foreignProjectId) && p.foreignProjectId !== p.projectId && p.id !== 'platform-admin'), 'INVALID_FOREIGN_SCOPE')
   }
-  requireThat(r.target === 'dr', 'DC_TRUSTED_TRANSPORT_PENDING')
+  if (r.target === 'dc') requireThat(r.personas.length === 1 && r.personas[0].id === 'platform-admin' && r.personas[0].accountType === 1 && /^[0-9a-f]{64}$/.test(r.dcFixtureSha256), 'DC_VERIFIED_FIXTURE_REQUIRED')
   return r.target
+}
+
+// The request pins reviewed native discovery bytes; these fields bind their
+// observed operator and project to the one credential permitted on DC.
+export function validateDcFixture (request, fixture, username) {
+  validateRequest(request)
+  requireThat(request.target === 'dc' && fixture?.schema === 1 && fixture.target === 'dc' && ['PLAN_EXISTING_PROJECT', 'FIXTURE_OBSERVED_GUI_NOT_TESTED'].includes(fixture.status), 'DC_FIXTURE_NOT_OBSERVED')
+  const transport = fixture.transport; const operator = fixture.operator; const persona = request.personas[0]
+  requireThat(transport?.target === 'dc' && transport.sshHost === '10.10.10.14' && transport.hostKeyFingerprint === 'SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw' && transport.strictHostVerification === true && transport.listenerOwnerVerified === true, 'DC_FIXTURE_TRANSPORT_MISMATCH')
+  requireThat(operator?.accountType === 1 && uuid(operator.userId) && uuid(operator.accountId) && uuid(operator.domainId) && operator.username === username && operator.loginDomain === '/', 'DC_FIXTURE_OPERATOR_MISMATCH')
+  requireThat(persona.expectedUserId === operator.userId && ['id', 'expectedUserId', 'accountType', 'projectId', 'projectName'].every(key => fixture.persona?.[key] === persona[key]), 'DC_FIXTURE_PERSONA_MISMATCH')
+  const project = fixture.selectedProject || fixture.project
+  requireThat(project?.state === 'Active' && project.projectId === persona.projectId && project.projectName === persona.projectName && project.domainId === operator.domainId, 'DC_FIXTURE_PROJECT_MISMATCH')
+  return operator.loginDomain
+}
+
+// Called immediately before filling a password and again before the native
+// login POST continues. A replacement listener cannot inherit the first proof.
+export async function withVerifiedCredentialTransport (tunnel, target, deliver) {
+  const hosts = { dc: '10.10.10.14', dr: '10.10.10.20' }
+  requireThat(Object.hasOwn(hosts, target) && tunnel?.alive() && typeof tunnel.assertReady === 'function', 'SSH_CREDENTIAL_TRANSPORT_UNVERIFIED')
+  const initial = tunnel.proof
+  const fresh = await tunnel.assertReady()
+  requireThat(initial?.schema === 1 && fresh?.schema === 1 && initial.target === target && initial.sshHost === hosts[target] && initial.strictHostVerification === true && fresh?.target === target && fresh.sshHost === hosts[target] && fresh.remoteLoopbackPort === 8080 &&
+    fresh.listenerOwnerVerified === true && fresh.processPathVerified === true && Number.isSafeInteger(fresh.processId) && fresh.processId > 0 && Number.isSafeInteger(fresh.localLoopbackPort) && fresh.localLoopbackPort >= 1024 && fresh.localLoopbackPort <= 65535 && Number.isSafeInteger(fresh.processStartedAt) &&
+    ['processId', 'processStartedAt', 'localLoopbackPort'].every(key => fresh[key] === initial[key]) && tunnel.alive(), 'SSH_CREDENTIAL_TRANSPORT_UNVERIFIED')
+  return deliver()
 }
 
 export function readProtectedBytes (file) {

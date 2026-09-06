@@ -196,6 +196,13 @@ async function main () {
     result.transport = tunnel.proof
     const fd = fs.openSync(output, 'wx', 0o600)
     try { fs.writeFileSync(fd, JSON.stringify(result, null, 2) + '\n'); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+  } catch (error) {
+    // A pre-API launch failure still needs a public receipt; all fields below
+    // are local allowlisted facts, not SSH stderr or native response content.
+    if (error.tunnelDiagnostic) {
+      fs.writeFileSync(output, JSON.stringify({ schema: 1, target: 'dc', status: 'TRANSPORT_FAILED', reason: publicFailure(error), mutationPerformed: false, transportDiagnostic: error.tunnelDiagnostic }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
+    }
+    throw error
   } finally { credential.apiSecret = null; credential.apiKey = null; if (tunnel) await tunnel.close() }
 }
 

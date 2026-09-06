@@ -196,21 +196,22 @@ test('actual PowerShell listener proof rejects wrong owner and inspection failur
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-gui-listener-test-'))
   const source = fs.readFileSync(new URL('./dc-listener-proof.ps1', import.meta.url), 'utf8')
   try {
-    for (const scenario of ['valid', 'foreign', 'query-failure']) {
+    for (const scenario of ['valid', 'valid-dr', 'foreign', 'query-failure', 'absence-query-failure', 'wrong-path', 'stale-process']) {
       const script = path.join(directory, scenario + '.ps1')
       const start = Date.now()
       const mock = `$env:SystemRoot='/mock/windows'
-function Get-Process { param($Id,$ErrorAction) [pscustomobject]@{Path=(Join-Path $env:SystemRoot 'System32\\OpenSSH\\ssh.exe');StartTime=[DateTimeOffset]::FromUnixTimeMilliseconds(${start}).UtcDateTime} }
-function Get-NetTCPConnection { param($ErrorAction) ${scenario === 'query-failure' ? "throw 'denied'" : `[pscustomobject]@{State='Listen';LocalPort=18342;LocalAddress='127.0.0.1';OwningProcess=${scenario === 'valid' ? 500 : 501}}`} }
+function Get-Process { param($Id,$ErrorAction) [pscustomobject]@{Path=(Join-Path $env:SystemRoot '${scenario === 'wrong-path' ? 'foreign.exe' : 'System32\\OpenSSH\\ssh.exe'}');StartTime=[DateTimeOffset]::FromUnixTimeMilliseconds(${scenario === 'stale-process' ? start - 60000 : start}).UtcDateTime} }
+function Get-NetTCPConnection { param($ErrorAction) ${scenario.includes('query-failure') ? "throw 'denied'" : `[pscustomobject]@{State='Listen';LocalPort=18342;LocalAddress='127.0.0.1';OwningProcess=${scenario === 'foreign' ? 501 : 500}}`} }
 `
       // Functions are defined before invoking the exact source in its own script scope.
       const original = path.join(directory, 'proof.ps1'); fs.writeFileSync(original, source)
-      fs.writeFileSync(script, mock + `& '${original.replaceAll("'", "''")}' -SshProcessId 500 -LocalPort 18342 -StartedAfterEpochMs ${start}
+      fs.writeFileSync(script, mock + `& '${original.replaceAll("'", "''")}' -Target ${scenario === 'valid-dr' ? 'dr' : 'dc'} -SshProcessId 500 -LocalPort 18342 -StartedAfterEpochMs ${start} ${scenario === 'absence-query-failure' ? '-ExpectAbsent' : ''}
 exit $LASTEXITCODE
 `)
-      if (scenario === 'valid') {
+      if (scenario.startsWith('valid')) {
         const result = execFileSync(process.env.LAYERSENTRY_TEST_PWSH, ['-NoProfile', '-NonInteractive', '-File', script], { encoding: 'utf8' })
         assert.equal(JSON.parse(result).listenerOwnerVerified, true)
+        assert.equal(JSON.parse(result).sshHost, scenario === 'valid-dr' ? '10.10.10.20' : '10.10.10.14')
       } else assert.throws(() => execFileSync(process.env.LAYERSENTRY_TEST_PWSH, ['-NoProfile', '-NonInteractive', '-File', script], { stdio: 'pipe' }))
     }
   } finally { fs.rmSync(directory, { recursive: true, force: true }) }
