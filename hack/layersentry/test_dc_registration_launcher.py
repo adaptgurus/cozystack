@@ -87,7 +87,8 @@ if($decoded.apiSecret -cne 'FAKE-API-SECRET' -or $decoded.mode -cne 'Register'){
 if($remote -notmatch '^timeout 240 python3 <\(printf %s '){throw 'Wrong remote launcher'}
 if($sshArgs -notcontains 'StrictHostKeyChecking=yes'){throw 'Host trust weakened'}
 'PRIVATE_STDIN_BUNDLE_PASS'
-[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remote))
+$PSNativeCommandArgumentPassing='Legacy'
+& python3 -c 'import base64,sys;print(base64.b64encode(sys.argv[1].encode()).decode())' $remote
 '''
         with tempfile.NamedTemporaryFile('w', suffix='.ps1') as script:
             script.write(fixture + section + checks)
