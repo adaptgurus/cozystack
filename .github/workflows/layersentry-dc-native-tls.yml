@@ -1,0 +1,64 @@
+name: LayerSentry DC Native TLS Prerequisite
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [Plan, Prepare, Install, Activate, Firewall]
+        default: Plan
+        required: true
+      plan_path:
+        description: Reviewed Plan receipt under hack/layersentry/dc-native-tls-plans/ (non-Plan phases)
+        type: string
+        default: ''
+      plan_sha256:
+        description: Exact canonical planSha256 returned by the trusted Plan phase
+        type: string
+        default: ''
+      firewall_sources:
+        description: Plan-only comma-separated reviewed management client IPv4 /32 sources in the DC subnet
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  native-tls:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Execute only the root-scheduled native TLS phase
+        shell: powershell
+        env:
+          MODE: ${{ inputs.mode }}
+          PLAN_PATH: ${{ inputs.plan_path }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          FIREWALL_SOURCES: ${{ inputs.firewall_sources }}
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+          CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+          CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:MODE -cne 'Plan' -and $env:PLAN_PATH -cnotmatch '^hack/layersentry/dc-native-tls-plans/[A-Za-z0-9_-]+\.json$') {throw 'Reviewed TLS Plan path required.'}
+          $sources=@()
+          if($env:FIREWALL_SOURCES) {$sources=@($env:FIREWALL_SOURCES.Split(',')|ForEach-Object{$_.Trim()})}
+          & ./hack/layersentry/invoke-dc-native-tls-ssh.ps1 -Mode $env:MODE -PlanPath $env:PLAN_PATH -PlanSha256 $env:PLAN_SHA256 -FirewallSources $sources
+      - name: Upload only validated public native TLS evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-native-tls-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/layersentry-dc-native-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.mode }}/summary.json
+            ${{ runner.temp }}/layersentry-dc-native-tls-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.mode }}/dc-native-tls.json
+          if-no-files-found: warn
+          retention-days: 30
