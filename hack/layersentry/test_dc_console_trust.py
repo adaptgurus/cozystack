@@ -73,6 +73,20 @@ try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
 
 @unittest.skipUnless(POWERSHELL, 'PowerShell is required for executed wrapper fixtures')
 class ConsoleTrustTests(unittest.TestCase):
+    def test_ocr_fragments_join_only_overlapping_terminal_rows(self):
+        source = (ROOT / 'read-console-ocr.ps1').read_text()
+        helpers = source[source.index('function Sort-ConsoleOcrLines'):source.index('[void][Windows.Storage.StorageFile')]
+        command = helpers + r'''
+function Line($text, $x, $y, $h) { [pscustomobject]@{ text=$text; words=@([pscustomobject]@{boundingRect=[pscustomobject]@{x=$x;y=$y;height=$h}}) } }
+$lines=@((Line '[root@layersentry' 0 100 12), (Line '~]#' 170 101 11), (Line 'next command' 0 116 12))
+$merged=@(Merge-ConsoleOcrRows $lines)
+if ($merged.Count -ne 2 -or $merged[0].text -cne '[root@layersentry ~]#' -or $merged[1].text -cne 'next command') { throw 'Bad row merging' }
+if ((Get-TrustPrompt ([pscustomobject]@{Lines=@($merged[0].text)})) -cne 'ROOT_SHELL') { throw 'Lost root prompt' }
+if ((Get-TrustPrompt ([pscustomobject]@{Lines=@($merged.text)})) -cne 'UNKNOWN') { throw 'Ignored next row command' }
+'''
+        result = self.run_function(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_prompt_diagnostics_never_disclose_arbitrary_credential_phase_text(self):
         command = r'''
 $view=[pscustomobject]@{Lines=@($env:TEST_PRIVATE_TEXT, '[root@layersentry ~l#', 'Login incorrect')}

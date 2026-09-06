@@ -57,6 +57,27 @@ function Sort-ConsoleOcrLines($Lines) {
         @{Expression={($_.words | ForEach-Object { $_.boundingRect.x } | Measure-Object -Minimum).Minimum}})
 }
 
+function Merge-ConsoleOcrRows($Lines) {
+    $rows = [Collections.Generic.List[object]]::new()
+    foreach ($line in @(Sort-ConsoleOcrLines $Lines)) {
+        $top = ($line.words | ForEach-Object { $_.boundingRect.y } | Measure-Object -Minimum).Minimum
+        $bottom = ($line.words | ForEach-Object { $_.boundingRect.y + $_.boundingRect.height } | Measure-Object -Maximum).Maximum
+        $left = ($line.words | ForEach-Object { $_.boundingRect.x } | Measure-Object -Minimum).Minimum
+        $fragment = [pscustomobject]@{ left=$left; text=$line.text }
+        if ($rows.Count -gt 0 -and $top -lt $rows[-1].bottom -and $bottom -gt $rows[-1].top) {
+            $rows[-1].fragments += $fragment
+            $rows[-1].words += @($line.words)
+            $rows[-1].top = [Math]::Min($top, $rows[-1].top)
+            $rows[-1].bottom = [Math]::Max($bottom, $rows[-1].bottom)
+        } else {
+            $rows.Add([pscustomobject]@{top=$top;bottom=$bottom;fragments=@($fragment);words=@($line.words)})
+        }
+    }
+    return @($rows | ForEach-Object {
+        [ordered]@{text=(($_.fragments | Sort-Object left | ForEach-Object { $_.text }) -join ' '); words=@($_.words)}
+    })
+}
+
 [void][Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 [void][Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
 [void][Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
@@ -130,7 +151,7 @@ try {
         image = $resolvedPath
         language = $LanguageTag
         text = $result.Text
-        lines = @(Sort-ConsoleOcrLines $lines)
+        lines = @(Merge-ConsoleOcrRows $lines)
     } | ConvertTo-Json -Depth 10
 }
 finally {
