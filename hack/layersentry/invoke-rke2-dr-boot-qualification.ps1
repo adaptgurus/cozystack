@@ -20,11 +20,15 @@ try {
     [IO.File]::WriteAllText($key, $env:DR_KEY.Replace("`r", '') + "`n", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($known, ($keys -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     if ($env:GITHUB_RUN_ID -cnotmatch '^[0-9]{1,20}$' -or $env:IMAGE_SHA256 -cnotmatch '^[0-9a-f]{64}$' -or $env:IMAGE_SOURCE -cnotmatch '^[0-9a-f]{40}$') { throw 'Immutable input validation failed.' }
+    if ($env:CACHE_RUN -and $env:CACHE_RUN -cnotmatch '^[0-9]{1,20}$') { throw 'Invalid sealed candidate cache run.' }
+    if ($env:CACHE_RUN -and ($env:CACHE_RUN -cne '34051209929' -or $env:IMAGE_RUN -cne '34050507635' -or $env:IMAGE_ARTIFACT -cne '9994542246' -or $env:IMAGE_SOURCE -cne 'f05710874613c3a38c2704c28650a04f7bae2aef' -or $env:IMAGE_SHA256 -cne '8ee4a820fd427abf3f00e0f55b0421c8cb9d5fa054cd84bc0aab62fc1fc4bf77')) { throw 'Cached image lacks the exact prior independent artifact binding.' }
+    if (-not $env:CACHE_RUN) {
     $candidate = Join-Path $env:RUNNER_TEMP "layersentry-cpu-candidate-$env:GITHUB_RUN_ID/cpu-image"
     $image = Join-Path $candidate 'layersentry-rke2-rocky9-amd64.qcow2'
     $manifest = Get-Content -LiteralPath (Join-Path $candidate 'candidate-manifest.json') -Raw | ConvertFrom-Json
     $actualHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -cne $env:IMAGE_SHA256 -or $manifest.sha256 -cne $actualHash -or $manifest.sourceCommit -cne $env:IMAGE_SOURCE -or $manifest.artifactType -cne 'layersentry-rke2-node-image' -or $manifest.status -cne 'CI_VERIFIED' -or $manifest.osVersion -cne '9.8' -or $manifest.rke2Version -cne 'v1.36.4+rke2r1' -or $manifest.rke2Started -ne $false -or $manifest.runtimeQualified -ne $false) { throw 'Candidate manifest binding failed.' }
+    }
     $sourceHead = (& git -C candidate-source rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $sourceHead -cne $env:BOOT_SOURCE) { throw 'Boot source binding failed.' }
     $bootScript = (Resolve-Path 'candidate-source/tools/layersentry/k8s/image/boot_qga_acceptance.py').Path
@@ -60,18 +64,27 @@ path.mkdir(mode=0o700)
 print(json.dumps({'status':'BOOT_DIRECTORY_CREATED','freeBytes':free.f_bavail*free.f_frsize}))
 '@
     $state.status = 'HOST_PREFLIGHT'
+    $state.mutationAttempted = $true
     Invoke-PinnedRemote $preflight.Replace('RUN_ID', $env:GITHUB_RUN_ID)
     if ($remoteCode -ne 0) { throw 'Host boot preflight failed before guest creation.' }
-    $state.mutationAttempted = $true
+    $state['hostPreflight'] = ($remoteOutput -join "`n") | ConvertFrom-Json
     $state.status = 'COPYING_VERIFIED_CANDIDATE'
+    if (-not $env:CACHE_RUN) {
     & scp.exe @sshOptions $image "root@10.10.10.20:${remoteRoot}/candidate.qcow2" 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Candidate copy failed; no guest submitted.' }
+    }
     & scp.exe @sshOptions $bootScript "root@10.10.10.20:${remoteRoot}/boot.py" 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Boot source copy failed; no guest submitted.' }
     $launch = @'
-import hashlib,json,os,pathlib,subprocess
+import hashlib,json,os,pathlib,stat,subprocess
 root=pathlib.Path('/var/lib/layersentry-validation/cpu-image-RUN_ID')
 assert root.resolve()==root and root.stat().st_uid==0 and not root.stat().st_mode & 0o077
+cached='CACHE_RUN'
+if cached:
+ source=pathlib.Path('/var/lib/layersentry-validation')/('cpu-image-'+cached)/'candidate.qcow2'
+ assert source.resolve()==source and stat.S_ISREG(source.stat().st_mode) and source.stat().st_uid==0
+ assert not source.stat().st_mode & 0o077 and not (root/'candidate.qcow2').exists()
+ subprocess.run(['cp','--reflink=auto','--sparse=always',str(source),str(root/'candidate.qcow2')],check=True,timeout=300)
 script=root/'boot.py'
 assert not script.is_symlink() and hashlib.sha256(script.read_bytes()).hexdigest()=='SCRIPT_SHA'
 for name in ('boot.py','candidate.qcow2'): os.chmod(root/name,0o600)
@@ -79,18 +92,19 @@ result=subprocess.run(['python3',str(script),'--image',str(root/'candidate.qcow2
 raise SystemExit(result.returncode)
 '@
     $state.status = 'GUEST_BOOT_OUTCOME_PENDING'
-    Invoke-PinnedRemote $launch.Replace('RUN_ID', $env:GITHUB_RUN_ID).Replace('SCRIPT_SHA', $scriptHash).Replace('IMAGE_SHA', $env:IMAGE_SHA256)
+    Invoke-PinnedRemote $launch.Replace('RUN_ID', $env:GITHUB_RUN_ID).Replace('SCRIPT_SHA', $scriptHash).Replace('IMAGE_SHA', $env:IMAGE_SHA256).Replace('CACHE_RUN', [string]$env:CACHE_RUN)
     $state['bootExitCode'] = $remoteCode
     # Only explicit harness evidence files, never the live image/host private keys.
-    foreach ($name in @('result.json','guest-checks.json','domain-request.xml','domain-actual.xml','source-image-info.json','failure.txt','console.log','ownership.json')) {
+    foreach ($name in @('result.json','guest-checks.json','domain-request.xml','domain-actual.xml','source-image-info.json','failure.txt','console.log','ownership.json','cleanup.json')) {
         $old = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try { & scp.exe @sshOptions "root@10.10.10.20:${remoteRoot}/evidence/$name" (Join-Path $out $name) 2>$null } finally { $ErrorActionPreference = $old }
     }
     if ($state.bootExitCode -ne 0) { throw 'Candidate boot did not pass; inspect owned fixture evidence before retry.' }
     $result = Get-Content -LiteralPath (Join-Path $out 'result.json') -Raw | ConvertFrom-Json
-    if ($result.status -cne 'LIVE_BOOT_QGA_VERIFIED' -or $result.sourceSha256 -cne $env:IMAGE_SHA256 -or $result.productionQualified -ne $false -or $result.rke2Started -ne $false) { throw 'Boot receipt validation failed.' }
-    $state.status = 'LIVE_BOOT_QGA_VERIFIED'
+    if ($result.status -cne 'LIVE_VERIFIED' -or $result.scope -cne 'networkless Rocky CPU image boot and QGA' -or $result.sourceSha256 -cne $env:IMAGE_SHA256 -or $result.productionQualified -ne $false -or $result.rke2Started -ne $false) { throw 'Boot receipt validation failed.' }
+    $state.status = 'LIVE_VERIFIED'
+    $state['scope'] = 'networkless Rocky CPU image boot and QGA'
     $state['ownershipManifest'] = $result.ownershipManifest
 } catch {
     throw 'DR candidate boot qualification failed; inspect bounded evidence and exact owned guest before retry.'

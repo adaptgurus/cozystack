@@ -1,10 +1,11 @@
 name: LayerSentry RKE2 candidate DR boot qualification
 on:
-  push:
-    branches: [codex/modules-runtime-validation]
-    paths: [.github/workflows/layersentry-rke2-dr-boot-qualification.yml]
   workflow_dispatch:
     inputs:
+      cache-run:
+        required: false
+        type: string
+        description: Reuse the exact checksum-verified sealed image from this prior DR boot run
       image-run:
         required: true
         type: string
@@ -29,7 +30,8 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 45
     env:
-      BOOT_SOURCE: e96e9b8d211d39bcde00704cda70b22f347d1f07
+      BOOT_SOURCE: bae4285c800622b7adacba072904e80e6d1186a0
+      CACHE_RUN: ${{ inputs.cache-run }}
       IMAGE_RUN: ${{ inputs.image-run || '34050507635' }}
       IMAGE_ARTIFACT: ${{ inputs.image-artifact || '9994542246' }}
       IMAGE_SOURCE: ${{ inputs.image-source || 'f05710874613c3a38c2704c28650a04f7bae2aef' }}
@@ -53,6 +55,7 @@ jobs:
           if ([string]$artifact.workflow_run.id -cne $env:IMAGE_RUN -or $artifact.expired -or $artifact.name -cne "layersentry-rke2-cpu-image-$env:IMAGE_SOURCE-$($run.run_attempt)") { throw 'Artifact identity mismatch.' }
           if ($artifact.digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or $artifact.size_in_bytes -gt 10737418240) { throw 'Artifact digest or size invalid.' }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.cache-run == ''
         with:
           repository: adaptgurus/cloudstack
           run-id: ${{ inputs.image-run || '34050507635' }}
@@ -63,7 +66,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: adaptgurus/cloudstack
-          ref: e96e9b8d211d39bcde00704cda70b22f347d1f07
+          ref: bae4285c800622b7adacba072904e80e6d1186a0
           path: candidate-source
           persist-credentials: false
       - name: Boot exact candidate through verified DR SSH
