@@ -25,7 +25,9 @@ function Read-TrustConsole([string]$Private) {
     Assert-TrustDcIdentity
     $started = Get-Date
     $folder = Join-Path $Private ([Guid]::NewGuid().ToString('N'))
+    $script:TrustDiagnosticStage = 'CONSOLE_CAPTURE'
     & (Join-Path $PSScriptRoot 'capture-hyperv-console.ps1') -VmNames @('sen') -OutputDirectory $folder | Out-Null
+    $script:TrustDiagnosticStage = 'CONSOLE_CAPTURE_REPORT'
     $report = Get-Content -LiteralPath (Join-Path $folder 'console-capture.json') -Raw | ConvertFrom-Json
     $rows = @($report.VirtualMachines)
     $image = Join-Path $folder 'sen-console.png'
@@ -35,7 +37,9 @@ function Read-TrustConsole([string]$Private) {
         -not (Test-Path -LiteralPath $image -PathType Leaf) -or (Get-Item -LiteralPath $image).Length -le 8) {
         throw 'CONSOLE_CAPTURE_FAILED'
     }
+    $script:TrustDiagnosticStage = 'CONSOLE_OCR'
     $ocr = & (Join-Path $PSScriptRoot 'read-console-ocr.ps1') -ImagePath $image | ConvertFrom-Json
+    $script:TrustDiagnosticStage = 'CONSOLE_OCR_SHAPE'
     Assert-TrustDcIdentity
     $lines = @($ocr.lines | ForEach-Object { ([string]$_.text).Trim() } | Where-Object { $_ })
     if ($lines.Count -eq 0 -or $lines.Count -gt 128 -or ((Get-Date) - $started).TotalSeconds -gt 30) {
@@ -183,6 +187,7 @@ function Assert-TrustPublicReceipt($View, [string]$Candidate, [string]$Challenge
 }
 
 function Invoke-DcTrustPhase([string]$Phase) {
+    $script:TrustDiagnosticStage = 'TARGET_IDENTITY'
     $private = Join-Path $env:RUNNER_TEMP ('dc-trust-private-' + [Guid]::NewGuid().ToString('N'))
     $out = Join-Path $env:RUNNER_TEMP "layersentry-dc-trust-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
     New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
@@ -194,6 +199,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
         Import-Module Hyper-V -ErrorAction Stop
         Assert-TrustDcIdentity
         $state.stage = 'PRIVATE_CONSOLE_OBSERVATION'
+        $script:TrustDiagnosticStage = 'PRIVATE_ACL'
         New-TrustPrivateDirectory $private
         $view = Read-TrustConsole $private
         $prompt = Get-TrustPrompt $view
@@ -262,6 +268,15 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state.status = 'OOB_HOST_KEY_VERIFIED'
     } catch {
         # Never serialize raw exceptions: CIM errors may contain keyboard input.
+        $state['diagnosticStage'] = $script:TrustDiagnosticStage
+        $state['exceptionType'] = $_.Exception.GetType().FullName
+        $safeCodes = @('PRIVATE_ACL_FAILED', 'TARGET_BINDING_FAILED', 'CONSOLE_CAPTURE_FAILED',
+            'CONSOLE_STATE_UNKNOWN_OR_EXPIRED', 'FRESH_EMPTY_LOGIN_REQUIRED', 'KEYBOARD_BINDING_FAILED',
+            'INPUT_FORMAT_REFUSED', 'INPUT_OUTCOME_UNKNOWN_NO_REPLAY', 'CONSOLE_TRANSITION_NOT_OBSERVED_NO_REPLAY',
+            'CREDENTIAL_BINDING_OR_FORMAT_FAILED', 'PASSWORD_PROMPT_EXPIRED', 'LOGIN_PROMPT_EXPIRED',
+            'VERIFIED_ROOT_PROMPT_REQUIRED', 'UNTRUSTED_CANDIDATE_UNAVAILABLE', 'INVALID_CANDIDATE_KEY',
+            'ROOT_PROMPT_CHANGED', 'ROOT_PROMPT_EXPIRED', 'OOB_PUBLIC_KEY_PROOF_NOT_VERIFIED')
+        if ($_.Exception.Message -cin $safeCodes) { $state['reason'] = $_.Exception.Message }
         $state.status = 'PHASE_FAILED_NO_REPLAY'
         throw 'DC console trust phase failed; inspect sanitized summary, never replay uncertain input.'
     } finally {
