@@ -1,0 +1,7 @@
+# Module DR host inventory
+
+Status: SOURCE_COMPLETE, live result pending. This read-only continuation reuses the bounded DC collector for the exact DR target 10.10.10.20, retaining 10.10.10.14 as its default. No general remote-command facility, storage operation, service restart or configuration read is introduced. Approved DR credentials and independently verified known_hosts are supplied through existing protected GitHub secrets; strict host checking is mandatory.
+
+The new workflow uses the global LayerSentry live concurrency group and immutable checkout. It reports only allowlisted package/service/network/device/path metadata and sanitized status, never raw SSH diagnostics, private keys or configuration contents. The collector independently requires local target address plus root identity. Python parsing, out-of-scope target rejection, PowerShell parsing and whitespace validation pass; actual runner execution remains pending. Rollback removes the additive workflow/wrapper and restores the collector's old default-only invocation; no guest state needs rollback.
+
+This LayerSentry fork-specific diagnostic does not change Cozystack packages, APIs, schemas, node requirements, chart generation or downstream repository contracts. The upstream/main rebase recipe does not apply to the user's explicitly selected ops/layersentry-hyperv-inventory integration history; no historical reset is performed.

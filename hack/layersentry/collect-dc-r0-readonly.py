@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded, allowlisted DC host inventory; no config contents or service logs."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -116,17 +117,19 @@ def templates(root):
     return result
 
 
-def collect():
+def collect(target=TARGET):
+    if target not in ("10.10.10.14", "10.10.10.20"):
+        raise ValueError("target outside the authorized module lab")
     addresses = json_inventory(['ip', '-j', '-4', 'address', 'show'],
                                {'ifname', 'operstate', 'master', 'addr_info', 'local', 'prefixlen', 'scope'})
     local_addresses = [addr.get('local') for link in addresses.get('data', [])
                        for addr in link.get('addr_info', [])] if isinstance(addresses.get('data'), list) else []
-    if os.geteuid() != 0 or TARGET not in local_addresses:
-        return {'schemaVersion': '1.0', 'target': TARGET, 'status': 'TARGET_BINDING_FAILED', 'mutationPerformed': False}
+    if os.geteuid() != 0 or target not in local_addresses:
+        return {'schemaVersion': '1.0', 'target': target, 'status': 'TARGET_BINDING_FAILED', 'mutationPerformed': False}
     services = ('cloudstack-management', 'cloudstack-agent', 'libvirtd', 'virtqemud', 'nfs-server', 'rpcbind')
     packages = ('cloudstack-management', 'cloudstack-agent', 'cloudstack-common', 'libvirt', 'qemu-kvm', 'nfs-utils')
     return {
-        'schemaVersion': '1.0', 'target': TARGET, 'status': 'COLLECTED', 'mutationPerformed': False,
+        'schemaVersion': '1.0', 'target': target, 'status': 'COLLECTED', 'mutationPerformed': False,
         'hostname': text_inventory(['hostname', '-f']),
         'rockyRelease': text_inventory(['rpm', '-q', '--qf', '%{NAME} %{VERSION}', 'rocky-release']),
         'kernel': text_inventory(['uname', '-r']),
@@ -146,6 +149,8 @@ def collect():
 
 
 if __name__ == '__main__':
-    evidence = collect()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", choices=("10.10.10.14", "10.10.10.20"), default=TARGET)
+    evidence = collect(parser.parse_args().target)
     print(json.dumps(evidence, sort_keys=True))
     raise SystemExit(0 if evidence['status'] == 'COLLECTED' else 1)
