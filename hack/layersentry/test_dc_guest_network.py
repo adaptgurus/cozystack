@@ -192,6 +192,17 @@ class GuestTests(unittest.TestCase):
                 self.assertEqual(command.call_count, 1)
             journal.close()
 
+    def test_journaled_default_profile_disappearance_stops_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = self.journal(directory)
+            journal.data['operations'][network.DEFAULT_OPERATION] = {'state': 'RECONCILED'}
+            journal.save()
+            with patch.object(network, 'profiles', return_value=[]), patch.object(network, 'run') as command:
+                with self.assertRaisesRegex(GateError, 'JOURNALED_DEFAULT_PROFILE_DISAPPEARED'):
+                    network.disable_default_autoconnect('eth1', journal)
+                command.assert_not_called()
+            journal.close()
+
 
 @unittest.skipUnless(os.environ.get('POWERSHELL_TEST_BINARY'), 'PowerShell execution required')
 class HyperVTests(unittest.TestCase):
