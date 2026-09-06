@@ -1,4 +1,4 @@
-param([ValidateSet('Observe', 'Login', 'Verify')][string]$Phase = 'Observe')
+param([ValidateSet('Observe', 'Refresh', 'Login', 'Verify')][string]$Phase = 'Observe')
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -45,10 +45,12 @@ function Read-TrustConsole([string]$Private) {
     if ($lines.Count -eq 0 -or $lines.Count -gt 128 -or ((Get-Date) - $started).TotalSeconds -gt 30) {
         throw 'CONSOLE_STATE_UNKNOWN_OR_EXPIRED'
     }
-    # This exact public, manually reviewed login screenshot contains no input.
-    # Only it may disclose OCR diagnostics; arbitrary live captures stay private.
-    $knownPublic = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant() -ceq '6d4362bb6d0fe79b88ec077b24dbceadda16b75add5f173fc39642d4aaabe398'
-    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started; KnownPublicImage = $knownPublic }
+    # Exact public empty-login images manually reviewed from snapshots
+    # 34046965347 and 34048637562. Arbitrary live captures remain private.
+    $digest = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+    $knownPublic = $digest -cin @('6d4362bb6d0fe79b88ec077b24dbceadda16b75add5f173fc39642d4aaabe398',
+        '2b397045222983268bf0807dbbe8db59ae7ab9cfa7e5588494939f0665ecdb8a')
+    return [pscustomobject]@{ Lines = $lines; Image = $image; Started = $started; KnownPublicImage = $knownPublic; ImageSha256 = $digest }
 }
 
 function Get-TrustPrompt($View) {
@@ -211,6 +213,20 @@ function Invoke-DcTrustPhase([string]$Phase) {
             if ($view.KnownPublicImage) { $state['reviewedPublicImageOcrLines'] = @($view.Lines) }
             $state.status = 'OBSERVED'; return
         }
+        if ($Phase -eq 'Refresh') {
+            # This separate phase can only dismiss the exact reviewed empty
+            # login plus kernel-output image; it never enters a username/password.
+            if (-not $view.KnownPublicImage) { throw 'REVIEWED_EMPTY_LOGIN_IMAGE_REQUIRED' }
+            $keyboard = Get-TrustKeyboard
+            if (((Get-Date) - $view.Started).TotalSeconds -gt 30) { throw 'LOGIN_PROMPT_EXPIRED' }
+            $state['reviewedImageSha256'] = $view.ImageSha256
+            $state.stage = 'REVIEWED_LOGIN_SINGLE_ENTER'
+            $state.inputAttempted = $true
+            Send-TrustEnter $keyboard
+            $null = Wait-TrustPrompt $private 'EMPTY_LOGIN'
+            $state.status = 'EMPTY_LOGIN_REFRESHED_NO_CREDENTIAL_INPUT'
+            return
+        }
         if ($Phase -eq 'Login') {
             if ($prompt -eq 'ROOT_SHELL') { $state.status = 'ALREADY_AUTHENTICATED'; return }
             if ($prompt -notin @('EMPTY_LOGIN', 'LOGIN_WITH_KERNEL_OUTPUT')) { throw 'FRESH_EMPTY_LOGIN_REQUIRED' }
@@ -288,6 +304,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
             'INPUT_FORMAT_REFUSED', 'INPUT_OUTCOME_UNKNOWN_NO_REPLAY', 'CONSOLE_TRANSITION_NOT_OBSERVED_NO_REPLAY',
             'CREDENTIAL_BINDING_OR_FORMAT_FAILED', 'PASSWORD_PROMPT_EXPIRED', 'LOGIN_PROMPT_EXPIRED',
             'VERIFIED_ROOT_PROMPT_REQUIRED', 'UNTRUSTED_CANDIDATE_UNAVAILABLE', 'INVALID_CANDIDATE_KEY',
+            'REVIEWED_EMPTY_LOGIN_IMAGE_REQUIRED',
             'ROOT_PROMPT_CHANGED', 'ROOT_PROMPT_EXPIRED', 'OOB_PUBLIC_KEY_PROOF_NOT_VERIFIED')
         if ($_.Exception.Message -cin $safeCodes) { $state['reason'] = $_.Exception.Message }
         $state.status = 'PHASE_FAILED_NO_REPLAY'

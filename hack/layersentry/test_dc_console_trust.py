@@ -46,6 +46,7 @@ function Read-TrustConsole([string]$Private) {
     Assert-TrustDcIdentity
     $script:Reads++
     $prompt = $env:TEST_PROMPT
+    if ($env:TEST_PHASE -eq 'Refresh' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys.Count -eq 1 -and $script:Keys[0] -eq 'Enter') { $prompt = 'layersentry login:' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Text' -and $script:Keys[-1] -eq 'Enter') { $prompt = 'Password:' }
     if ($env:TEST_PHASE -eq 'Login' -and $script:Keys -contains 'Password' -and $script:Keys[-1] -eq 'Enter') { $prompt = '[root@layersentry ~]#' }
@@ -57,7 +58,7 @@ function Read-TrustConsole([string]$Private) {
     $image = Join-Path $Private "capture-$script:Reads.png"
     # Private image content is a sentinel; Login must never publish it.
     [IO.File]::WriteAllText($image, 'private-image-sentinel')
-    return [pscustomobject]@{ Lines=$lines; Image=$image; Started=(Get-Date); KnownPublicImage=$false }
+    return [pscustomobject]@{ Lines=$lines; Image=$image; Started=(Get-Date); KnownPublicImage=($env:TEST_REVIEWED_IMAGE -ceq 'true'); ImageSha256='fixture-reviewed-digest' }
 }
 try { Invoke-DcTrustPhase -Phase $env:TEST_PHASE } finally {
     ConvertTo-Json -InputObject @($script:Keys) | Set-Content $env:TEST_TRACE
@@ -130,7 +131,7 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
             env = dict(os.environ, TRUST_WRAPPER=str(script), RUNNER_TEMP=folder, GITHUB_RUN_ID='fixture',
                        GITHUB_RUN_ATTEMPT='1', GITHUB_SHA='test-source', COMPUTERNAME='TESTSER',
                        TEST_VM_ID='29ba176b-b81a-4f47-8f51-ecec869f247f', TEST_PHASE=phase,
-                       TEST_PROMPT=prompt, TEST_TRACE=str(root / 'trace.json'), TEST_FAIL_KEY='0',
+                       TEST_PROMPT=prompt, TEST_TRACE=str(root / 'trace.json'), TEST_FAIL_KEY='0', TEST_REVIEWED_IMAGE='false',
                        TEST_KEY=KEY, TEST_CHALLENGE=CHALLENGE, DC_HOST='10.10.10.14', DC_USER='root', DC_PASSWORD=PASSWORD)
             env.update(override)
             result = subprocess.run([POWERSHELL, '-NoLogo', '-NoProfile', '-Command', MOCKS], env=env,
@@ -154,6 +155,15 @@ if ($task.Result -cne 'operation') { throw 'Wrong asynchronous overload selected
     def test_observe_never_types_or_publishes_private_image(self):
         state = self.run_phase('Observe', 'layersentry login:', [])
         self.assertEqual(state['initialPrompt'], 'EMPTY_LOGIN')
+        self.assertNotIn('reviewedPublicImageOcrLines', state)
+
+    def test_refresh_only_allows_one_enter_for_exact_reviewed_image(self):
+        self.run_phase('Refresh', 'unknown OCR', [], success=False)
+        state = self.run_phase('Refresh', 'unknown OCR', ['Enter'], TEST_REVIEWED_IMAGE='true')
+        self.assertEqual(state['status'], 'EMPTY_LOGIN_REFRESHED_NO_CREDENTIAL_INPUT')
+        self.assertFalse(state['passwordSent'])
+        self.run_phase('Refresh', 'unknown OCR', ['Enter'], success=False,
+                       TEST_REVIEWED_IMAGE='true', TEST_FAIL_KEY='1')
 
     def test_login_uses_fresh_password_prompt_and_keeps_all_images_private(self):
         state = self.run_phase('Login', 'layersentry login:', ['Text', 'Enter', 'Password', 'Enter'])

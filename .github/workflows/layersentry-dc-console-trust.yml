@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       phase:
-        description: Observe, authenticate at the observed root login, or prove the public host key
+        description: Observe, refresh an exact reviewed login image, authenticate, or prove the public host key
         required: true
         type: choice
         default: Observe
-        options: [Observe, Login, Verify]
+        options: [Observe, Refresh, Login, Verify]
 
 permissions:
   contents: read
@@ -49,7 +49,7 @@ jobs:
             if ($request.authorization -cne ('DC-CONSOLE-' + $phase.ToUpperInvariant())) { throw 'Explicit phase authorization mismatch.' }
           } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $phase = $env:DISPATCH_PHASE }
           else { throw 'Unsupported event.' }
-          if ($phase -cnotin @('Observe','Login','Verify')) { throw 'Unsupported console phase.' }
+          if ($phase -cnotin @('Observe','Refresh','Login','Verify')) { throw 'Unsupported console phase.' }
           "phase=$phase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Run explicit console phase without SSH authentication
         shell: powershell
