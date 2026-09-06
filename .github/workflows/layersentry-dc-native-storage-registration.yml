@@ -1,0 +1,71 @@
+name: LayerSentry DC Native Storage Registration
+
+on:
+  push:
+    branches: [codex/dr-dc-trust]
+    paths: [hack/layersentry/dc-native-storage-actions/*.json]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Plan or explicitly register only the reviewed DC primary/image stores
+        type: choice
+        required: true
+        default: Plan
+        options: [Plan, Register]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact reviewed registration source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Bind explicit registration mode
+        id: request
+        shell: powershell
+        env:
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'adaptgurus/cozystack' -or $env:GITHUB_REF -notin @('refs/heads/codex/dr-dc-trust','refs/heads/ops/layersentry-hyperv-inventory')) { throw 'Repository/ref binding failed.' }
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $files = @(git diff-tree --no-commit-id --name-only --diff-filter=A -r $env:GITHUB_SHA -- hack/layersentry/dc-native-storage-actions | Where-Object { $_ -cmatch '^hack/layersentry/dc-native-storage-actions/[a-z0-9-]+\.json$' })
+            if ($LASTEXITCODE -ne 0 -or $files.Count -ne 1) { throw 'Exactly one new immutable registration request is required.' }
+            $request = Get-Content -LiteralPath $files[0] -Raw | ConvertFrom-Json
+            $fields = @($request.PSObject.Properties.Name | Sort-Object)
+            if (($fields -join ',') -cne 'authorization,mode,schema,target' -or $request.schema -ne 1 -or $request.target -cne '10.10.10.14' -or $request.mode -cnotin @('Plan','Register') -or $request.authorization -cne ('DC-NATIVE-STORAGE-' + $request.mode.ToUpperInvariant())) { throw 'Registration request binding failed.' }
+            $mode = [string]$request.mode
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $mode = $env:DISPATCH_MODE }
+          else { throw 'Unsupported event.' }
+          if ($mode -cnotin @('Plan','Register')) { throw 'Explicit mode required.' }
+          "mode=$mode" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Run bounded native storage registration
+        shell: powershell
+        env:
+          REGISTRATION_MODE: ${{ steps.request.outputs.mode }}
+          CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+          CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+        run: ./hack/layersentry/invoke-dc-native-storage-registration.ps1 -Mode $env:REGISTRATION_MODE
+      - name: Upload sanitized registration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-storage-registration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-storage-registration-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30

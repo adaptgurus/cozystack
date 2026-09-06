@@ -1,8 +1,9 @@
 name: LayerSentry Hyper-V Network Inventory
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ops/layersentry-hyperv-inventory]
+    branches: [ops/layersentry-hyperv-inventory, codex/dr-dc-trust]
     paths:
       - hack/layersentry/network-inventory-actions/*.json
 
@@ -23,19 +24,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
+          if ($env:COMPUTERNAME -cne 'TESTSER') { throw 'Exact Hyper-V host binding failed.' }
           Import-Module Hyper-V -ErrorAction Stop
           $evidence = Join-Path $env:RUNNER_TEMP "network-inventory-$env:GITHUB_RUN_ID"
           New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
           $report = [ordered]@{
-            status = 'LIVE_VERIFIED'
+            status = 'READ_ONLY_OBSERVATION'
             mutationPerformed = $false
             host = $env:COMPUTERNAME
             switches = @(Get-VMSwitch | Select-Object Name, Id, SwitchType, AllowManagementOS)
             adapters = @(Get-NetAdapter | Where-Object Name -like 'vEthernet*' | Select-Object Name, InterfaceIndex, Status, MacAddress)
             addresses = @(Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, IPAddress, PrefixLength, AddressState)
             routes = @(Get-NetRoute -AddressFamily IPv4 | Select-Object InterfaceAlias, InterfaceIndex, DestinationPrefix, NextHop, RouteMetric, State)
-            nats = @(Get-NetNat -ErrorAction SilentlyContinue | Select-Object Name, InternalIPInterfaceAddressPrefix, Active, Store)
-            mappings = @(Get-NetNatStaticMapping -ErrorAction SilentlyContinue | Select-Object NatName, Protocol, ExternalIPAddress, ExternalPort, InternalIPAddress, InternalPort)
+            nats = @(Get-NetNat -ErrorAction Stop | Select-Object Name, InternalIPInterfaceAddressPrefix, Active, Store)
+            mappings = @(Get-NetNatStaticMapping -ErrorAction Stop | Select-Object NatName, Protocol, ExternalIPAddress, ExternalPort, InternalIPAddress, InternalPort)
             vmNics = @(Get-VMNetworkAdapter -All | Select-Object VMName, Name, Id, SwitchName, SwitchId, Status, MacAddress, IPAddresses)
           }
           $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'network-inventory.json') -Encoding UTF8

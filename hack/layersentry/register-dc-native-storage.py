@@ -32,10 +32,16 @@ RESOURCES = {
 }
 
 
+def public_state(row):
+    value = row.get('state', 'NOT_REPORTED')
+    return value if value in {'Up', 'Initialized', 'Maintenance', 'ErrorInMaintenance', 'PrepareForMaintenance',
+                              'CancelMaintenance', 'Removed', 'NOT_REPORTED'} else 'UNKNOWN'
+
+
 def rows(api, command, kind, **params):
-    payload = api(command, page=1, pagesize=1000, **params)
+    payload = api(command, page=1, pagesize=100, **params)
     result = payload.get(kind, [])
-    require(isinstance(result, list) and len(result) < 1000 and all(isinstance(r, dict) for r in result), 'INVENTORY_SHAPE_OR_LIMIT')
+    require(isinstance(result, list) and len(result) < 100 and all(isinstance(r, dict) for r in result), 'INVENTORY_SHAPE_OR_LIMIT')
     count = payload.get('count')
     require(count is None or (type(count) is int and count == len(result)), 'INVENTORY_INCOMPLETE')
     return result
@@ -109,7 +115,7 @@ def register_one(api, journal, key, execute=False, preserve_pool=None):
         state = 'RECONCILED' if operation else 'OBSERVED_EXISTING'
         operations[key] = {'command': spec['create'], 'params': spec['params'], 'state': state, 'resource_id': current['id']}
         journal.save()
-        return {'status': state, 'id': current['id'], 'runtimeState': current.get('state', 'NOT_REPORTED')}
+        return {'status': state, 'id': current['id'], 'runtimeState': public_state(current)}
     if operation:
         # Even a timeout followed by an empty list is not permission to submit again.
         raise GateError('INTENT_WITHOUT_OBSERVED_RESOURCE_NO_REPLAY')
@@ -137,7 +143,7 @@ def register_one(api, journal, key, execute=False, preserve_pool=None):
         preserve_pool()
     operations[key].update(state='RECONCILED', resource_id=current['id'])
     journal.save()
-    return {'status': 'RECONCILED', 'id': current['id'], 'runtimeState': current.get('state', 'NOT_REPORTED')}
+    return {'status': 'RECONCILED', 'id': current['id'], 'runtimeState': public_state(current)}
 
 
 def validate_proof(proof):

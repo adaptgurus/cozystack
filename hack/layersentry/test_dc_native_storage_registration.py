@@ -3,9 +3,10 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
@@ -164,6 +165,21 @@ class RegistrationTests(unittest.TestCase):
             runner.check_native_pool_compatibility(pool)
         pool['targetPath'] = '/unrelated-mount'
         runner.check_native_pool_compatibility(pool)
+
+    def test_preserves_directory_pool_and_only_allows_own_new_native_pool_after_intent(self):
+        identity = {'uuid': runner.PRESERVED_POOL, 'name': runner.PRESERVED_POOL, 'type': 'dir',
+                    'targetPath': '/var/lib/libvirt/images'}
+        proof = {'pool': {'identity': identity}}
+        old_xml = '<pool type="dir"><name>' + runner.PRESERVED_POOL + '</name><uuid>' + runner.PRESERVED_POOL + '</uuid><target><path>/var/lib/libvirt/images</path></target></pool>'
+        new_xml = '<pool type="netfs"><uuid>' + runner.NATIVE_PRIMARY_UUID + '</uuid><source><host name="10.10.10.14"/><dir path="/export/primary"/></source></pool>'
+        names = runner.PRESERVED_POOL + '\n' + runner.NATIVE_PRIMARY_UUID
+        def done(text):
+            return subprocess.CompletedProcess([], 0, text, '')
+        with patch.object(runner.subprocess, 'run', side_effect=[done(names), done(old_xml), done(new_xml)]):
+            runner.preserve_live_pool(proof, primary_intent_recorded=True)
+        with patch.object(runner.subprocess, 'run', return_value=done(names)):
+            with self.assertRaisesRegex(runner.GateError, 'POOL_SET_CHANGED'):
+                runner.preserve_live_pool(proof, primary_intent_recorded=False)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,12 @@
+{
+  "assetUrl": "https://download.cloudstack.org/systemvm/4.22/systemvmtemplate-4.22.0-x86_64-kvm.qcow2.bz2",
+  "manifestUrl": "https://download.cloudstack.org/systemvm/4.22/sha512sum.txt",
+  "compressedSize": 518074341,
+  "compressedSha512": "10987c4fb3158d40006b1a1db89bf6e9b6c3995294f295e1ca564c26c9543453d4d21a7d8c967d5487b489d88194ecfba9829f00e929b17e3ddaa70751cece90",
+  "manifestSha512Matched": true,
+  "qcow2Size": 522649088,
+  "qcow2Sha256": "f2bf62b5c83fc538c01bc3b0693df6dd85dd0d0d3584c459999d70d8a436bb2a",
+  "dcObservedSha256": "f2bf62b5c83fc538c01bc3b0693df6dd85dd0d0d3584c459999d70d8a436bb2a",
+  "dcImageMatches": true,
+  "evidenceClass": "HTTPS official download and checksum manifest; no detached signature validation"
+}
