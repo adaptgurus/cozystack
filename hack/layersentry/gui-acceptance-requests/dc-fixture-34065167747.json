@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "target": "dc",
+  "sshHost": "10.10.10.14",
+  "hostKeyFingerprint": "SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw",
+  "status": "PLAN_CREATE_REQUIRES_REVIEW",
+  "requestId": "65e85d09-75f7-4a7e-9c77-4206a23e5121",
+  "operator": {
+    "userId": "77725270-a832-11f1-ad7e-00155d00390a",
+    "username": "admin",
+    "accountId": "777163b5-a832-11f1-ad7e-00155d00390a",
+    "accountName": "admin",
+    "accountType": 1,
+    "domainId": "bf09742e-a831-11f1-ad7e-00155d00390a",
+    "personaId": "platform-admin",
+    "loginDomain": "/"
+  },
+  "selectedProject": null,
+  "proposal": {
+    "command": "createProject",
+    "name": "ls-gui-dc-65e85d09-75f7-4a7e-9c77-4206a23e5121",
+    "displaytext": "LayerSentry DC GUI fixture 65e85d09-75f7-4a7e-9c77-4206a23e5121 user 77725270-a832-11f1-ad7e-00155d00390a",
+    "accountid": "777163b5-a832-11f1-ad7e-00155d00390a",
+    "domainid": "bf09742e-a831-11f1-ad7e-00155d00390a",
+    "userid": "77725270-a832-11f1-ad7e-00155d00390a"
+  },
+  "persona": null,
+  "mutationPerformed": false,
+  "personaCoverage": {
+    "platform-admin": "IDENTITY_OBSERVED_GUI_NOT_TESTED",
+    "department-admin": "NOT_TESTED",
+    "operator": "NOT_TESTED",
+    "auditor": "NOT_TESTED"
+  },
+  "transport": {
+    "processId": 19832,
+    "localLoopbackPort": 61880,
+    "listenerOwnerVerified": true,
+    "processPathVerified": true,
+    "processStartedAt": 1788735037944,
+    "remoteLoopbackPort": 8080,
+    "target": "dc",
+    "schema": 1,
+    "sshHost": "10.10.10.14",
+    "strictHostVerification": true,
+    "hostKeyFingerprint": "SHA256:ibF5v8VUj3Iawmgn/czLeJK7zUAM2kIqIJdzV04uFPw"
+  }
+}
