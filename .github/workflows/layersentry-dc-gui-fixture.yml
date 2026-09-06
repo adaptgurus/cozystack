@@ -1,0 +1,62 @@
+name: LayerSentry DC GUI native identity fixture
+on:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-dc-gui-fixture.yml]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [Plan, Apply, Observe]
+        default: Plan
+        required: true
+      plan_path:
+        type: string
+        default: ''
+      plan_sha256:
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  fixture:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/modules-runtime-validation'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.20.0'
+      - name: Execute only the selected native identity phase
+        shell: powershell
+        env:
+          MODE: ${{ inputs.mode }}
+          PLAN_PATH: ${{ inputs.plan_path }}
+          PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          ROCKY_HOST: ${{ secrets.LAYERSENTRY_ROCKY_R0_HOST }}
+          ROCKY_USERNAME: ${{ secrets.LAYERSENTRY_ROCKY_R0_USERNAME }}
+          ROCKY_PASSWORD: ${{ secrets.LAYERSENTRY_ROCKY_R0_PASSWORD }}
+          DC_KNOWN_HOSTS: ${{ secrets.LAYERSENTRY_DC_SSH_KNOWN_HOSTS }}
+          CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+          CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+          LAYERSENTRY_CLOUDSTACK_USERNAME: ${{ secrets.LAYERSENTRY_CLOUDSTACK_USERNAME }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:MODE -cne 'Plan' -and ($env:PLAN_PATH -cnotmatch '^hack/layersentry/gui-acceptance-requests/dc-fixture-[A-Za-z0-9_-]+\.json$' -or $env:PLAN_SHA256 -cnotmatch '^[0-9a-f]{64}$')) {throw 'Exact reviewed native Plan required.'}
+          & ./hack/layersentry/gui-acceptance/invoke-dc-fixture.ps1 -Mode $env:MODE -ReviewedPlanPath $env:PLAN_PATH -ReviewedPlanSha256 $env:PLAN_SHA256 -EvidenceDirectory "$env:RUNNER_TEMP/layersentry-dc-gui-fixture-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          exit $LASTEXITCODE
+      - name: Retain public native identity evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dc-gui-fixture-${{ github.run_id }}-${{ github.run_attempt }}/dc-fixture.json
+          if-no-files-found: warn
+          retention-days: 30
