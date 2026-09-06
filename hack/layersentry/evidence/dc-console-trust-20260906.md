@@ -1,6 +1,6 @@
 # DC host identity through the trusted Hyper-V console
 
-Status: Windows OCR executes successfully; live authentication/public-key verification is `BLOCKED` at unknown prompt classification, before guest input. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. No shared integration write or guest mutation occurred during implementation.
+Status: fresh live `EMPTY_LOGIN` confirmed; authentication/public-key verification remains unproved. Base runner is `c8ad45c4dca0755ba3091a4ee3f445e5ba9b8361`, isolated branch `codex/dr-dc-trust`. One authorized Enter refreshed the login; no credential input, SSH authentication or guest configuration changes occurred before the next separately scheduled Login phase.
 
 ## Evidence and prerequisite
 
@@ -21,6 +21,8 @@ All working captures are in an ACL-restricted temporary folder outside the uploa
 [Microsoft TypeText documentation](https://learn.microsoft.com/en-us/windows/win32/hyperv_v2/typetext-msvm-keyboard) defines a 512-character ASCII limit; command input is bounded and split into at most 384-character calls, with one Enter only after all chunks succeed. [OpenSSH keyscan documentation](https://man.openbsd.org/ssh-keyscan) explicitly requires independent verification; the candidate-to-console comparison supplies that boundary here. A manual trusted console comparison remains an alternative if OCR fails; disabling host checks is not a fallback.
 
 ## Tests and next gate
+
+Refresh `34049039853` sent exactly one authorized Enter from the reviewed image, then failed to classify the resulting prompt; no Enter replay occurred. Exact read-only snapshot `34049108100`, SHA-256 `7d708eacd36cbce11bb05f596173b103b68da0cb6c8a0dcc5757609255e45d88`, visually proves a new empty login below the old kernel messages. OCR had put a far-right kernel continuation after lower terminal rows. Sorting unchanged recognized text by actual bounding-box Y/X coordinates resolves that ordering error; the executed regression also rejects nonempty login. Fresh Observe `34049228743` on `2706f67a42cd5dce8b328c4fce37a17a23a209c9` passed with `EMPTY_LOGIN` and exact VM/keyboard identity, with input/authentication/change flags false. The lead's conditional authorization therefore permits one Login from a newly rechecked empty prompt. Public-key verification still requires a confirmed root shell afterward.
 
 After both OCR fixes, Observe runs `34048469693` and `34048570629` passed on the real Windows runner but correctly reported `UNKNOWN`, with no input. The diagnostic gate refused to publish unknown live OCR because its image differed from the initial reviewed hash. Fresh exact-VM snapshot `34048637562` passed; both the worker and integration lead visually reviewed its image SHA-256 `2b397045222983268bf0807dbbe8db59ae7ab9cfa7e5588494939f0665ecdb8a`: an empty login interrupted by three kernel lines, no username, password or authenticated shell. A separately selected `Refresh` phase requires exactly one of the two reviewed empty-login image hashes and the exact VM, sends exactly one Enter, then only observes an empty login. It never sends credentials or retries input. Arbitrary `UNKNOWN` OCR remains ineligible for Login. The lead explicitly authorized this discrete phase after tests; Login must wait for fresh `EMPTY_LOGIN` evidence.
 
