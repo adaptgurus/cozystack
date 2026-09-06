@@ -1,0 +1,131 @@
+name: LayerSentry module UI artifact
+on:
+  push:
+    branches: [codex/modules-runtime-validation]
+    paths: [.github/workflows/layersentry-module-ui-artifact.yml]
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact full CloudStack source commit to build and retain
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-module-ui-artifact
+  cancel-in-progress: false
+env:
+  CLOUDSTACK_UI_COMMIT: ${{ inputs.source }}
+jobs:
+  build:
+    name: Build exact module UI artifact
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'adaptgurus/cozystack' && github.ref == 'refs/heads/codex/modules-runtime-validation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact CloudStack UI source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: adaptgurus/cloudstack
+          ref: ${{ inputs.source }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify immutable source binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CLOUDSTACK_UI_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$CLOUDSTACK_UI_COMMIT" ]]
+          [[ "$(git status --short)" == '' ]]
+
+      - name: Install pinned authoritative UI build runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.20.0
+
+      - name: Pin npm runtime version
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(node --version)" == v24.20.0 ]]
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          [[ "$(npm --version)" == 11.19.0 ]]
+
+      - name: Install locked dependencies and qualify source
+        shell: bash
+        working-directory: ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          [[ "$(node --version)" == v24.20.0 ]]
+          [[ "$(npm --version)" == 11.19.0 ]]
+          npm ci --no-audit --no-fund
+          npm run lint -- --no-fix
+          npm run test:unit -- --runInBand
+
+      - name: Build and validate LayerSentry production dist
+        shell: bash
+        working-directory: ui
+        env:
+          NODE_OPTIONS: --openssl-legacy-provider --max-old-space-size=4096
+        run: |
+          set -euo pipefail
+          npm run build
+          test -f dist/index.html
+          test -f dist/config.json
+          jq -e '
+            .appTitle == "LayerSentry" and
+            .loginTitle == "LayerSentry" and
+            .footer == "LayerSentry" and
+            .productProfile == "layersentry-kvm" and
+            .brandLocked == true and
+            .logo == "assets/layersentry-logo.svg" and
+            .minilogo == "assets/layersentry-icon.svg"
+          ' dist/config.json >/dev/null
+          grep -Rqs --include='*.js' 'LayerSentry' dist
+          grep -Rqs --include='*.js' 'layersentry-kvm' dist
+          test -z "$(find dist -type l -print -quit)"
+          test ! -e dist/WEB-INF
+          test ! -e dist/META-INF
+          test -z "$(find dist -name '*.map' -print -quit)"
+          git diff --exit-code
+
+      - name: Package exact deployable artifact and metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/layersentry-dr-ui-artifact"
+          package_root="$RUNNER_TEMP/layersentry-dr-ui-package"
+          install -d -m 0700 "$out"
+          install -d -m 0700 "$package_root"
+          cp -a ui/dist "$package_root/ui-dist"
+          epoch="$(git show -s --format=%ct "$CLOUDSTACK_UI_COMMIT")"
+          tar --sort=name --mtime="@${epoch}" --owner=0 --group=0 --numeric-owner -C "$package_root" -cf - ui-dist | gzip -n -9 > "$out/ui-dist.tar.gz"
+          archive_sha="$(sha256sum "$out/ui-dist.tar.gz" | awk '{print $1}')"
+          printf '%s  ui-dist.tar.gz\n' "$archive_sha" > "$out/ui-dist.tar.gz.sha256"
+          jq -n \
+            --arg commit "$CLOUDSTACK_UI_COMMIT" \
+            --arg sha "$archive_sha" \
+            '{
+              schemaVersion: "1.0",
+              product: "LayerSentry",
+              component: "cloudstack-ui",
+              cloudstackUiCommit: $commit,
+              artifact: "ui-dist.tar.gz",
+              artifactSha256: $sha,
+              builtOnManagementNode: false
+            }' > "$out/build-manifest.json"
+          (cd "$out" && sha256sum --check --strict ui-dist.tar.gz.sha256)
+          [[ "$(tar -tzf "$out/ui-dist.tar.gz" | sed -n '1p')" == ui-dist/ ]]
+
+      - name: Upload prebuilt UI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: layersentry-module-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/layersentry-dr-ui-artifact/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
