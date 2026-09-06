@@ -35,16 +35,31 @@ function Get-DcDhcpExclusionPlan {
         leaseRevocationPerformed=$false;scopeChangePerformed=$false;podRangeChangePerformed=$false}
 }
 
+function Get-DcDhcpStableBaselineField {
+    param([object[]]$Rows,[ValidateSet('reservations','leases','attachedVmIds')][string]$Field)
+    $canonical=@(foreach($row in $Rows){
+        if($Field -ceq 'attachedVmIds'){[string]$row}else{
+            $kind=if($Field -ceq 'leases'){$row.state}else{$row.type}
+            # JSON strings preserve field boundaries; sorting ignores native enumeration order only.
+            @([string]$row.address,[string]$row.clientId,[string]$kind)|ConvertTo-Json -Compress
+        }
+    })
+    return (@($canonical|Sort-Object) -join "`n")
+}
+
 function Invoke-DcDhcpExclusions {
     param([object]$Journal,[scriptblock]$Persist)
     if($Journal.schema -ne 1 -or $Journal.host -cne 'TESTSER' -or $Journal.scope -cne '10.10.10.0'){throw 'DHCP_JOURNAL_BINDING_CHANGED'}
     $before=Get-DcDhcpExclusionPlan
     foreach($field in @('reservations','leases','attachedVmIds')){
-        if(($before[$field]|ConvertTo-Json -Depth 6 -Compress) -cne ($Journal.baseline.$field|ConvertTo-Json -Depth 6 -Compress)){throw 'DHCP_BASELINE_CHANGED'}
+        if((Get-DcDhcpStableBaselineField $before[$field] $field) -cne (Get-DcDhcpStableBaselineField $Journal.baseline.$field $field)){throw 'DHCP_BASELINE_CHANGED'}
     }
     foreach($item in @(@('10.10.10.14','intent14'),@('10.10.10.20','intent20'))){
         $address=$item[0];$intent=$item[1]
         $current=Get-DcDhcpExclusionPlan
+        foreach($field in @('reservations','leases','attachedVmIds')){
+            if((Get-DcDhcpStableBaselineField $current[$field] $field) -cne (Get-DcDhcpStableBaselineField $Journal.baseline.$field $field)){throw 'DHCP_BASELINE_CHANGED_BEFORE_EXCLUSION'}
+        }
         if($address -in $current.exclusions){
             if(-not $Journal.$intent){throw 'UNJOURNALED_EXCLUSION'}
             continue
@@ -57,7 +72,7 @@ function Invoke-DcDhcpExclusions {
         $after=Get-DcDhcpExclusionPlan
         if($address -notin $after.exclusions){throw 'EXCLUSION_NOT_OBSERVED_NO_REPLAY'}
         foreach($field in @('reservations','leases','attachedVmIds')){
-            if(($after[$field]|ConvertTo-Json -Depth 6 -Compress) -cne ($Journal.baseline.$field|ConvertTo-Json -Depth 6 -Compress)){throw 'DHCP_BASELINE_CHANGED_AFTER_EXCLUSION'}
+            if((Get-DcDhcpStableBaselineField $after[$field] $field) -cne (Get-DcDhcpStableBaselineField $Journal.baseline.$field $field)){throw 'DHCP_BASELINE_CHANGED_AFTER_EXCLUSION'}
         }
     }
     $after=Get-DcDhcpExclusionPlan

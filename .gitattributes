@@ -5,3 +5,5 @@ hack/layersentry/evidence/lab-pod-reviewed-capacity.json -text whitespace=cr-at-
 hack/layersentry/evidence/lab-pod-reviewed-guestNetwork.json -text whitespace=cr-at-eol
 
 hack/layersentry/evidence/lab-pod-reviewed-hypervNetwork.json -text whitespace=cr-at-eol
+
+hack/layersentry/evidence/dc-dhcp-reviewed-plan.json -text whitespace=cr-at-eol

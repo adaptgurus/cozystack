@@ -1,0 +1,88 @@
+﻿{
+    "schema":  1,
+    "host":  "TESTSER",
+    "mode":  "Plan",
+    "runId":  "34063102956",
+    "sourceCommit":  "16d9494edbe81ac3ee099967c89af1a1e46963ed",
+    "status":  "PLAN_REVIEW_REQUIRED",
+    "exclusionMutationAttempted":  false,
+    "data":  {
+                 "schema":  1,
+                 "host":  "TESTSER",
+                 "scope":  "10.10.10.0",
+                 "start":  "10.10.10.10",
+                 "end":  "10.10.10.250",
+                 "status":  "PLAN_REVIEW_REQUIRED",
+                 "exclusions":  [
+
+                                ],
+                 "reservations":  [
+                                      {
+                                          "address":  "10.10.10.13",
+                                          "clientId":  "00-15-5d-0a-0a-13",
+                                          "type":  "Both"
+                                      },
+                                      {
+                                          "address":  "10.10.10.12",
+                                          "clientId":  "00-15-5d-0a-0a-12",
+                                          "type":  "Both"
+                                      },
+                                      {
+                                          "address":  "10.10.10.11",
+                                          "clientId":  "00-15-5d-0a-0a-11",
+                                          "type":  "Both"
+                                      }
+                                  ],
+                 "leases":  [
+                                {
+                                    "address":  "10.10.10.13",
+                                    "clientId":  "00-15-5d-0a-0a-13",
+                                    "state":  "ActiveReservation"
+                                },
+                                {
+                                    "address":  "10.10.10.14",
+                                    "clientId":  "00-15-5d-00-39-09",
+                                    "state":  "Active"
+                                },
+                                {
+                                    "address":  "10.10.10.15",
+                                    "clientId":  "00-15-5d-00-39-0b",
+                                    "state":  "Active"
+                                },
+                                {
+                                    "address":  "10.10.10.10",
+                                    "clientId":  "00-15-5d-00-39-0a",
+                                    "state":  "Active"
+                                },
+                                {
+                                    "address":  "10.10.10.11",
+                                    "clientId":  "00-15-5d-0a-0a-11",
+                                    "state":  "ActiveReservation"
+                                },
+                                {
+                                    "address":  "10.10.10.12",
+                                    "clientId":  "00-15-5d-0a-0a-12",
+                                    "state":  "ActiveReservation"
+                                }
+                            ],
+                 "attachedVmIds":  [
+                                       "29ba176b-b81a-4f47-8f51-ecec869f247f",
+                                       "61fef4dc-44dc-43ad-a2a0-f923912a01d7"
+                                   ],
+                 "operations":  [
+                                    {
+                                        "command":  "Add-DhcpServerv4ExclusionRange",
+                                        "start":  "10.10.10.14",
+                                        "end":  "10.10.10.14"
+                                    },
+                                    {
+                                        "command":  "Add-DhcpServerv4ExclusionRange",
+                                        "start":  "10.10.10.20",
+                                        "end":  "10.10.10.20"
+                                    }
+                                ],
+                 "leaseRevocationPerformed":  false,
+                 "scopeChangePerformed":  false,
+                 "podRangeChangePerformed":  false
+             }
+}

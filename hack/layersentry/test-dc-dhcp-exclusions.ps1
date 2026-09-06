@@ -36,5 +36,11 @@ Import-Module (Join-Path $PSScriptRoot 'DcDhcpExclusions.psm1') -Force
             if(-not $blocked -or $script:calls.Count -ne 1){throw 'UNCERTAIN_NO_EFFECT_REPLAYED'}
         }
     }
+    $rows=@([pscustomobject]@{address='10.10.10.14';clientId='old';state='Active'},[pscustomobject]@{address='10.10.10.10';clientId='sen';state='Active'})
+    $forward=Get-DcDhcpStableBaselineField $rows leases
+    $reverse=Get-DcDhcpStableBaselineField @($rows[1],$rows[0]) leases
+    if($forward -cne $reverse){throw 'NATIVE_ENUMERATION_ORDER_CHANGED_BASELINE'}
+    $rows[0].clientId='different-owner'
+    if($forward -ceq (Get-DcDhcpStableBaselineField $rows leases)){throw 'REAL_LEASE_DRIFT_NOT_DETECTED'}
     'DC_DHCP_EXCLUSION_TESTS_PASS'
 }
