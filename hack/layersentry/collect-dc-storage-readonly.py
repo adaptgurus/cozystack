@@ -171,9 +171,9 @@ def plugin_package():
             'nasPluginPackagePaths': names, 'pluginLoaded': 'NOT_ESTABLISHED'}
 
 
-def registration_journal():
+def registration_journal(directory='/var/lib/layersentry/native-dc-storage-r0', allowed=('primary', 'image')):
     try:
-        directory_fd = open_directory('/var/lib/layersentry/native-dc-storage-r0')
+        directory_fd = open_directory(directory)
     except FileNotFoundError:
         return {'status': 'DIRECTORY_ABSENT'}
     except OSError:
@@ -187,7 +187,7 @@ def registration_journal():
             raw = stream.read(65537)
         data = json.loads(raw)
         operations = data.get('operations')
-        if not isinstance(operations, dict) or not set(operations).issubset({'primary', 'image'}):
+        if not isinstance(operations, dict) or not set(operations).issubset(set(allowed)):
             raise ValueError('journal shape')
         public = {}
         for name, item in operations.items():
@@ -200,6 +200,42 @@ def registration_journal():
         return {'status': 'JOURNAL_UNAVAILABLE_OR_INVALID'}
     finally:
         os.close(directory_fd)
+
+
+def guest_network_presence():
+    """Public NIC/profile identity only; never request secrets or modify NM."""
+    result = {'status': 'UNAVAILABLE', 'configurationChanged': False, 'profiles': []}
+    raw = command(['ip', '-j', 'address', 'show'])
+    try:
+        links = json.loads(raw or 'null')
+        if not isinstance(links, list) or len(links) > 256:
+            raise ValueError('links')
+        result['links'] = [{key: row[key] for key in ('ifname', 'ifindex', 'address', 'master', 'flags', 'operstate') if key in row}
+                           | {'addresses': [{key: item[key] for key in ('family', 'local', 'prefixlen', 'scope') if key in item}
+                                            for item in row.get('addr_info', [])]} for row in links]
+        raw = command(['nmcli', '-g', 'UUID', 'connection', 'show'])
+        if raw is None:
+            raise ValueError('profiles')
+        ids = raw.splitlines()
+        if len(ids) > 128 or len(set(ids)) != len(ids) or not all(re.fullmatch(r'[0-9a-f-]{36}', item) for item in ids):
+            raise ValueError('profiles')
+        fields = ('connection.id', 'connection.uuid', 'connection.type', 'connection.interface-name',
+                  'connection.autoconnect', 'connection.master', 'connection.slave-type',
+                  '802-3-ethernet.mac-address', 'ipv4.method', 'ipv6.method')
+        for identity in ids:
+            # Ethernet settings are not valid for every NM connection type; query
+            # separately so an absent property remains explicit, not guessed.
+            public = {}
+            for field in fields:
+                value = command(['nmcli', '-g', field, '-e', 'no', 'connection', 'show', 'uuid', identity])
+                public[field] = value.strip()[:256] if value is not None else None
+            result['profiles'].append(public)
+        result['status'] = 'OBSERVED'
+    except (ValueError, TypeError, KeyError):
+        result['status'] = 'INVALID_OR_UNAVAILABLE'
+    result['journal'] = registration_journal('/var/lib/layersentry/native-dc-guest-network-r0',
+                                              ('bridge', 'port', 'activate', 'label'))
+    return result
 
 
 def tls_presence():
@@ -253,6 +289,7 @@ def collect():
     result['managementPlugin'] = plugin_package()
     result['registrationJournal'] = registration_journal()
     result['tlsPresence'] = tls_presence()
+    result['guestNetwork'] = guest_network_presence()
     return dict(result, status='COLLECTED')
 
 

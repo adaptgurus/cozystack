@@ -126,6 +126,25 @@ class StorageProofTests(unittest.TestCase):
         self.assertFalse(result['configContentsRead'])
         self.assertNotIn('never-publish', json.dumps(result))
 
+    def test_guest_network_public_profile_and_journal_projection(self):
+        identity = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        links = [{'ifname': 'eth1', 'address': '02:29:ba:17:6b:81', 'private': 'never-publish',
+                  'addr_info': [{'family': 'inet6', 'local': 'fe80::1', 'prefixlen': 64, 'secret': 'never-publish'}]}]
+        values = [json.dumps(links), identity, 'Wired connection 1', identity, '802-3-ethernet', 'eth1',
+                  'yes', '', '', '', 'auto', 'auto']
+        with patch.object(collector, 'command', side_effect=values) as commands, \
+                patch.object(collector, 'registration_journal', return_value={'status': 'OBSERVED', 'operations': {}}):
+            result = collector.guest_network_presence()
+        self.assertEqual(result['status'], 'OBSERVED')
+        self.assertEqual(result['profiles'][0]['connection.interface-name'], 'eth1')
+        self.assertNotIn('never-publish', json.dumps(result))
+        for call in commands.call_args_list:
+            self.assertNotIn('--show-secrets', call.args[0])
+            self.assertNotIn('modify', call.args[0])
+        with patch.object(collector, 'command', return_value=None), \
+                patch.object(collector, 'registration_journal', return_value={'status': 'DIRECTORY_ABSENT'}):
+            self.assertEqual(collector.guest_network_presence()['status'], 'INVALID_OR_UNAVAILABLE')
+
 
 
 if __name__ == '__main__':
