@@ -155,6 +155,7 @@ function Export-TrustRootPromptCrop($View, [string]$Out) {
 }
 
 function Get-TrustRootRowPixelHash($Bitmap, [int]$Top, [int]$Height) {
+    $script:RootPixelDiagnostics = [ordered]@{ height=$Height; width=$Bitmap.Width }
     if ($Height -ne 18 -or $Bitmap.Width -lt 192) { return $null }
     $pixels = New-Object byte[] (176 * $Height * 3)
     $offset = 0
@@ -167,12 +168,18 @@ function Get-TrustRootRowPixelHash($Bitmap, [int]$Top, [int]$Height) {
                 ($color.R -ne 0 -or $color.G -ne 0 -or $color.B -ne 0)) {
                 # Only the final underline cursor may blink; any other visible
                 # content after the fixed prompt means it is not empty.
+                $script:RootPixelDiagnostics['firstRejectedX'] = $x
+                $script:RootPixelDiagnostics['firstRejectedY'] = $y
                 return $null
             }
         }
     }
     $sha = [Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash($pixels))).Replace('-', '').ToLowerInvariant() }
+    try {
+        $hash = ([BitConverter]::ToString($sha.ComputeHash($pixels))).Replace('-', '').ToLowerInvariant()
+        $script:RootPixelDiagnostics['textPixelSha256'] = $hash
+        return $hash
+    }
     finally { $sha.Dispose() }
 }
 
@@ -316,6 +323,7 @@ function Invoke-DcTrustPhase([string]$Phase) {
         $state['initialPrompt'] = $prompt
         if ($Phase -eq 'Observe') {
             $state['promptDiagnostics'] = Get-TrustPromptDiagnostics $view
+            if (Get-Variable RootPixelDiagnostics -Scope Script -ErrorAction SilentlyContinue) { $state['rootPixelDiagnostics'] = $script:RootPixelDiagnostics }
             if ($prompt -eq 'UNKNOWN' -and $state.promptDiagnostics.rootPromptCandidates -contains '[root@layersentry') {
                 $state['rootPromptRow'] = Export-TrustRootPromptCrop $view $out
             }
