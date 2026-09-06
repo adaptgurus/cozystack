@@ -1,0 +1,29 @@
+﻿{
+    "administrativeExclusivityRequired":  true,
+    "capacityTotalFromEndpoints":  253,
+    "capacityUsed":  "UNKNOWN_DISABLED_ZONE",
+    "command":  "updatePodManagementNetworkIpRange",
+    "concurrentWriterSafety":  "NOT_ESTABLISHED_NATIVE_GUARD_IS_NOT_ATOMIC",
+    "configurationUpdateRequested":  false,
+    "currentEnd":  "10.10.10.254",
+    "currentStart":  "10.10.10.2",
+    "derivedCapacityRefreshRequested":  false,
+    "exclusiveWriterReservation":  "ROOT_EXCLUSIVE_DC_POD_RANGE_INCLUDING_ADMIN_AND_SYNCHRONOUS_IP_WRITERS",
+    "mode":  "EXCLUSIVE_DISABLED_DC_LAB_ONLY",
+    "parameters":  {
+                       "currentendip":  "10.10.10.254",
+                       "currentstartip":  "10.10.10.2",
+                       "newendip":  "10.10.10.9",
+                       "newstartip":  "10.10.10.2",
+                       "podid":  "020dc658-af4e-4e2e-bed5-0607de8a787f"
+                   },
+    "reviewedReceiptSha256":  {
+                                  "capacity":  "54a2f9a54dbc41defb37698eff2eb87100deeb4c81b638a2b5a8b968ccba1f6e",
+                                  "guestNetwork":  "d8dce4ef9ab60ccea6b05161b918770a7da8001885ebef181597b759f4104897",
+                                  "hypervNetwork":  "5d13f4e2a820c8421db5bff37b975b62cb4541095564f221392e28bd4e1e33fb"
+                              },
+    "schema":  1,
+    "status":  "LAB_PLAN_REVIEW_REQUIRED",
+    "target":  "10.10.10.14",
+    "zoneEnabled":  false
+}

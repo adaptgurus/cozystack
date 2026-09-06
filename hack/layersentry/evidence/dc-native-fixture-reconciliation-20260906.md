@@ -191,3 +191,8 @@ Capacity observer `34062542683` at `7103ae4fc7be4cb7fe4693e22330c7bfebfa965a` re
 ## DHCP exclusions applied without lease revocation
 
 `34063327094` at `37be1f6cb9e23fb6f5fc04276867b04c8d8c933e` verified exactly `.14/.20` single-address exclusions in TESTSER DHCP scope `.10–.250`. All six leases, three reservations and two attached VM identities match the reviewed Plan, including historical old-MAC `.14`; no lease was revoked. Public result EXCLUSIONS_RECONCILED_LEASES_PRESERVED has SHA-256 `4bf887d8a1a2086a80bf614bcb801d6a40881e2bb2061677d91d772b162736cf`, retained at `/tmp/layersentry-dc-dhcp-apply-34063327094`. Pod range remains unchanged and no Pod Apply request exists. The live queue was released to root TLS work after completion.
+
+
+## Read-only Pod Plan passed; no range update
+
+Lab Plan `34063886863` at `30193a35cb1e69736d87430c3582bc927203b6e0` passed through strict known-host SSH without journal/configuration writes. It confirmed the fixed Disabled DC prerequisites, exact old `.2–.254` range/role/VLAN, no instances, both disabled-resource override configurations false and no native pending jobs through the reviewed gate code. Usage remains UNKNOWN_DISABLED_ZONE, with total253 derived from endpoints only. Exact original Plan receipt `dc-pod-reviewed-plan.json` has SHA-256 `240e1b1f9c28e703643ef21d0cf4aecb01ac87ccc4b166978e19a8b0b5bdf665`; artifacts are under `/tmp/layersentry-dc-pod-plan-34063886863`. No Pod Apply exists; root review and a separately authorized wrapper are still required.
