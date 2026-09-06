@@ -1,9 +1,12 @@
 name: LayerSentry DR libvirt prerequisites
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/modules-runtime-validation]
-    paths: [.github/workflows/layersentry-dr-libvirt-prerequisites.yml]
+    inputs:
+      phase:
+        type: choice
+        options: [inspect, prepare]
+        default: inspect
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -22,6 +25,7 @@ jobs:
       - name: Install signed libvirt prerequisites on exact disposable DR host
         shell: powershell
         env:
+          DR_PHASE: ${{ inputs.phase }}
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
           DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
           DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}

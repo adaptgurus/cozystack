@@ -127,9 +127,31 @@ def prepare(run_id):
     return state
 
 
+def inspect(run_id):
+    require(re.fullmatch(r"[0-9]{1,20}", run_id), "INVALID_RUN_ID")
+    before = baseline()
+    result = {"schemaVersion": "1.0", "runId": run_id, "target": TARGET,
+              "status": "INSPECTED", "mutationAttempted": False,
+              "security": before["security"], "units": {}, "packages": {}}
+    for name in (*SOCKETS, "virtqemud.service", "virtlogd.service", "virtlockd.service"):
+        value = command(["systemctl", "show", "--property=LoadState,ActiveState,Result,FragmentPath", name])
+        result["units"][name] = value.splitlines()
+    for name in (*PACKAGES, "libvirt-daemon-log", "libvirt-daemon-lock", "libvirt-daemon-driver-qemu"):
+        value = command(["rpm", "-q", "--qf", "%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}", name], allowed=(0, 1))
+        require(re.fullmatch(r"[A-Za-z0-9_.:+ /-]{1,256}", value), "INVALID_PACKAGE_OUTPUT")
+        result["packages"][name] = value
+    for name, argv in {"domains": ["virsh", "--readonly", "-c", "qemu:///system", "list", "--all", "--uuid"],
+                       "versions": ["virsh", "--readonly", "-c", "qemu:///system", "version"]}.items():
+        try:
+            result[name] = {"status": "OK", "output": command(argv).splitlines()}
+        except Refused as error:
+            result[name] = {"status": str(error)}
+    return result
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 3 or sys.argv[2] not in {"prepare", "inspect"}:
         raise SystemExit("RUN_ID_REQUIRED")
-    result = prepare(sys.argv[1])
+    result = inspect(sys.argv[1]) if sys.argv[2] == "inspect" else prepare(sys.argv[1])
     print(json.dumps(result, sort_keys=True))
-    raise SystemExit(0 if result["status"] == "PREREQUISITES_VERIFIED" else 1)
+    raise SystemExit(0 if result["status"] in {"PREREQUISITES_VERIFIED", "INSPECTED"} else 1)
