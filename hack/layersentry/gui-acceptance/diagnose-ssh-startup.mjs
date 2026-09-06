@@ -57,25 +57,25 @@ export async function probe (executable, args, env, captureMarker = false, stdin
   })
 }
 
+export function dummyHelperInvocation (systemRoot, helper) {
+  const basename = path.basename(helper)
+  requireThat(/^dummy-askpass-[a-f0-9-]+\.cmd$/.test(basename), 'DUMMY_HELPER_BASENAME_REQUIRED')
+  return { executable: path.join(systemRoot, 'System32', 'cmd.exe'), args: ['/d', '/c', basename], cwd: path.dirname(helper) }
+}
+
 export function acceptStartupProof (result) {
   requireThat(result?.schema === 1 && result.networkConnectionAttempted === false && result.realCredentialsUsed === false, 'SSH_STARTUP_PROOF_SCOPE')
-  const baseline = result.configuration?.baseline; const fixed = result.configuration?.fixed
+  const baseline = result.configuration?.baseline; const fixed = result.configuration?.fixed; const helper = result.askpass
   requireThat(baseline?.exitCode === 255 && fixed?.exitCode === 0 && (baseline.stderrClass === 'PROGRAMDATA_MISSING' || (baseline.stderrClass === 'UNKNOWN' && baseline.stderrBytes === 0)), 'SSH_STARTUP_CAUSE_NOT_REPRODUCED')
-  for (const pair of [result.configuration, result.askpass]) {
-    requireThat(pair?.baseline?.inputBinding?.programDataPresent === false && pair?.fixed?.inputBinding?.programDataPresent === true, 'SSH_STARTUP_ENVIRONMENT_DELTA_CHANGED')
-    for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentWithoutProgramDataSha256', 'stdioSha256']) requireThat(/^[0-9a-f]{64}$/.test(pair.baseline.inputBinding[key]) && pair.baseline.inputBinding[key] === pair.fixed.inputBinding[key], 'SSH_STARTUP_INVARIANTS_CHANGED')
-  }
-  const pipeHelper = result.askpassClosedPipe; const pipeConfig = result.configurationClosedPipe
-  for (const item of [baseline, fixed, result.askpass?.baseline, result.askpass?.fixed, pipeHelper, pipeConfig]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && item.exitSignal === null && Number.isSafeInteger(item.stderrBytes) && item.stderrBytes >= 0 && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
-  // Separate stdin-only comparison: no environment, executable, argument or
-  // credential substitution can make the corrected helper count as evidence.
-  for (const [nul, pipe] of [[fixed, pipeConfig], [result.askpass.fixed, pipeHelper]]) {
-    requireThat(nul.inputBinding.stdinMode === 'ignore' && pipe.inputBinding?.stdinMode === 'pipe' && pipe.inputBinding.programDataPresent === true, 'SSH_STDIN_DIFFERENTIAL_SCOPE')
-    for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentSha256']) requireThat(/^[0-9a-f]{64}$/.test(nul.inputBinding[key]) && nul.inputBinding[key] === pipe.inputBinding[key], 'SSH_STDIN_DIFFERENTIAL_CHANGED')
-  }
-  requireThat(pipeConfig.exitCode === 0 && pipeHelper.exitCode === 0 && pipeHelper.dummyMarkerMatched === true && pipeHelper.stdoutBytes > 0, 'SSH_CLOSED_PIPE_NOT_VERIFIED')
-  for (const item of [result.askpass.baseline, result.askpass.fixed]) requireThat(item.exitCode === 0 && item.stdoutBytes === 0 && item.stderrBytes === 0 && item.dummyMarkerMatched === false, 'SSH_NUL_BASELINE_NOT_REPRODUCED')
-  return { programData: baseline.stderrClass === 'PROGRAMDATA_MISSING' ? 'EXACT_MESSAGE_AND_DIFFERENTIAL' : 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE', stdin: 'NUL_EMPTY_CLOSED_PIPE_DUMMY_VERIFIED' }
+  requireThat(baseline.inputBinding?.programDataPresent === false && fixed.inputBinding?.programDataPresent === true, 'SSH_STARTUP_ENVIRONMENT_DELTA_CHANGED')
+  for (const key of ['executableSha256', 'executablePathSha256', 'argumentsSha256', 'environmentWithoutProgramDataSha256', 'stdioSha256']) requireThat(/^[0-9a-f]{64}$/.test(baseline.inputBinding[key]) && baseline.inputBinding[key] === fixed.inputBinding[key], 'SSH_STARTUP_INVARIANTS_CHANGED')
+  requireThat(baseline.inputBinding.cwdSha256 === fixed.inputBinding.cwdSha256 && baseline.inputBinding.stdinMode === 'pipe' && fixed.inputBinding.stdinMode === 'pipe', 'SSH_STARTUP_INVARIANTS_CHANGED')
+  for (const item of [baseline, fixed, helper]) requireThat(item?.processClosed === true && item.spawnErrorCode === null && item.exitSignal === null && Number.isSafeInteger(item.stderrBytes) && item.stderrBytes >= 0 && !item.timedOut && !item.outputTruncated, 'SSH_STARTUP_PROBE_INCOMPLETE')
+  // Run the exact helper directly through cmd, as proven by matrix34064799291.
+  // This proves its bytes/environment, not OpenSSH authentication or shell equivalence.
+  requireThat(helper.exitCode === 0 && helper.dummyMarkerMatched === true && helper.stdoutBytes === Buffer.byteLength(MARKER) && helper.stderrBytes === 0, 'SSH_DUMMY_HELPER_NOT_VERIFIED')
+  requireThat(helper.inputBinding?.programDataPresent === true && helper.inputBinding.stdinMode === 'pipe' && helper.inputBinding.environmentSha256 === fixed.inputBinding.environmentSha256 && /^[0-9a-f]{64}$/.test(helper.inputBinding.cwdSha256), 'SSH_DUMMY_HELPER_INPUT_CHANGED')
+  return { programData: baseline.stderrClass === 'PROGRAMDATA_MISSING' ? 'EXACT_MESSAGE_AND_DIFFERENTIAL' : 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE', askpass: 'EXACT_DUMMY_CMD_HELPER_VERIFIED' }
 }
 
 async function main () {
@@ -92,14 +92,11 @@ async function main () {
     const { baseline, fixed } = diagnosticEnvironments(process.env, helper)
     requireThat(fixed.ProgramData && fixed.SystemRoot, 'SSH_DIAGNOSTIC_SYSTEM_ENV_REQUIRED')
     const executable = path.join(fixed.SystemRoot, 'System32', 'OpenSSH', 'ssh.exe')
-    const powershell = path.join(fixed.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    result.configuration = { baseline: await probe(executable, configOnlyArguments(), baseline), fixed: await probe(executable, configOnlyArguments(), fixed) }
-    // Invoke only the exact generated .cmd via a fixed PowerShell expression;
-    // its path is an environment value, never interpolated command text.
-    const args = ['-NoProfile', '-NonInteractive', '-Command', '& $env:LAYERSENTRY_DUMMY_ASKPASS']
-    result.askpass = { baseline: await probe(powershell, args, baseline, true), fixed: await probe(powershell, args, fixed, true) }
-    result.askpassClosedPipe = await probe(powershell, args, fixed, true, 'pipe')
-    result.configurationClosedPipe = await probe(executable, configOnlyArguments(), fixed, false, 'pipe')
+    result.configuration = { baseline: await probe(executable, configOnlyArguments(), baseline, false, 'pipe'), fixed: await probe(executable, configOnlyArguments(), fixed, false, 'pipe') }
+    // Only a generated safe basename enters cmd syntax; its private parent is
+    // the cwd. No outer PowerShell invocation and no credential substitution.
+    const invocation = dummyHelperInvocation(fixed.SystemRoot, helper)
+    result.askpass = await probe(invocation.executable, invocation.args, fixed, true, 'pipe', invocation.cwd)
     result.causalProof = acceptStartupProof(result); result.status = 'PASS'
   } catch (error) { result.reason = publicFailure(error) } finally {
     if (fs.existsSync(helper)) fs.unlinkSync(helper)

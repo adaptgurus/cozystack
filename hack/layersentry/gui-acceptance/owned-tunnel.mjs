@@ -52,9 +52,8 @@ export async function openOwnedSshTunnel (binding, argumentsForPort, env) {
   requireThat(prerequisites.programDataPresent, 'SSH_PROGRAMDATA_REQUIRED')
   const started = Date.now()
   const child = spawn(executable, argumentsForPort(port), { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true, shell: false, env })
-  // Candidate valid inherited pipe at EOF for the Windows askpass chain.
-  // No command or credential is written to SSH stdin. Runtime use is gated by
-  // the separate no-network startup/dummy differential.
+  // Noninteractive stdin closes without any command or credential. This is
+  // not a fix for the disproven outer-PowerShell dummy-output hypothesis.
   child.stdin.end()
   let stderr = Buffer.alloc(0); let stderrTruncated = false
   child.stderr.on('data', data => { const available = 32768 - stderr.length; if (data.length > available) stderrTruncated = true; if (available > 0) stderr = Buffer.concat([stderr, data.subarray(0, available)]) })

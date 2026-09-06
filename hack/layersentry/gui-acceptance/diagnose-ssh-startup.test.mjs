@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { sshEnvironment, classifySshFailure } from './owned-tunnel.mjs'
-import { configOnlyArguments, diagnosticEnvironments, acceptStartupProof, probeInputBinding } from './diagnose-ssh-startup.mjs'
+import { configOnlyArguments, diagnosticEnvironments, acceptStartupProof, probeInputBinding, dummyHelperInvocation, MARKER } from './diagnose-ssh-startup.mjs'
 
 test('both launch callers share a credential-free ProgramData-aware environment', () => {
   const input = { SystemRoot: 'C:\\WINDOWS', ProgramData: 'C:\\ProgramData', PATH: 'system path', ROCKY_PASSWORD: 'never-inherit-real-password', CLOUDSTACK_SECRET_KEY: 'never-inherit-key', SSH_AUTH_SOCK: 'never-inherit-agent', DEBUG: 'never-inherit-debug' }
@@ -21,29 +21,32 @@ test('configuration probe never requests a connection, forward or remote command
   assert.equal(classifySshFailure('No user exists for uid 1'), 'LOCAL_USER_LOOKUP_FAILED')
 })
 
-test('diagnostic gate independently requires ProgramData and stdin-only dummy differentials', () => {
-  const entry = (kind, programData, stdinMode) => {
+test('dummy helper command accepts only owned safe basenames and uses private cwd', () => {
+  assert.deepEqual(dummyHelperInvocation('/windows', '/private/dummy-askpass-abcd-1234.cmd'), { executable: '/windows/System32/cmd.exe', args: ['/d', '/c', 'dummy-askpass-abcd-1234.cmd'], cwd: '/private' })
+  for (const helper of ['/private/dummy-askpass-a&whoami.cmd', '/private/other.cmd', '/private/dummy-askpass-a.cmd /c bad']) assert.throws(() => dummyHelperInvocation('/windows', helper))
+})
+
+test('startup gate requires exact ProgramData differential and proven cmd dummy, without stdin causal claim', () => {
+  const entry = (kind, programData) => {
     const env = { SystemRoot: 'windows', ...(programData ? { ProgramData: 'programdata' } : {}) }
     const helper = kind === 'helper'
-    return { inputBinding: probeInputBinding(kind + '-executable', (helper ? 'b' : 'a').repeat(64), helper ? ['fixed helper command'] : configOnlyArguments(), env, helper, stdinMode), stderrBytes: 0, stdoutBytes: helper ? 0 : null,
-      exitSignal: null, exitCode: 0, spawnErrorCode: null, processClosed: true, timedOut: false, outputTruncated: false, stderrClass: 'UNKNOWN', ...(helper ? { dummyMarkerMatched: false } : {}) }
+    return { inputBinding: { ...probeInputBinding(kind + '-executable', (helper ? 'b' : 'a').repeat(64), helper ? ['/d', '/c', 'dummy-askpass-abcd.cmd'] : configOnlyArguments(), env, helper, 'pipe'), cwdSha256: helper ? 'c'.repeat(64) : null }, stderrBytes: 0, stdoutBytes: helper ? Buffer.byteLength(MARKER) : null,
+      exitSignal: null, exitCode: 0, spawnErrorCode: null, processClosed: true, timedOut: false, outputTruncated: false, stderrClass: 'UNKNOWN', ...(helper ? { dummyMarkerMatched: true } : {}) }
   }
   const proof = () => ({ schema: 1, networkConnectionAttempted: false, realCredentialsUsed: false,
-    configuration: { baseline: { ...entry('ssh', false, 'ignore'), exitCode: 255 }, fixed: entry('ssh', true, 'ignore') },
-    askpass: { baseline: entry('helper', false, 'ignore'), fixed: entry('helper', true, 'ignore') },
-    configurationClosedPipe: entry('ssh', true, 'pipe'), askpassClosedPipe: { ...entry('helper', true, 'pipe'), dummyMarkerMatched: true, stdoutBytes: 40 } })
-  assert.equal(acceptStartupProof(proof()).stdin, 'NUL_EMPTY_CLOSED_PIPE_DUMMY_VERIFIED')
-  assert.equal(acceptStartupProof(proof()).programData, 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE')
+    configuration: { baseline: { ...entry('ssh', false), exitCode: 255 }, fixed: entry('ssh', true) }, askpass: entry('helper', true) })
+  assert.deepEqual(acceptStartupProof(proof()), { programData: 'DIFFERENTIAL_ONLY_EARLY_STDERR_UNAVAILABLE', askpass: 'EXACT_DUMMY_CMD_HELPER_VERIFIED' })
   const message = proof(); message.configuration.baseline.stderrClass = 'PROGRAMDATA_MISSING'; message.configuration.baseline.stderrBytes = 60
   assert.equal(acceptStartupProof(message).programData, 'EXACT_MESSAGE_AND_DIFFERENTIAL')
   for (const mutate of [
     p => { p.configuration.baseline.stderrBytes = 1 }, p => { p.configuration.baseline.exitCode = 0 }, p => { p.configuration.baseline.exitCode = 1 },
     p => { p.configuration.baseline.stderrClass = 'AUTH_REJECTED' }, p => { p.configuration.fixed.inputBinding.environmentWithoutProgramDataSha256 = 'b'.repeat(64) },
     p => { p.configuration.fixed.inputBinding.argumentsSha256 = 'b'.repeat(64) }, p => { p.configuration.fixed.inputBinding.executableSha256 = 'b'.repeat(64) },
+    p => { p.configuration.fixed.inputBinding.cwdSha256 = 'f'.repeat(64) }, p => { p.configuration.fixed.inputBinding.stdinMode = 'ignore' },
     p => { p.configuration.fixed.inputBinding.programDataPresent = false }, p => { p.configuration.fixed.exitCode = 255 }, p => { p.configuration.fixed.processClosed = false },
-    p => { p.configuration.fixed.outputTruncated = true }, p => { p.askpassClosedPipe.dummyMarkerMatched = false }, p => { p.askpassClosedPipe.stdoutBytes = 0 },
-    p => { p.askpassClosedPipe.inputBinding.stdinMode = 'ignore' }, p => { p.askpassClosedPipe.inputBinding.environmentSha256 = 'f'.repeat(64) },
-    p => { p.askpassClosedPipe.inputBinding.argumentsSha256 = 'f'.repeat(64) }, p => { p.configurationClosedPipe.exitCode = 255 },
-    p => { p.askpass.fixed.stdoutBytes = 1 }, p => { p.askpass.baseline.timedOut = true }, p => { p.realCredentialsUsed = true }, p => { p.networkConnectionAttempted = true }
+    p => { p.configuration.fixed.outputTruncated = true }, p => { p.askpass.dummyMarkerMatched = false }, p => { p.askpass.stdoutBytes = 0 },
+    p => { p.askpass.inputBinding.stdinMode = 'ignore' }, p => { p.askpass.inputBinding.environmentSha256 = 'f'.repeat(64) },
+    p => { p.askpass.inputBinding.cwdSha256 = null }, p => { p.askpass.exitCode = 255 }, p => { p.askpass.stderrBytes = 1 },
+    p => { p.askpass.stdoutBytes = 42 }, p => { p.askpass.timedOut = true }, p => { p.realCredentialsUsed = true }, p => { p.networkConnectionAttempted = true }
   ]) { const changed = proof(); mutate(changed); assert.throws(() => acceptStartupProof(changed)) }
 })
