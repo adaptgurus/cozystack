@@ -1,0 +1,7 @@
+{
+  "operation": "DIAGNOSE_LAYERSENTRY_SSVM_TEMPLATE_PATH_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_SSVM_TEMPLATE_DIAGNOSTIC",
+  "templateId": "588ecfc9-88b3-43c9-9e04-b4fc41054d00",
+  "kvmAddress": "10.10.10.14",
+  "ssvmLinkLocal": "169.254.240.237"
+}
