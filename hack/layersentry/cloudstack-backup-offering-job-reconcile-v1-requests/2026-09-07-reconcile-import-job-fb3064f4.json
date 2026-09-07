@@ -1,0 +1,6 @@
+{
+  "operation": "RECONCILE_LAYERSENTRY_BACKUP_OFFERING_JOB_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_BACKUP_JOB_RECONCILIATION",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "jobId": "fb3064f4-f8a1-46b7-a1e2-d401fdf92838"
+}
