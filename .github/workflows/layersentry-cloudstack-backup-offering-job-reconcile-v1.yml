@@ -1,0 +1,92 @@
+name: LayerSentry CloudStack Backup Offering Job Reconcile v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-backup-offering-job-reconcile-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile exact backup offering async job
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Reconcile async job and offering without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          $expectedZoneId='929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedJobId='fb3064f4-f8a1-46b7-a1e2-d401fdf92838'
+          $expectedOfferingName='layersentry-dc-nas-adhoc-r0'
+          $expectedRepositoryName='layersentry-dc-backup-r0'
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials are unavailable.'}
+          if($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api'){throw 'CloudStack endpoint binding mismatch.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-backup-offering-job-reconcile-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-backup-offering-job-reconcile-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one offering job reconciliation request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'RECONCILE_LAYERSENTRY_BACKUP_OFFERING_JOB_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_BACKUP_JOB_RECONCILIATION' -or [string]$request.jobId -cne $expectedJobId -or [string]$request.zoneId -cne $expectedZoneId){throw 'Offering job reconciliation request mismatch.'}
+
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
+            if($command -notin @('queryAsyncJobResult','listBackupOfferings')){throw "Command not allow-listed: $command"}
+            $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'}
+            foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
+            $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}' -f (Enc([string]$_.Key)),(Enc([string]$_.Value))})
+            $canonical=(($pairs -join '&').ToLowerInvariant())
+            $h=New-Object System.Security.Cryptography.HMACSHA1
+            try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+            $uri='{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri,($pairs -join '&'),(Enc $sig)
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+          }
+          function Payload([object]$r,[string]$c){$n="$($c.ToLowerInvariant())response";$p=$r.PSObject.Properties[$n];if($null -eq $p){throw "Missing response payload $n"};return $p.Value}
+          function Rows([object]$p,[string]$n){$x=$p.PSObject.Properties[$n];if($null -eq $x -or $null -eq $x.Value){return @()};return @($x.Value|Where-Object{$null -ne $_})}
+
+          $job=Payload (Invoke-CS 'queryAsyncJobResult' @{jobid=$expectedJobId}) 'queryAsyncJobResult'
+          $job|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $evidence 'async-job.json') -Encoding UTF8
+          $offerPayload=Payload (Invoke-CS 'listBackupOfferings' @{zoneid=$expectedZoneId;page='1';pagesize='100'}) 'listBackupOfferings'
+          $offerPayload|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $evidence 'offerings.json') -Encoding UTF8
+          $offerings=@(Rows $offerPayload 'backupoffering')
+          $exact=@($offerings|Where-Object{$null -ne $_ -and $null -ne $_.PSObject.Properties['name'] -and $null -ne $_.PSObject.Properties['externalid'] -and [string]$_.name -ceq $expectedOfferingName -and [string]$_.externalid -ceq $expectedRepositoryName})
+          $status=[int]$job.jobstatus
+          if($status -eq 0){throw 'Exact backup offering async job is still in progress; do not retry mutation.'}
+          if($status -eq 2){throw "Exact backup offering async job failed: $($job.jobresult | ConvertTo-Json -Compress -Depth 8)"}
+          if($status -ne 1){throw "Unexpected async job status $status"}
+          if($exact.Count -ne 1){throw 'Async job succeeded but exact backup offering does not reconcile uniquely.'}
+          $offering=$exact[0]
+          @('LAYERSENTRY_BACKUP_OFFERING_JOB_RECONCILE_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"JOB_ID=$expectedJobId",'JOB_STATUS=1',"OFFERING_ID=$($offering.id)","OFFERING_NAME=$($offering.name)","EXTERNAL_ID=$($offering.externalid)","PROVIDER=$($offering.provider)","ALLOW_USER_DRIVEN=$($offering.allowuserdrivenbackups)","CROSS_ZONE=$($offering.crosszoneinstancecreation)")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload offering job evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-backup-offering-job-reconcile-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-backup-offering-job-reconcile-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
