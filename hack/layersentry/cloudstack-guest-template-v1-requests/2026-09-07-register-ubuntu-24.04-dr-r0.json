@@ -1,0 +1,13 @@
+{
+  "operation": "REGISTER_LAYERSENTRY_UBUNTU_DR_TEMPLATE_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_GUEST_TEMPLATE",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "name": "layersentry-ubuntu-24.04-dr-r0",
+  "displayText": "LayerSentry Ubuntu 24.04 LTS DR validation",
+  "url": "https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img",
+  "checksum": "{SHA-256}d1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac",
+  "osTypeId": "4fc70719-a832-11f1-ad7e-00155d00390a",
+  "format": "QCOW2",
+  "hypervisor": "KVM",
+  "arch": "x86_64"
+}
