@@ -1,0 +1,6 @@
+{
+  "operation": "DIAGNOSE_LAYERSENTRY_TEMPLATE_DOWNLOAD_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_TEMPLATE_DIAGNOSTIC",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "templateId": "588ecfc9-88b3-43c9-9e04-b4fc41054d00"
+}
