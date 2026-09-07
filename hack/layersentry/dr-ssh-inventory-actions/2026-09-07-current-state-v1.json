@@ -1,0 +1,7 @@
+{
+  "operation": "INVENTORY_LAYERSENTRY_DR_CURRENT_STATE_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_DR_CURRENT_STATE",
+  "vmName": "layersentry-dr-rocky9",
+  "host": "10.10.10.20",
+  "dcManagement": "10.10.10.14"
+}
