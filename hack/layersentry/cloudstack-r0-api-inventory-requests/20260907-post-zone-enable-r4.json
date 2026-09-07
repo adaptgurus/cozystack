@@ -1,0 +1,8 @@
+{
+  "operation": "READ_ONLY_POST_ZONE_ENABLE_RECONCILE",
+  "target": "dc",
+  "mutationAuthorized": false,
+  "zoneEnableRunId": "34099582011",
+  "expectedZoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "expectedAllocationState": "Enabled"
+}
