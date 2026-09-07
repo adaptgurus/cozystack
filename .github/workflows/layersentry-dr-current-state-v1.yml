@@ -1,0 +1,159 @@
+name: LayerSentry DR Current State v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/dr-current-state-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Inspect exact DR host without mutation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
+      DR_USER: ${{ secrets.LAYERSENTRY_DR_ROCKY_USER }}
+      DR_KEY: ${{ secrets.LAYERSENTRY_DR_SSH_PRIVATE_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Capture Hyper-V and Rocky DR state read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $expectedVm='layersentry-dr-rocky9'
+          $expectedHost='10.10.10.20'
+          $expectedUser='root'
+          $expectedDcManagement='10.10.10.14'
+          if($env:DR_HOST -cne $expectedHost -or $env:DR_USER -cne $expectedUser -or [string]::IsNullOrWhiteSpace($env:DR_KEY)){throw 'DR SSH secret binding mismatch.'}
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/dr-current-state-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one DR current-state request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'INVENTORY_LAYERSENTRY_DR_CURRENT_STATE_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_DR_CURRENT_STATE' -or [string]$request.vmName -cne $expectedVm -or [string]$request.host -cne $expectedHost -or [string]$request.dcManagement -cne $expectedDcManagement){throw 'DR current-state request mismatch.'}
+
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-dr-current-state-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          @('LAYERSENTRY_DR_CURRENT_STATE_V1_STARTED',"RUN_ID=$env:GITHUB_RUN_ID","COMMIT=$env:GITHUB_SHA",'MUTATION=false',"VM=$expectedVm","HOST=$expectedHost","DC_MANAGEMENT=$expectedDcManagement")|Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
+
+          $vm=@(Get-VM -Name $expectedVm -ErrorAction SilentlyContinue)
+          if($vm.Count -ne 1){throw "Expected exactly one Hyper-V VM named $expectedVm; found $($vm.Count)."}
+          $processor=Get-VMProcessor -VMName $expectedVm -ErrorAction Stop
+          $memory=Get-VMMemory -VMName $expectedVm -ErrorAction Stop
+          $disks=@(Get-VMHardDiskDrive -VMName $expectedVm -ErrorAction Stop|ForEach-Object{
+            $drive=$_
+            $vhd=if($drive.Path){Get-VHD -Path $drive.Path -ErrorAction Stop}else{$null}
+            [pscustomobject]@{ControllerType=[string]$drive.ControllerType;ControllerNumber=$drive.ControllerNumber;ControllerLocation=$drive.ControllerLocation;Path=$drive.Path;VirtualSizeGiB=if($vhd){[math]::Round([double]$vhd.Size/1GB,2)}else{$null};FileSizeGiB=if($vhd){[math]::Round([double]$vhd.FileSize/1GB,2)}else{$null};VhdFormat=if($vhd){[string]$vhd.VhdFormat}else{$null};VhdType=if($vhd){[string]$vhd.VhdType}else{$null}}
+          })
+          $nics=@(Get-VMNetworkAdapter -VMName $expectedVm -ErrorAction Stop|ForEach-Object{[pscustomobject]@{Name=$_.Name;SwitchName=$_.SwitchName;Status=[string]$_.Status;MacAddress=$_.MacAddress;MacAddressSpoofing=[string]$_.MacAddressSpoofing;IPAddresses=@($_.IPAddresses)}})
+          [pscustomobject]@{Name=$vm[0].Name;Id=[string]$vm[0].Id;State=[string]$vm[0].State;Status=[string]$vm[0].Status;Generation=[int]$vm[0].Generation;ProcessorCount=$processor.Count;ExposeVirtualizationExtensions=[bool]$processor.ExposeVirtualizationExtensions;DynamicMemoryEnabled=[bool]$memory.DynamicMemoryEnabled;StartupMemoryGiB=[math]::Round([double]$memory.Startup/1GB,2);Disks=$disks;NetworkAdapters=$nics;CheckpointCount=@(Get-VMSnapshot -VMName $expectedVm -ErrorAction SilentlyContinue).Count}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $evidence 'hyperv-vm.json') -Encoding UTF8
+          if([string]$vm[0].State -cne 'Running'){throw 'Exact DR Hyper-V VM is not Running.'}
+          if(-not [bool]$processor.ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed to the DR VM.'}
+
+          $key=Join-Path $env:RUNNER_TEMP "layersentry-dr-current-$env:GITHUB_RUN_ID.key"
+          $known=Join-Path $env:RUNNER_TEMP "layersentry-dr-current-$env:GITHUB_RUN_ID.known_hosts"
+          [IO.File]::WriteAllText($key,$env:DR_KEY.Replace("`r",'')+"`n",[Text.UTF8Encoding]::new($false))
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & icacls $key /inheritance:r /grant:r "${identity}:(R)"|Out-Null
+          if($LASTEXITCODE -ne 0){throw 'SSH private-key ACL failed.'}
+
+          $remote=@'
+set -u
+printf 'DR_HOSTNAME=%s\n' "$(hostname)"
+if [ -r /etc/os-release ]; then . /etc/os-release; printf 'DR_OS_ID=%s\nDR_OS_VERSION_ID=%s\nDR_OS_PRETTY=%s\n' "${ID:-}" "${VERSION_ID:-}" "${PRETTY_NAME:-}"; fi
+printf 'DR_KERNEL=%s\n' "$(uname -r)"
+printf 'DR_ARCH=%s\n' "$(uname -m)"
+if [ -c /dev/kvm ]; then echo 'KVM_DEVICE=present'; else echo 'KVM_DEVICE=absent'; fi
+service_state(){ systemctl is-active "$1" 2>/dev/null || true; }
+package_state(){ rpm -q "$1" 2>/dev/null || echo 'not-installed'; }
+printf 'LIBVIRT_SERVICE=%s\n' "$(service_state libvirtd)"
+printf 'VIRTQEMUD_SERVICE=%s\n' "$(service_state virtqemud)"
+printf 'CLOUDSTACK_AGENT_SERVICE=%s\n' "$(service_state cloudstack-agent)"
+printf 'CLOUDSTACK_MANAGEMENT_SERVICE=%s\n' "$(service_state cloudstack-management)"
+printf 'FIREWALLD_SERVICE=%s\n' "$(service_state firewalld)"
+printf 'MARIADB_SERVICE=%s\n' "$(service_state mariadb)"
+printf 'SELINUX=%s\n' "$(getenforce 2>/dev/null || echo unknown)"
+printf 'PKG_QEMU_KVM=%s\n' "$(package_state qemu-kvm)"
+printf 'PKG_LIBVIRT_DAEMON_KVM=%s\n' "$(package_state libvirt-daemon-kvm)"
+printf 'PKG_CLOUDSTACK_AGENT=%s\n' "$(package_state cloudstack-agent)"
+printf 'PKG_CLOUDSTACK_MANAGEMENT=%s\n' "$(package_state cloudstack-management)"
+if [ -f /etc/cloudstack/management/db.properties ]; then echo 'MANAGEMENT_DB_CONFIG_PRESENT=true'; else echo 'MANAGEMENT_DB_CONFIG_PRESENT=false'; fi
+if [ -f /etc/cloudstack/agent/agent.properties ]; then
+  echo 'AGENT_CONFIG_PRESENT=true'
+  awk -F= '$1=="host" || $1=="zone" || $1=="pod" || $1=="cluster" || $1=="resource" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); printf "AGENT_%s=%s\n", toupper($1), $2}' /etc/cloudstack/agent/agent.properties
+else
+  echo 'AGENT_CONFIG_PRESENT=false'
+fi
+probe(){ if timeout 4 bash -c "</dev/tcp/$1/$2" 2>/dev/null; then echo true; else echo false; fi; }
+printf 'DC_8080_REACHABLE=%s\n' "$(probe 10.10.10.14 8080)"
+printf 'DC_8250_REACHABLE=%s\n' "$(probe 10.10.10.14 8250)"
+echo '--- CPU ---'
+lscpu 2>/dev/null | grep -E '^(Architecture|CPU\(s\)|Virtualization|Hypervisor vendor):' || true
+echo '--- MEMORY ---'
+free -b || true
+echo '--- ADDRESSES ---'
+ip -br addr || true
+echo '--- ROUTES ---'
+ip route || true
+echo '--- BRIDGES ---'
+if command -v bridge >/dev/null 2>&1; then bridge link || true; fi
+if command -v ip >/dev/null 2>&1; then ip -d link show type bridge || true; fi
+echo '--- STORAGE ---'
+lsblk -b -o NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS,MODEL || true
+df -hT || true
+echo '--- LIBVIRT VMS ---'
+if command -v virsh >/dev/null 2>&1; then virsh list --all || true; virsh net-list --all || true; fi
+echo '--- FIREWALL ---'
+if command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --state 2>/dev/null || true; firewall-cmd --list-all 2>/dev/null || true; fi
+echo '--- LISTENERS ---'
+ss -lnt 2>/dev/null || true
+'@
+          $encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remote))
+          try{
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue'
+            $result=& ssh.exe -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known" -o LogLevel=ERROR -i $key "$expectedUser@$expectedHost" "printf '%s' '$encoded' | base64 -d | bash" 2>&1
+            $rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            $result|Set-Content -LiteralPath (Join-Path $evidence 'rocky-current-state.txt') -Encoding UTF8
+            if($rc -ne 0){throw "Read-only DR SSH inventory exited $rc."}
+          }finally{
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $known -Force -ErrorAction SilentlyContinue
+          }
+
+          $text=Get-Content -LiteralPath (Join-Path $evidence 'rocky-current-state.txt') -Raw -Encoding UTF8
+          function Value([string]$name){$m=[regex]::Match($text,"(?m)^$([regex]::Escape($name))=(.*)$");if($m.Success){return $m.Groups[1].Value.Trim()};return ''}
+          $agentService=Value 'CLOUDSTACK_AGENT_SERVICE'
+          $managementService=Value 'CLOUDSTACK_MANAGEMENT_SERVICE'
+          $agentHost=Value 'AGENT_HOST'
+          $kvm=Value 'KVM_DEVICE'
+          $dc8250=Value 'DC_8250_REACHABLE'
+          $possibleControlConflict=($managementService -ceq 'active') -or ($agentService -ceq 'active' -and -not [string]::IsNullOrWhiteSpace($agentHost) -and $agentHost -cne $expectedDcManagement)
+          @('LAYERSENTRY_DR_CURRENT_STATE_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID","COMMIT=$env:GITHUB_SHA",'MUTATION=false',"VM=$expectedVm","HOST=$expectedHost","KVM_DEVICE=$kvm","CLOUDSTACK_AGENT_SERVICE=$agentService","AGENT_HOST=$agentHost","CLOUDSTACK_MANAGEMENT_SERVICE=$managementService","DC_8250_REACHABLE=$dc8250","POSSIBLE_CONTROL_CONFLICT=$($possibleControlConflict.ToString().ToLowerInvariant())")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload sanitized DR current-state evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-dr-current-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-dr-current-state-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
