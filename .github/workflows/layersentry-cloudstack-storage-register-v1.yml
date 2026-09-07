@@ -1,0 +1,239 @@
+name: LayerSentry CloudStack Storage Register v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-storage-register-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  register:
+    name: Register one exact native CloudStack storage resource
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Register requested native storage resource
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $expectedZoneId = '929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedPodId = '020dc658-af4e-4e2e-bed5-0607de8a787f'
+          $expectedClusterId = '7d2bb586-6b60-4c51-aa5f-3b4903f31e51'
+          $expectedHostId = '3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
+          $primaryName = 'layersentry-local-primary'
+          $primaryUrl = 'nfs://10.10.10.14/export/primary'
+          $secondaryName = 'layersentry-local-secondary'
+          $secondaryUrl = 'nfs://10.10.10.14/export/secondary'
+          $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
+
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)) {
+            throw 'Scoped CloudStack API credentials are unavailable.'
+          }
+          if ($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api') { throw 'CloudStack endpoint binding mismatch.' }
+
+          $evidence = Join-Path $env:RUNNER_TEMP "layersentry-storage-register-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          function ConvertTo-Rfc3986 {
+            param([Parameter(Mandatory = $true)][string]$Value)
+            return [Uri]::EscapeDataString($Value).Replace('%7E', '~')
+          }
+
+          function Invoke-CloudStackApi {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [hashtable]$Parameters = @{}
+            )
+            $query = [ordered]@{ apikey = $env:CLOUDSTACK_API_KEY; command = $Command; response = 'json' }
+            foreach ($name in $Parameters.Keys) { $query[[string]$name] = [string]$Parameters[$name] }
+            $pairs = @(
+              $query.GetEnumerator() |
+                Sort-Object { ([string]$_.Key).ToLowerInvariant() } |
+                ForEach-Object { '{0}={1}' -f (ConvertTo-Rfc3986 ([string]$_.Key)), (ConvertTo-Rfc3986 ([string]$_.Value)) }
+            )
+            $canonical = (($pairs -join '&').ToLowerInvariant())
+            $hmac = New-Object System.Security.Cryptography.HMACSHA1
+            try {
+              $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY)
+              $signature = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))
+            }
+            finally { $hmac.Dispose() }
+            $uri = '{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri, ($pairs -join '&'), (ConvertTo-Rfc3986 $signature)
+            try {
+              return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+            }
+            catch {
+              $httpCode = $null
+              if ($_.Exception.Response) { try { $httpCode = [int]$_.Exception.Response.StatusCode } catch {} }
+              $failure = New-Object System.Management.Automation.RuntimeException("CloudStack command $Command failed without a confirmed result.")
+              if ($null -ne $httpCode) { $failure.Data['HttpStatusCode'] = $httpCode }
+              throw $failure
+            }
+          }
+
+          function Get-Payload {
+            param([Parameter(Mandatory = $true)][object]$Response, [Parameter(Mandatory = $true)][string]$Command)
+            $propertyName = "$($Command.ToLowerInvariant())response"
+            $property = $Response.PSObject.Properties[$propertyName]
+            if ($null -eq $property) { throw "CloudStack response for $Command did not contain $propertyName." }
+            return $property.Value
+          }
+
+          function Get-Collection {
+            param([Parameter(Mandatory = $true)][object]$Payload, [Parameter(Mandatory = $true)][string]$Name)
+            $property = $Payload.PSObject.Properties[$Name]
+            if ($null -eq $property -or $null -eq $property.Value) { return @() }
+            return @($property.Value | Where-Object { $null -ne $_ })
+          }
+
+          function Assert-LiveAuthority {
+            $zones = Get-Collection (Get-Payload (Invoke-CloudStackApi 'listZones' @{ id=$expectedZoneId; listall='true' }) 'listZones') 'zone'
+            if ($zones.Count -ne 1 -or [string]$zones[0].id -cne $expectedZoneId -or [string]$zones[0].name -cne 'dc') { throw 'DC Zone identity mismatch.' }
+            $hosts = Get-Collection (Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts') 'host'
+            if ($hosts.Count -ne 1 -or [string]$hosts[0].id -cne $expectedHostId -or [string]$hosts[0].state -cne 'Up' -or [string]$hosts[0].resourcestate -cne 'Enabled') {
+              throw 'Registered KVM host is not exact/healthy; refusing storage mutation.'
+            }
+            if ([string]$hosts[0].clusterid -cne $expectedClusterId -or [string]$hosts[0].podid -cne $expectedPodId -or [string]$hosts[0].zoneid -cne $expectedZoneId) {
+              throw 'Registered KVM host placement mismatch.'
+            }
+          }
+
+          function Get-ExactPrimary {
+            $payload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ name=$primaryName; zoneid=$expectedZoneId; listall='true' }) 'listStoragePools'
+            $rows = @(Get-Collection $payload 'storagepool' | Where-Object { [string]$_.name -ceq $primaryName -and [string]$_.zoneid -ceq $expectedZoneId })
+            if ($rows.Count -gt 1) { throw 'Duplicate exact primary-storage name detected.' }
+            return $rows
+          }
+
+          function Get-ExactSecondary {
+            $payload = Get-Payload (Invoke-CloudStackApi 'listImageStores' @{ name=$secondaryName; zoneid=$expectedZoneId }) 'listImageStores'
+            $rows = @(Get-Collection $payload 'imagestore' | Where-Object { [string]$_.name -ceq $secondaryName -and [string]$_.zoneid -ceq $expectedZoneId })
+            if ($rows.Count -gt 1) { throw 'Duplicate exact image-store name detected.' }
+            return $rows
+          }
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-storage-register-v1-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one storage-registration request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -cne 'REGISTER_LAYERSENTRY_CLOUDSTACK_STORAGE_V1') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_NATIVE_STORAGE_REGISTRATION') { throw 'Authorization mismatch.' }
+          if ([string]$request.zoneId -cne $expectedZoneId -or [string]$request.podId -cne $expectedPodId -or
+              [string]$request.clusterId -cne $expectedClusterId -or [string]$request.hostId -cne $expectedHostId) {
+            throw 'Request authority binding mismatch.'
+          }
+
+          $resource = [string]$request.resource
+          if ($resource -notin @('primary','secondary')) { throw 'Resource must be primary or secondary.' }
+          if ($resource -ceq 'primary' -and ([string]$request.name -cne $primaryName -or [string]$request.url -cne $primaryUrl)) { throw 'Primary request binding mismatch.' }
+          if ($resource -ceq 'secondary' -and ([string]$request.name -cne $secondaryName -or [string]$request.url -cne $secondaryUrl)) { throw 'Secondary request binding mismatch.' }
+
+          Assert-LiveAuthority
+          $mutationSubmitted = $false
+          $reconciledAfterSubmissionFailure = $false
+          $submissionHttpStatus = $null
+
+          if ($resource -ceq 'primary') {
+            $rows = @(Get-ExactPrimary)
+            if ($rows.Count -eq 0) {
+              $mutationSubmitted = $true
+              try {
+                $null = Invoke-CloudStackApi 'createStoragePool' @{
+                  name=$primaryName; url=$primaryUrl; zoneid=$expectedZoneId; podid=$expectedPodId;
+                  clusterid=$expectedClusterId; hypervisor='KVM'; scope='cluster'
+                }
+              }
+              catch {
+                $submissionHttpStatus = $_.Exception.Data['HttpStatusCode']
+                $rows = @(Get-ExactPrimary)
+                if ($rows.Count -eq 1) { $reconciledAfterSubmissionFailure = $true }
+                else { throw }
+              }
+            }
+            $rows = @(Get-ExactPrimary)
+            if ($rows.Count -ne 1) { throw 'Primary storage is not uniquely visible after registration.' }
+            $row = $rows[0]
+            if ([string]$row.clusterid -cne $expectedClusterId -or [string]$row.podid -cne $expectedPodId) { throw 'Primary storage placement mismatch after registration.' }
+            if ([string]$row.state -cne 'Up') { throw "Primary storage is registered but not Up (state=$([string]$row.state))." }
+            $result = [ordered]@{
+              EvidenceClass='R2_NATIVE_STORAGE_REGISTRATION'; RunId=$env:GITHUB_RUN_ID; Commit=$env:GITHUB_SHA;
+              Resource='primary'; Id=[string]$row.id; Name=[string]$row.name; ZoneId=[string]$row.zoneid;
+              PodId=[string]$row.podid; ClusterId=[string]$row.clusterid; State=[string]$row.state; Type=[string]$row.type;
+              MutationSubmitted=$mutationSubmitted; ReconciledAfterSubmissionFailure=$reconciledAfterSubmissionFailure;
+              SubmissionHttpStatus=$submissionHttpStatus
+            }
+          }
+          else {
+            $rows = @(Get-ExactSecondary)
+            if ($rows.Count -eq 0) {
+              $mutationSubmitted = $true
+              try {
+                $null = Invoke-CloudStackApi 'addImageStore' @{ provider='NFS'; name=$secondaryName; url=$secondaryUrl; zoneid=$expectedZoneId }
+              }
+              catch {
+                $submissionHttpStatus = $_.Exception.Data['HttpStatusCode']
+                $rows = @(Get-ExactSecondary)
+                if ($rows.Count -eq 1) { $reconciledAfterSubmissionFailure = $true }
+                else { throw }
+              }
+            }
+            $rows = @(Get-ExactSecondary)
+            if ($rows.Count -ne 1) { throw 'Secondary image store is not uniquely visible after registration.' }
+            $row = $rows[0]
+            if ([string]$row.zoneid -cne $expectedZoneId) { throw 'Secondary image-store Zone mismatch after registration.' }
+            if ([string]$row.protocol -notin @('nfs','NFS')) { throw "Unexpected secondary image-store protocol: $([string]$row.protocol)" }
+            $result = [ordered]@{
+              EvidenceClass='R2_NATIVE_STORAGE_REGISTRATION'; RunId=$env:GITHUB_RUN_ID; Commit=$env:GITHUB_SHA;
+              Resource='secondary'; Id=[string]$row.id; Name=[string]$row.name; ZoneId=[string]$row.zoneid;
+              Protocol=[string]$row.protocol; Provider=[string]$row.providername; Scope=[string]$row.scope;
+              MutationSubmitted=$mutationSubmitted; ReconciledAfterSubmissionFailure=$reconciledAfterSubmissionFailure;
+              SubmissionHttpStatus=$submissionHttpStatus
+            }
+          }
+
+          $result['CapturedUtc'] = [DateTime]::UtcNow.ToString('o')
+          $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'result.json') -Encoding UTF8
+          @(
+            'LAYERSENTRY_NATIVE_STORAGE_REGISTRATION_COMPLETE'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "RESOURCE=$resource"
+            "RESOURCE_ID=$($result.Id)"
+            "MUTATION_SUBMITTED=$mutationSubmitted"
+            "RECONCILED_AFTER_SUBMISSION_FAILURE=$reconciledAfterSubmissionFailure"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload storage registration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-storage-register-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-storage-register-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
