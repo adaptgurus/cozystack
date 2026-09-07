@@ -176,10 +176,10 @@ jobs:
             $hostPayload = Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts'
             $hosts = @(Get-Collection $hostPayload 'host')
             if ($hosts.Count -ne 1) { throw 'Exact registered KVM host was not uniquely returned.' }
-            $host = $hosts[0]
-            if ([string]$host.id -cne $expectedHostId -or [string]$host.state -cne 'Up' -or [string]$host.resourcestate -cne 'Enabled' -or
-                [string]$host.zoneid -cne $expectedZoneId -or [string]$host.podid -cne $expectedPodId -or [string]$host.clusterid -cne $expectedClusterId -or
-                [string]$host.hypervisor -cne 'KVM') {
+            $kvmHost = $hosts[0]
+            if ([string]$kvmHost.id -cne $expectedHostId -or [string]$kvmHost.state -cne 'Up' -or [string]$kvmHost.resourcestate -cne 'Enabled' -or
+                [string]$kvmHost.zoneid -cne $expectedZoneId -or [string]$kvmHost.podid -cne $expectedPodId -or [string]$kvmHost.clusterid -cne $expectedClusterId -or
+                [string]$kvmHost.hypervisor -cne 'KVM') {
               throw 'Registered KVM host readiness/placement mismatch.'
             }
 
