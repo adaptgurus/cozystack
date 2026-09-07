@@ -1,0 +1,147 @@
+param(
+  [Parameter(Mandatory=$true)][string]$RequestPath,
+  [Parameter(Mandatory=$true)][string]$OutputDirectory
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+Import-Module Hyper-V -ErrorAction Stop
+
+$expectedVm = 'sen'
+$expectedAddress = '10.10.10.14'
+$url = 'https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+$sha256 = 'd1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac'
+
+$request = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ([string]$request.operation -cne 'DIAGNOSE_LAYERSENTRY_DC_KVM_URL_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_READ_ONLY_KVM_URL_DIAGNOSTIC') { throw 'KVM URL diagnostic authorization mismatch.' }
+if ([string]$request.vmName -cne $expectedVm -or [string]$request.address -cne $expectedAddress -or [string]$request.url -cne $url -or [string]$request.sha256 -cne $sha256) { throw 'KVM URL diagnostic target mismatch.' }
+
+$vm = @(Get-VM -Name $expectedVm -ErrorAction SilentlyContinue)
+if ($vm.Count -ne 1 -or [string]$vm[0].State -cne 'Running') { throw "Exact Hyper-V VM '$expectedVm' is not uniquely Running." }
+$cpu = Get-VMProcessor -VMName $expectedVm -ErrorAction Stop
+if (-not [bool]$cpu.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed on exact DC VM.' }
+
+if (Test-Path -LiteralPath $OutputDirectory) { Remove-Item -LiteralPath $OutputDirectory -Recurse -Force }
+New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
+
+$key = Join-Path $env:RUNNER_TEMP "layersentry-kvm-url-$env:GITHUB_RUN_ID"
+Remove-Item -LiteralPath $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+$comment = "layersentry-kvm-url-$env:GITHUB_RUN_ID"
+$keygenCommand = "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+& cmd.exe /d /s /c $keygenCommand
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'Ephemeral ssh-keygen failed.' }
+
+$source = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+$patchedHelper = Join-Path $env:RUNNER_TEMP "invoke-layersentry-kvm-url-$env:GITHUB_RUN_ID.ps1"
+$helper = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+$needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$expectedVm')")) -Encoding UTF8
+
+$pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+$bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+$consoleRequest = [ordered]@{
+  requestId = "kvm-url-bootstrap-$env:GITHUB_RUN_ID"
+  delayAfterSeconds = 3
+  targets = @([ordered]@{
+    vm = $expectedVm
+    actions = @(
+      [ordered]@{ kind='key'; code=13 },
+      [ordered]@{ kind='text'; value=$bootstrap },
+      [ordered]@{ kind='key'; code=13 }
+    )
+  })
+}
+$consolePath = Join-Path $env:RUNNER_TEMP "kvm-url-console-$env:GITHUB_RUN_ID.json"
+$consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+& $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $OutputDirectory 'console-bootstrap')
+
+$ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10',"root@$expectedAddress")
+$ready = $false
+try {
+  for ($i=1; $i -le 12; $i++) {
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $probe = & ssh.exe @ssh 'printf KVM_URL_DIAG_READY' 2>&1; $rc = $LASTEXITCODE
+    $ErrorActionPreference = $old
+    if ($rc -eq 0 -and (($probe -join '') -match 'KVM_URL_DIAG_READY')) { $ready = $true; break }
+    Start-Sleep -Seconds 5
+  }
+  if (-not $ready) { throw 'Ephemeral SSH bootstrap to exact DC KVM host failed.' }
+
+  $remote = @'
+set -u
+URL='https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+echo "HOSTNAME=$(hostname)"
+echo "DATE=$(date -Is)"
+echo "KVM_DEVICE=$(test -c /dev/kvm && echo present || echo absent)"
+echo "CLOUDSTACK_AGENT=$(systemctl is-active cloudstack-agent 2>/dev/null || true)"
+echo "CLOUDSTACK_MANAGEMENT=$(systemctl is-active cloudstack-management 2>/dev/null || true)"
+echo "ARIA2=$(command -v aria2c 2>/dev/null || true)"
+echo "CURL=$(command -v curl 2>/dev/null || true)"
+echo "WGET=$(command -v wget 2>/dev/null || true)"
+echo '--- RESOLVER ---'
+cat /etc/resolv.conf || true
+echo '--- DNS ---'
+getent ahosts cloud-images.ubuntu.com | head -n 20 || true
+echo '--- ROUTES ---'
+ip route || true
+ip -6 route || true
+echo '--- PROXY ENV ---'
+env | grep -Ei '^(http|https|no)_proxy=' | sed -E 's#(https?://)[^/@]+@#\1REDACTED@#' || true
+echo '--- TLS/CURL HEAD ---'
+curl -vIL --connect-timeout 15 --max-time 60 "$URL" -o /dev/null 2>&1 | tail -n 120 || true
+echo '--- CURL RANGE ---'
+rm -f /tmp/layersentry-kvm-url-probe.bin
+curl -sSL --range 0-4095 --connect-timeout 15 --max-time 60 -o /tmp/layersentry-kvm-url-probe.bin -w 'CURL_HTTP=%{http_code} CURL_BYTES=%{size_download} CURL_REMOTE=%{remote_ip} CURL_SSL=%{ssl_verify_result}\n' "$URL" || true
+stat -c 'RANGE_FILE_BYTES=%s' /tmp/layersentry-kvm-url-probe.bin 2>/dev/null || true
+file /tmp/layersentry-kvm-url-probe.bin 2>/dev/null || true
+rm -f /tmp/layersentry-kvm-url-probe.bin
+echo '--- WGET SPIDER ---'
+wget --server-response --spider --timeout=30 "$URL" 2>&1 | tail -n 80 || true
+echo '--- PYTHON HTTPS ---'
+python3 - <<'PY'
+import ssl, urllib.request
+u='https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+try:
+    req=urllib.request.Request(u, method='HEAD', headers={'User-Agent':'Apache-CloudStack-LayerSentry-Diagnostic'})
+    with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as r:
+        print('PY_HEAD_STATUS=%s' % r.status)
+        print('PY_CONTENT_LENGTH=%s' % r.headers.get('Content-Length'))
+        print('PY_CONTENT_TYPE=%s' % r.headers.get('Content-Type'))
+except Exception as e:
+    print('PY_HEAD_ERROR=%r' % (e,))
+PY
+echo '--- PACKAGES ---'
+rpm -q aria2 curl wget ca-certificates cloudstack-agent qemu-img 2>/dev/null || true
+echo '--- AGENT DIRECT DOWNLOAD SETTINGS ---'
+if [ -r /etc/cloudstack/agent/agent.properties ]; then grep -Ei 'direct|download|proxy|url' /etc/cloudstack/agent/agent.properties | grep -Evi 'password|secret|key' || true; fi
+echo '--- AGENT URL LOGS ---'
+if [ -r /var/log/cloudstack/agent/agent.log ]; then grep -Ei 'ValidateUrl|direct.?download|cloud-images\.ubuntu\.com|validation failed' /var/log/cloudstack/agent/agent.log | tail -n 180 | sed -E 's/(apikey|signature|secretkey)=[^ &]+/\1=REDACTED/Ig' || true; fi
+echo KVM_URL_DIAGNOSTIC_COMPLETE
+'@
+  $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  $result = & ssh.exe @ssh $remote 2>&1; $rc = $LASTEXITCODE
+  $ErrorActionPreference = $old
+  $result | Set-Content -LiteralPath (Join-Path $OutputDirectory 'kvm-url-diagnostic.txt') -Encoding UTF8
+  if ($rc -ne 0) { throw "KVM URL diagnostic exited $rc." }
+  if (-not (($result -join "`n") -match 'KVM_URL_DIAGNOSTIC_COMPLETE')) { throw 'KVM URL diagnostic completion marker missing.' }
+}
+finally {
+  if ($ready) {
+    $safeComment = $comment.Replace("'",'')
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+    $ErrorActionPreference = $old
+  }
+  Remove-Item -LiteralPath $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+}
+
+@(
+  'LAYERSENTRY_DC_KVM_URL_DIAGNOSTIC_V1_COMPLETE',
+  "RUN_ID=$env:GITHUB_RUN_ID",
+  'RUNTIME_MUTATION=EPHEMERAL_SSH_KEY_ONLY',
+  "VM=$expectedVm",
+  "ADDRESS=$expectedAddress",
+  "URL=$url",
+  "SHA256=$sha256"
+) | Set-Content -LiteralPath (Join-Path $OutputDirectory 'summary.txt') -Encoding UTF8
