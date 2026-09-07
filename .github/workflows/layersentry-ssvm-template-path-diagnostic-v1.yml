@@ -1,0 +1,123 @@
+name: LayerSentry SSVM Template Path Diagnostic v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/ssvm-template-path-diagnostic-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact request and console helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Probe KVM host and SSVM download path read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+          $expectedVm='sen'
+          $expectedAddress='10.10.10.14'
+          $expectedSsvmLink='169.254.240.237'
+          $templateId='588ecfc9-88b3-43c9-9e04-b4fc41054d00'
+          $url='https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/ssvm-template-path-diagnostic-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one SSVM diagnostic request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'DIAGNOSE_LAYERSENTRY_SSVM_TEMPLATE_PATH_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_SSVM_TEMPLATE_DIAGNOSTIC' -or [string]$request.templateId -cne $templateId -or [string]$request.kvmAddress -cne $expectedAddress -or [string]$request.ssvmLinkLocal -cne $expectedSsvmLink){throw 'SSVM diagnostic request mismatch.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-ssvm-template-path-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          $vm=@(Get-VM -Name $expectedVm -ErrorAction SilentlyContinue)
+          if($vm.Count -ne 1 -or [string]$vm[0].State -cne 'Running'){throw "Exact DC Hyper-V VM '$expectedVm' is not uniquely Running."}
+          $cpu=Get-VMProcessor -VMName $expectedVm -ErrorAction Stop
+          if(-not [bool]$cpu.ExposeVirtualizationExtensions){throw 'Nested virtualization is not exposed on exact DC VM.'}
+          $key=Join-Path $env:RUNNER_TEMP "layersentry-ssvm-diag-$env:GITHUB_RUN_ID"
+          Remove-Item -LiteralPath $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          $comment="layersentry-ssvm-diag-$env:GITHUB_RUN_ID"
+          & ssh-keygen.exe -q -t ed25519 -N '' -C $comment -f $key
+          if($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key)){throw 'Ephemeral ssh-keygen failed.'}
+          $source=(Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patched=Join-Path $env:RUNNER_TEMP "invoke-layersentry-ssvm-diag-$env:GITHUB_RUN_ID.ps1"
+          $helper=Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          $needle="`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          if(-not $helper.Contains($needle)){throw 'Console helper allow-list guard not found.'}
+          Set-Content -LiteralPath $patched -Value ($helper.Replace($needle,"`$allowedNames = @('$expectedVm')")) -Encoding UTF8
+          function Invoke-Console([string]$id,[string]$command){
+            $req=[ordered]@{requestId=$id;delayAfterSeconds=3;targets=@([ordered]@{vm=$expectedVm;actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$command},[ordered]@{kind='key';code=13})})}
+            $p=Join-Path $env:RUNNER_TEMP "$id.json";$req|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $p -Encoding UTF8
+            & $patched -RequestPath $p -OutputDirectory (Join-Path $evidence $id)
+          }
+          $pub=(Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          Invoke-Console "bootstrap-$env:GITHUB_RUN_ID" "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $ssh=@('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=NUL','-o','LogLevel=ERROR','-o','ConnectTimeout=10',"root@$expectedAddress")
+          $ready=$false
+          try{
+            for($i=0;$i -lt 12;$i++){
+              $old=$ErrorActionPreference;$ErrorActionPreference='Continue';$probe=& ssh.exe @ssh 'printf LAYERSENTRY_DC_READY' 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old
+              if($rc -eq 0 -and (($probe -join '') -match 'LAYERSENTRY_DC_READY')){$ready=$true;break};Start-Sleep -Seconds 5
+            }
+            if(-not $ready){throw 'Exact DC VM did not accept the ephemeral key at 10.10.10.14.'}
+            $remote=@"
+set -u
+URL='$url'
+TEMPLATE_ID='$templateId'
+SSVM='$expectedSsvmLink'
+echo DC_HOSTNAME=`$(hostname)
+echo DC_KVM=`$(test -c /dev/kvm && echo present || echo absent)
+echo DC_SYSTEMVM_KEY=`$(test -r /root/.ssh/id_rsa.cloud && echo present || echo absent)
+echo '--- DC URL PROBE ---'
+curl -sSIL --connect-timeout 15 --max-time 60 "`$URL" | sed -n '1,20p' || true
+echo '--- MANAGEMENT TEMPLATE LOGS ---'
+if [ -r /var/log/cloudstack/management/management-server.log ]; then grep -F "`$TEMPLATE_ID" /var/log/cloudstack/management/management-server.log | tail -n 160 | sed -E 's/(apikey|signature|secretkey)=[^ &]+/\1=REDACTED/Ig' || true; fi
+echo '--- SECONDARY RECENT FILES ---'
+find /export/secondary -maxdepth 6 -type f -mmin -90 -printf '%TY-%Tm-%TdT%TH:%TM:%TS %s %p\n' 2>/dev/null | tail -n 120 || true
+if [ ! -r /root/.ssh/id_rsa.cloud ]; then echo SSVM_DIAGNOSTIC=NO_SYSTEMVM_KEY; exit 21; fi
+echo '--- SSVM SSH PROBE ---'
+ssh -i /root/.ssh/id_rsa.cloud -p 3922 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 root@"`$SSVM" "URL='$url' TEMPLATE_ID='$templateId' bash -s" <<'SSVMEOF'
+set -u
+echo SSVM_HOSTNAME=$(hostname)
+echo SSVM_CLOUD_SERVICE=$(systemctl is-active cloud 2>/dev/null || true)
+echo '--- SSVM ADDRESSES ---'; ip -br addr || true
+echo '--- SSVM ROUTES ---'; ip route || true
+echo '--- SSVM RESOLVER ---'; cat /etc/resolv.conf || true
+echo '--- SSVM DNS ---'; getent ahosts cloud-images.ubuntu.com | head -n 12 || true
+echo '--- SSVM TLS HEAD ---'; curl -sSIL --connect-timeout 15 --max-time 60 "$URL" | sed -n '1,30p' || true
+echo '--- SSVM BYTE RANGE ---'; curl -sSL --range 0-1023 --connect-timeout 15 --max-time 60 -o /tmp/layersentry-url-probe.bin -w 'HTTP=%{http_code} BYTES=%{size_download} REMOTE=%{remote_ip}\n' "$URL" || true; stat -c 'PROBE_FILE_BYTES=%s' /tmp/layersentry-url-probe.bin 2>/dev/null || true; rm -f /tmp/layersentry-url-probe.bin
+echo '--- SSVM MOUNTS ---'; mount | grep -E 'SecStorage|secondary|10\.10\.10\.14' || true; df -hT || true
+echo '--- SSVM TEMPLATE LOGS ---'; for f in /var/log/cloud.log /var/log/cloudstack/agent/agent.log; do if [ -r "$f" ]; then echo LOG=$f; grep -F "$TEMPLATE_ID" "$f" | tail -n 120 || true; fi; done
+echo SSVM_DIAGNOSTIC_COMPLETE
+SSVMEOF
+"@
+            $old=$ErrorActionPreference;$ErrorActionPreference='Continue';$result=& ssh.exe @ssh $remote 2>&1;$rc=$LASTEXITCODE;$ErrorActionPreference=$old
+            $result|Set-Content -LiteralPath (Join-Path $evidence 'diagnostic.txt') -Encoding UTF8
+            if($rc -ne 0){throw "Supported KVM-to-SSVM diagnostic exited $rc."}
+            if(-not (($result -join "`n") -match 'SSVM_DIAGNOSTIC_COMPLETE')){throw 'SSVM diagnostic completion marker missing.'}
+          }finally{
+            if($ready){$safe=$comment.Replace("'",'');$old=$ErrorActionPreference;$ErrorActionPreference='Continue';& ssh.exe @ssh "sed -i '/$safe`$/d' /root/.ssh/authorized_keys" 2>&1|Out-Null;$ErrorActionPreference=$old}else{try{Invoke-Console "cleanup-$env:GITHUB_RUN_ID" "sed -i '/$comment`$/d' /root/.ssh/authorized_keys"}catch{}}
+            Remove-Item -LiteralPath $key,"$key.pub" -Force -ErrorAction SilentlyContinue
+          }
+          @('LAYERSENTRY_SSVM_TEMPLATE_PATH_DIAGNOSTIC_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"KVM_ADDRESS=$expectedAddress","SSVM_LINK_LOCAL=$expectedSsvmLink","TEMPLATE_ID=$templateId")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+      - name: Upload SSVM path evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-ssvm-template-path-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-ssvm-template-path-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
