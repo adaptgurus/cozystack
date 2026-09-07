@@ -1,0 +1,11 @@
+{
+  "operation": "REGISTER_LAYERSENTRY_CLOUDSTACK_STORAGE_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_NATIVE_STORAGE_REGISTRATION",
+  "resource": "primary",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "podId": "020dc658-af4e-4e2e-bed5-0607de8a787f",
+  "clusterId": "7d2bb586-6b60-4c51-aa5f-3b4903f31e51",
+  "hostId": "3abb80a8-bc4a-48de-bc99-dedc5ac91bf9",
+  "name": "layersentry-local-primary",
+  "url": "nfs://10.10.10.14/export/primary"
+}
