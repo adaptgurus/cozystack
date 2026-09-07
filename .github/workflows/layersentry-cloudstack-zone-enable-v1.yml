@@ -1,0 +1,322 @@
+name: LayerSentry CloudStack Zone Enable v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-zone-enable-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  enable-zone:
+    name: Enable exact DC Zone through native CloudStack API
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Enable exact DC Zone
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $expectedZoneId = '929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedZoneName = 'dc'
+          $expectedPodId = '020dc658-af4e-4e2e-bed5-0607de8a787f'
+          $expectedClusterId = '7d2bb586-6b60-4c51-aa5f-3b4903f31e51'
+          $expectedHostId = '3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
+          $expectedPrimaryId = 'c7cd8310-ee2f-440a-8910-527bf620c1cc'
+          $expectedPrimaryName = 'layersentry-dc-primary-r0'
+          $expectedSecondaryId = '2620c51e-d2ae-44a3-ba58-393da8f36678'
+          $expectedSecondaryName = 'layersentry-dc-secondary-r0'
+          $expectedSystemTemplateId = '13f22f9c-61e2-4d88-93c0-5735212bccd0'
+          $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
+
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)) {
+            throw 'Scoped CloudStack API credentials are unavailable.'
+          }
+          if ($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api') {
+            throw 'CloudStack API endpoint binding mismatch.'
+          }
+
+          $evidence = Join-Path $env:RUNNER_TEMP "layersentry-zone-enable-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          function ConvertTo-Rfc3986 {
+            param([Parameter(Mandatory = $true)][string]$Value)
+            return [Uri]::EscapeDataString($Value).Replace('%7E', '~')
+          }
+
+          function Invoke-CloudStackApi {
+            param(
+              [Parameter(Mandatory = $true)][string]$Command,
+              [hashtable]$Parameters = @{}
+            )
+
+            $allowed = @('listZones', 'listHosts', 'listStoragePools', 'listImageStores', 'listTemplates', 'updateZone')
+            if ($Command -notin $allowed) { throw "CloudStack command is not allow-listed: $Command" }
+
+            $query = [ordered]@{
+              apikey = $env:CLOUDSTACK_API_KEY
+              command = $Command
+              response = 'json'
+            }
+            foreach ($name in $Parameters.Keys) { $query[[string]$name] = [string]$Parameters[$name] }
+
+            $pairs = @(
+              $query.GetEnumerator() |
+                Sort-Object { ([string]$_.Key).ToLowerInvariant() } |
+                ForEach-Object {
+                  '{0}={1}' -f (ConvertTo-Rfc3986 ([string]$_.Key)), (ConvertTo-Rfc3986 ([string]$_.Value))
+                }
+            )
+            $canonical = (($pairs -join '&').ToLowerInvariant())
+            $hmac = New-Object System.Security.Cryptography.HMACSHA1
+            try {
+              $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY)
+              $signature = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))
+            }
+            finally { $hmac.Dispose() }
+
+            $uri = '{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri, ($pairs -join '&'), (ConvertTo-Rfc3986 $signature)
+            try {
+              return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+            }
+            catch {
+              $httpStatusCode = $null
+              $apiErrorCode = $null
+              $failureRecord = $_
+              $responseProperty = $failureRecord.Exception.PSObject.Properties['Response']
+              $httpResponse = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
+              if ($null -ne $httpResponse) {
+                try { $httpStatusCode = [int]$httpResponse.StatusCode } catch { $httpStatusCode = $null }
+              }
+              $errorBodies = @()
+              if ($null -ne $failureRecord.ErrorDetails) { $errorBodies += $failureRecord.ErrorDetails.Message }
+              if ($null -ne $httpResponse -and $null -ne $httpResponse.PSObject.Methods['GetResponseStream']) {
+                try {
+                  $stream = $httpResponse.GetResponseStream()
+                  $reader = New-Object IO.StreamReader($stream)
+                  try { $errorBodies += $reader.ReadToEnd() }
+                  finally { $reader.Dispose(); $stream.Dispose() }
+                }
+                catch { }
+              }
+              foreach ($errorBody in $errorBodies) {
+                try {
+                  $parsed = $errorBody | ConvertFrom-Json -ErrorAction Stop
+                  foreach ($responseName in @('errorresponse', "$($Command.ToLowerInvariant())response")) {
+                    $property = $parsed.PSObject.Properties[$responseName]
+                    if ($null -eq $property) { continue }
+                    $code = $property.Value.PSObject.Properties['errorcode']
+                    $numericCode = 0
+                    if ($null -ne $code -and [int]::TryParse([string]$code.Value, [ref]$numericCode)) { $apiErrorCode = $numericCode }
+                  }
+                }
+                catch { }
+              }
+              $failure = New-Object System.Management.Automation.RuntimeException("CloudStack command $Command failed without a confirmed result.")
+              $failure.Data['HttpStatusCode'] = $httpStatusCode
+              $failure.Data['ApiErrorCode'] = $apiErrorCode
+              throw $failure
+            }
+          }
+
+          function Get-Payload {
+            param([Parameter(Mandatory = $true)][object]$Response, [Parameter(Mandatory = $true)][string]$Command)
+            $propertyName = "$($Command.ToLowerInvariant())response"
+            $property = $Response.PSObject.Properties[$propertyName]
+            if ($null -eq $property) { throw "CloudStack response for $Command did not contain $propertyName." }
+            return $property.Value
+          }
+
+          function Get-Collection {
+            param([Parameter(Mandatory = $true)][object]$Payload, [Parameter(Mandatory = $true)][string]$Name)
+            $property = $Payload.PSObject.Properties[$Name]
+            if ($null -eq $property -or $null -eq $property.Value) { return @() }
+            return @($property.Value | Where-Object { $null -ne $_ })
+          }
+
+          function Get-ExactZone {
+            $payload = Get-Payload (Invoke-CloudStackApi 'listZones' @{ id=$expectedZoneId; listall='true' }) 'listZones'
+            $rows = @(Get-Collection $payload 'zone')
+            if ($rows.Count -ne 1) { throw 'Exact DC Zone was not uniquely returned.' }
+            $zone = $rows[0]
+            if ([string]$zone.id -cne $expectedZoneId -or [string]$zone.name -cne $expectedZoneName -or [string]$zone.networktype -cne 'Basic') {
+              throw 'DC Zone identity/type mismatch.'
+            }
+            return $zone
+          }
+
+          function Assert-Readiness {
+            $zone = Get-ExactZone
+            if ([string]$zone.allocationstate -notin @('Disabled', 'Enabled')) {
+              throw "Unexpected DC Zone allocation state: $([string]$zone.allocationstate)"
+            }
+
+            $hostPayload = Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts'
+            $hosts = @(Get-Collection $hostPayload 'host')
+            if ($hosts.Count -ne 1) { throw 'Exact registered KVM host was not uniquely returned.' }
+            $host = $hosts[0]
+            if ([string]$host.id -cne $expectedHostId -or [string]$host.state -cne 'Up' -or [string]$host.resourcestate -cne 'Enabled' -or
+                [string]$host.zoneid -cne $expectedZoneId -or [string]$host.podid -cne $expectedPodId -or [string]$host.clusterid -cne $expectedClusterId -or
+                [string]$host.hypervisor -cne 'KVM') {
+              throw 'Registered KVM host readiness/placement mismatch.'
+            }
+
+            $primaryPayload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ id=$expectedPrimaryId; listall='true' }) 'listStoragePools'
+            $primaryRows = @(Get-Collection $primaryPayload 'storagepool')
+            if ($primaryRows.Count -ne 1) { throw 'Exact primary storage was not uniquely returned.' }
+            $primary = $primaryRows[0]
+            if ([string]$primary.id -cne $expectedPrimaryId -or [string]$primary.name -cne $expectedPrimaryName -or [string]$primary.state -cne 'Up' -or
+                [string]$primary.zoneid -cne $expectedZoneId -or [string]$primary.podid -cne $expectedPodId -or [string]$primary.clusterid -cne $expectedClusterId) {
+              throw 'Primary storage readiness/placement mismatch.'
+            }
+
+            $secondaryPayload = Get-Payload (Invoke-CloudStackApi 'listImageStores' @{ id=$expectedSecondaryId; zoneid=$expectedZoneId }) 'listImageStores'
+            $secondaryRows = @(Get-Collection $secondaryPayload 'imagestore')
+            if ($secondaryRows.Count -ne 1) { throw 'Exact secondary image store was not uniquely returned.' }
+            $secondary = $secondaryRows[0]
+            if ([string]$secondary.id -cne $expectedSecondaryId -or [string]$secondary.name -cne $expectedSecondaryName -or
+                [string]$secondary.zoneid -cne $expectedZoneId -or ([string]$secondary.protocol).ToLowerInvariant() -cne 'nfs') {
+              throw 'Secondary image-store readiness/placement mismatch.'
+            }
+
+            $templatePayload = Get-Payload (Invoke-CloudStackApi 'listTemplates' @{ id=$expectedSystemTemplateId; zoneid=$expectedZoneId; templatefilter='all'; listall='true' }) 'listTemplates'
+            $templateRows = @(Get-Collection $templatePayload 'template')
+            if ($templateRows.Count -ne 1) { throw 'Exact KVM SystemVM template was not uniquely returned.' }
+            $template = $templateRows[0]
+            $templateReady = [System.Convert]::ToBoolean($template.isready)
+            if ([string]$template.id -cne $expectedSystemTemplateId -or -not $templateReady -or
+                [string]$template.hypervisor -cne 'KVM' -or [string]$template.format -cne 'QCOW2' -or [string]$template.templatetype -cne 'SYSTEM') {
+              throw 'KVM SystemVM template is not ready or identity/type mismatched.'
+            }
+
+            return $zone
+          }
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-zone-enable-v1-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one Zone-enable request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -cne 'ENABLE_LAYERSENTRY_DC_ZONE_V1') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_NATIVE_ZONE_ENABLE') { throw 'Authorization mismatch.' }
+          if ([string]$request.zoneId -cne $expectedZoneId -or [string]$request.zoneName -cne $expectedZoneName -or
+              [string]$request.hostId -cne $expectedHostId -or [string]$request.primaryStorageId -cne $expectedPrimaryId -or
+              [string]$request.secondaryStorageId -cne $expectedSecondaryId -or [string]$request.systemTemplateId -cne $expectedSystemTemplateId -or
+              [string]$request.targetAllocationState -cne 'Enabled') {
+            throw 'Zone-enable request target binding mismatch.'
+          }
+
+          @(
+            'LAYERSENTRY_NATIVE_ZONE_ENABLE_STARTED'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "ZONE_ID=$expectedZoneId"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
+
+          $zoneBefore = Assert-Readiness
+          $beforeState = [string]$zoneBefore.allocationstate
+          $mutationSubmitted = $false
+          $reconciledAfterSubmissionFailure = $false
+          $submissionHttpStatus = $null
+          $submissionApiErrorCode = $null
+
+          if ($beforeState -ceq 'Disabled') {
+            $mutationSubmitted = $true
+            try {
+              $null = Invoke-CloudStackApi 'updateZone' @{ id=$expectedZoneId; allocationstate='Enabled' }
+            }
+            catch {
+              $submissionHttpStatus = $_.Exception.Data['HttpStatusCode']
+              $submissionApiErrorCode = $_.Exception.Data['ApiErrorCode']
+              for ($attempt = 1; $attempt -le 3; $attempt++) {
+                Start-Sleep -Seconds 3
+                try {
+                  $reconciled = Get-ExactZone
+                  if ([string]$reconciled.allocationstate -ceq 'Enabled') {
+                    $reconciledAfterSubmissionFailure = $true
+                    break
+                  }
+                }
+                catch {
+                  if ($attempt -eq 3) { throw }
+                }
+              }
+              if (-not $reconciledAfterSubmissionFailure) { throw }
+            }
+          }
+          elseif ($beforeState -ceq 'Enabled') {
+            $mutationSubmitted = $false
+          }
+          else {
+            throw "Refusing unexpected pre-mutation Zone state: $beforeState"
+          }
+
+          $zoneAfter = Assert-Readiness
+          if ([string]$zoneAfter.allocationstate -cne 'Enabled') {
+            throw "DC Zone did not reconcile to Enabled; state=$([string]$zoneAfter.allocationstate)"
+          }
+
+          $result = [ordered]@{
+            EvidenceClass = 'R2_NATIVE_ZONE_ENABLE'
+            RunId = $env:GITHUB_RUN_ID
+            Repository = $env:GITHUB_REPOSITORY
+            Commit = $env:GITHUB_SHA
+            CapturedUtc = [DateTime]::UtcNow.ToString('o')
+            ZoneId = $expectedZoneId
+            ZoneName = $expectedZoneName
+            NetworkType = [string]$zoneAfter.networktype
+            BeforeAllocationState = $beforeState
+            AfterAllocationState = [string]$zoneAfter.allocationstate
+            MutationSubmitted = $mutationSubmitted
+            ReconciledAfterSubmissionFailure = $reconciledAfterSubmissionFailure
+            SubmissionHttpStatus = $submissionHttpStatus
+            SubmissionApiErrorCode = $submissionApiErrorCode
+            HostId = $expectedHostId
+            PrimaryStorageId = $expectedPrimaryId
+            SecondaryStorageId = $expectedSecondaryId
+            SystemTemplateId = $expectedSystemTemplateId
+          }
+          $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'result.json') -Encoding UTF8
+          @(
+            'LAYERSENTRY_NATIVE_ZONE_ENABLE_COMPLETE'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "ZONE_ID=$expectedZoneId"
+            "BEFORE_STATE=$beforeState"
+            "AFTER_STATE=$([string]$zoneAfter.allocationstate)"
+            "MUTATION_SUBMITTED=$mutationSubmitted"
+            "RECONCILED_AFTER_SUBMISSION_FAILURE=$reconciledAfterSubmissionFailure"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload Zone-enable evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-zone-enable-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-zone-enable-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
