@@ -1,0 +1,67 @@
+name: LayerSentry CloudStack OS Type Probe v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-os-type-probe-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe guest OS types without mutation
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Capture Ubuntu-compatible OS types
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials are unavailable.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-os-type-probe-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-os-type-probe-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one OS type probe request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'PROBE_LAYERSENTRY_GUEST_OS_TYPES_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_OS_TYPE_PROBE'){throw 'OS type probe request mismatch.'}
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command='listOsTypes';page='1';pagesize='500';response='json'}
+          $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}' -f (Enc([string]$_.Key)),(Enc([string]$_.Value))})
+          $canonical=(($pairs -join '&').ToLowerInvariant())
+          $h=New-Object System.Security.Cryptography.HMACSHA1
+          try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+          $uri='{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri,($pairs -join '&'),(Enc $sig)
+          $raw=Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+          $payload=$raw.listostypesresponse
+          $rows=@($payload.ostype)
+          $ubuntu=@($rows|Where-Object{([string]$_.description -match '(?i)ubuntu') -or ([string]$_.name -match '(?i)ubuntu')})
+          $ubuntu|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $evidence 'ubuntu-os-types.json') -Encoding UTF8
+          @('LAYERSENTRY_OS_TYPE_PROBE_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"TOTAL_OS_TYPES=$($rows.Count)","UBUNTU_MATCHES=$($ubuntu.Count)")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+      - name: Upload OS type evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-os-type-probe-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-os-type-probe-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 7
