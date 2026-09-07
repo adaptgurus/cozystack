@@ -183,7 +183,7 @@ jobs:
               throw 'Registered KVM host readiness/placement mismatch.'
             }
 
-            $primaryPayload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ id=$expectedPrimaryId; listall='true' }) 'listStoragePools'
+            $primaryPayload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ id=$expectedPrimaryId }) 'listStoragePools'
             $primaryRows = @(Get-Collection $primaryPayload 'storagepool')
             if ($primaryRows.Count -ne 1) { throw 'Exact primary storage was not uniquely returned.' }
             $primary = $primaryRows[0]
