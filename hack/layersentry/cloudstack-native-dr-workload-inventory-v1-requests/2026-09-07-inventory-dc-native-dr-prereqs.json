@@ -1,0 +1,6 @@
+{
+  "operation": "INVENTORY_LAYERSENTRY_NATIVE_DR_WORKLOAD_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_NATIVE_DR_INVENTORY",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "backupOfferingId": "c088f887-2543-4a87-90a0-0df08f259148"
+}
