@@ -1,0 +1,101 @@
+name: LayerSentry CloudStack Native DR Workload Inventory v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-native-dr-workload-inventory-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Inventory exact native DR workload prerequisites
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Capture deployable CloudStack state without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          $expectedZoneId='929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedOfferingId='c088f887-2543-4a87-90a0-0df08f259148'
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials are unavailable.'}
+          if($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api'){throw 'CloudStack endpoint binding mismatch.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-native-dr-workload-inventory-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-native-dr-workload-inventory-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one native DR inventory request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'INVENTORY_LAYERSENTRY_NATIVE_DR_WORKLOAD_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_NATIVE_DR_INVENTORY' -or [string]$request.zoneId -cne $expectedZoneId -or [string]$request.backupOfferingId -cne $expectedOfferingId){throw 'Native DR inventory request mismatch.'}
+
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
+            $allowed=@('listZones','listCapabilities','listServiceOfferings','listDiskOfferings','listTemplates','listNetworks','listVirtualMachines','listVolumes','listAccounts','listProjects','listSystemVms','listBackupOfferings','listBackups')
+            if($command -notin $allowed){throw "Command not allow-listed: $command"}
+            $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'}
+            foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
+            $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}' -f (Enc([string]$_.Key)),(Enc([string]$_.Value))})
+            $canonical=(($pairs -join '&').ToLowerInvariant())
+            $h=New-Object System.Security.Cryptography.HMACSHA1
+            try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+            $uri='{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri,($pairs -join '&'),(Enc $sig)
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+          }
+          function Save([string]$name,[object]$value){$value|ConvertTo-Json -Depth 20|Set-Content -LiteralPath (Join-Path $evidence "$name.json") -Encoding UTF8}
+          function Payload([object]$r,[string]$c){$n="$($c.ToLowerInvariant())response";$p=$r.PSObject.Properties[$n];if($null -eq $p){throw "Missing response payload $n"};return $p.Value}
+          function CountRows([object]$p,[string]$n){$x=$p.PSObject.Properties[$n];if($null -eq $x -or $null -eq $x.Value){return 0};return @($x.Value|Where-Object{$null -ne $_}).Count}
+
+          $calls=@(
+            @{name='zones';cmd='listZones';params=@{id=$expectedZoneId;listall='true'};row='zone'},
+            @{name='capabilities';cmd='listCapabilities';params=@{};row='capability'},
+            @{name='service-offerings';cmd='listServiceOfferings';params=@{listall='true';page='1';pagesize='500'};row='serviceoffering'},
+            @{name='disk-offerings';cmd='listDiskOfferings';params=@{listall='true';page='1';pagesize='500'};row='diskoffering'},
+            @{name='templates';cmd='listTemplates';params=@{templatefilter='all';zoneid=$expectedZoneId;page='1';pagesize='500'};row='template'},
+            @{name='networks';cmd='listNetworks';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='network'},
+            @{name='vms';cmd='listVirtualMachines';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='virtualmachine'},
+            @{name='volumes';cmd='listVolumes';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='volume'},
+            @{name='accounts';cmd='listAccounts';params=@{listall='true';page='1';pagesize='500'};row='account'},
+            @{name='projects';cmd='listProjects';params=@{listall='true';page='1';pagesize='500'};row='project'},
+            @{name='system-vms';cmd='listSystemVms';params=@{zoneid=$expectedZoneId;page='1';pagesize='500'};row='systemvm'},
+            @{name='backup-offerings';cmd='listBackupOfferings';params=@{zoneid=$expectedZoneId;page='1';pagesize='500'};row='backupoffering'},
+            @{name='backups';cmd='listBackups';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='backup'}
+          )
+          $summary=@('LAYERSENTRY_NATIVE_DR_WORKLOAD_INVENTORY_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"ZONE_ID=$expectedZoneId", "BACKUP_OFFERING_ID=$expectedOfferingId")
+          foreach($call in $calls){
+            $payload=Payload (Invoke-CS $call.cmd $call.params) $call.cmd
+            Save $call.name $payload
+            $summary += ("{0}_COUNT={1}" -f $call.name.ToUpperInvariant().Replace('-','_'),(CountRows $payload $call.row))
+          }
+          $summary|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload native DR inventory evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-native-dr-workload-inventory-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-native-dr-workload-inventory-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
