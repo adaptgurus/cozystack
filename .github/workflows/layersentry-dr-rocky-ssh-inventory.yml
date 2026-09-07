@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Read-only Rocky inventory over SSH
+      - name: Route read-only inventory or KVM URL diagnostic
         shell: powershell
         env:
           DR_HOST: ${{ secrets.LAYERSENTRY_DR_ROCKY_HOST }}
@@ -37,26 +37,37 @@ jobs:
           $expectedVm = 'layersentry-dr-rocky9'
           $expectedHost = '10.10.10.20'
           $expectedDc = '10.10.10.14'
-          if ($env:DR_HOST -cne $expectedHost -or $env:DR_USER -cne 'root' -or [string]::IsNullOrWhiteSpace($env:DR_KEY)) { throw 'DR SSH secret binding failed.' }
+          $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
 
+          $request = $null
+          $requestPath = ''
           if ($env:GITHUB_EVENT_NAME -ceq 'push') {
             [string[]]$changed = @(
               @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/dr-ssh-inventory-actions/*.json') |
                 ForEach-Object { [string]$_ } |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
             )
-            if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one DR inventory request.' }
-            $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one read-only inventory request.' }
+            $requestPath = $changed[0].Trim()
+            $request = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            if ([string]$request.operation -ceq 'DIAGNOSE_LAYERSENTRY_DC_KVM_URL_V1') {
+              & 'hack/layersentry/dc-kvm-url-diagnostic-v1.ps1' -RequestPath $requestPath -OutputDirectory $out
+              if (-not (Test-Path -LiteralPath (Join-Path $out 'summary.txt') -PathType Leaf)) { throw 'KVM URL diagnostic summary was not produced.' }
+              exit 0
+            }
+
             if ([string]$request.operation -cne 'INVENTORY_LAYERSENTRY_DR_CURRENT_STATE_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_DR_CURRENT_STATE') { throw 'DR inventory request authorization mismatch.' }
             if ([string]$request.vmName -cne $expectedVm -or [string]$request.host -cne $expectedHost -or [string]$request.dcManagement -cne $expectedDc) { throw 'DR inventory request target mismatch.' }
           }
+
+          if ($env:DR_HOST -cne $expectedHost -or $env:DR_USER -cne 'root' -or [string]::IsNullOrWhiteSpace($env:DR_KEY)) { throw 'DR SSH secret binding failed.' }
 
           Import-Module Hyper-V -ErrorAction Stop
           $vm = @(Get-VM -Name $expectedVm -ErrorAction SilentlyContinue)
           if ($vm.Count -ne 1) { throw "Expected exactly one Hyper-V VM named $expectedVm; found $($vm.Count)." }
           $processor = Get-VMProcessor -VMName $expectedVm -ErrorAction Stop
           $memory = Get-VMMemory -VMName $expectedVm -ErrorAction Stop
-          $out = Join-Path $env:RUNNER_TEMP "dr-ssh-inventory-$env:GITHUB_RUN_ID"
           if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Recurse -Force }
           New-Item -ItemType Directory -Path $out -ErrorAction Stop | Out-Null
           [pscustomobject]@{
