@@ -110,9 +110,9 @@ jobs:
           }
 
           function Assert-LiveAuthority {
-            $zones = Get-Collection (Get-Payload (Invoke-CloudStackApi 'listZones' @{ id=$expectedZoneId; listall='true' }) 'listZones') 'zone'
+            $zones = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listZones' @{ id=$expectedZoneId; listall='true' }) 'listZones') 'zone')
             if ($zones.Count -ne 1 -or [string]$zones[0].id -cne $expectedZoneId -or [string]$zones[0].name -cne 'dc') { throw 'DC Zone identity mismatch.' }
-            $hosts = Get-Collection (Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts') 'host'
+            $hosts = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts') 'host')
             if ($hosts.Count -ne 1 -or [string]$hosts[0].id -cne $expectedHostId -or [string]$hosts[0].state -cne 'Up' -or [string]$hosts[0].resourcestate -cne 'Enabled') {
               throw 'Registered KVM host is not exact/healthy; refusing storage mutation.'
             }
@@ -153,6 +153,13 @@ jobs:
           if ($resource -notin @('primary','secondary')) { throw 'Resource must be primary or secondary.' }
           if ($resource -ceq 'primary' -and ([string]$request.name -cne $primaryName -or [string]$request.url -cne $primaryUrl)) { throw 'Primary request binding mismatch.' }
           if ($resource -ceq 'secondary' -and ([string]$request.name -cne $secondaryName -or [string]$request.url -cne $secondaryUrl)) { throw 'Secondary request binding mismatch.' }
+
+          @(
+            'LAYERSENTRY_NATIVE_STORAGE_REGISTRATION_STARTED'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "RESOURCE=$resource"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
 
           Assert-LiveAuthority
           $mutationSubmitted = $false
