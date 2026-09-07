@@ -1,0 +1,9 @@
+{
+  "operation": "RECONCILE_LAYERSENTRY_NAS_BACKUP_EXPORT_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_BACKUP_EXPORT",
+  "vmName": "sen",
+  "vmId": "29ba176b-b81a-4f47-8f51-ecec869f247f",
+  "address": "10.10.10.14",
+  "export": "/export/backup",
+  "client": "10.10.10.0/24"
+}
