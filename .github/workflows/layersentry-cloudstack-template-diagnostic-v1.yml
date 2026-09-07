@@ -1,0 +1,87 @@
+name: LayerSentry CloudStack Template Diagnostic v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-template-diagnostic-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Capture template, SSVM, store, event and alert state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          $zoneId='929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $templateId='588ecfc9-88b3-43c9-9e04-b4fc41054d00'
+          $ssvmId='fddbfccf-dfd9-4495-a1b3-f19ad77e3494'
+          $imageStoreId='e824ee8c-2fa1-466b-9948-629958479a78'
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials unavailable.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-template-diagnostic-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-template-diagnostic-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one template diagnostic request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'DIAGNOSE_LAYERSENTRY_TEMPLATE_DOWNLOAD_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_READ_ONLY_TEMPLATE_DIAGNOSTIC' -or [string]$request.templateId -cne $templateId -or [string]$request.zoneId -cne $zoneId){throw 'Template diagnostic request mismatch.'}
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
+            $allowed=@('listTemplates','listSystemVms','listImageStores','listAlerts','listEvents','listConfigurations')
+            if($command -notin $allowed){throw "Command not allow-listed: $command"}
+            $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'}
+            foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
+            $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}' -f (Enc([string]$_.Key)),(Enc([string]$_.Value))})
+            $canonical=(($pairs -join '&').ToLowerInvariant())
+            $h=New-Object System.Security.Cryptography.HMACSHA1
+            try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+            $uri='{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri,($pairs -join '&'),(Enc $sig)
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 45 -MaximumRedirection 0 -ErrorAction Stop
+          }
+          function Payload([object]$r,[string]$c){$n="$($c.ToLowerInvariant())response";$p=$r.PSObject.Properties[$n];if($null -eq $p){throw "Missing response payload $n"};return $p.Value}
+          function Save([string]$name,[object]$value){$value|ConvertTo-Json -Depth 18|Set-Content -LiteralPath (Join-Path $evidence "$name.json") -Encoding UTF8}
+          $template=Payload (Invoke-CS 'listTemplates' @{id=$templateId;templatefilter='all';zoneid=$zoneId}) 'listTemplates'; Save 'template' $template
+          $ssvm=Payload (Invoke-CS 'listSystemVms' @{id=$ssvmId;zoneid=$zoneId}) 'listSystemVms'; Save 'ssvm' $ssvm
+          $store=Payload (Invoke-CS 'listImageStores' @{id=$imageStoreId;zoneid=$zoneId}) 'listImageStores'; Save 'image-store' $store
+          $alerts=[ordered]@{}
+          foreach($type in @('19','28')){try{$alerts[$type]=Payload (Invoke-CS 'listAlerts' @{type=$type;page='1';pagesize='100'}) 'listAlerts'}catch{$alerts[$type]=[ordered]@{error=$_.Exception.Message}}}; Save 'alerts' $alerts
+          $events=[ordered]@{}
+          try{$events.resource=Payload (Invoke-CS 'listEvents' @{resourceid=$templateId;listall='true';page='1';pagesize='200'}) 'listEvents'}catch{$events.resource=[ordered]@{error=$_.Exception.Message}}
+          try{$events.keyword=Payload (Invoke-CS 'listEvents' @{keyword=$templateId;listall='true';page='1';pagesize='200'}) 'listEvents'}catch{$events.keyword=[ordered]@{error=$_.Exception.Message}}
+          Save 'events' $events
+          $configs=[ordered]@{}
+          foreach($name in @('secstorage.allowed.internal.sites','secstorage.ssl.cert.domain','secstorage.encrypt.copy','secstorage.session.max','secstorage.capacity.standby')){
+            try{$configs[$name]=Payload (Invoke-CS 'listConfigurations' @{name=$name;listall='true'}) 'listConfigurations'}catch{$configs[$name]=[ordered]@{error=$_.Exception.Message}}
+          }
+          Save 'secondary-storage-configs' $configs
+          @('LAYERSENTRY_TEMPLATE_DIAGNOSTIC_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"TEMPLATE_ID=$templateId","SSVM_ID=$ssvmId","IMAGE_STORE_ID=$imageStoreId")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+      - name: Upload template diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-template-diagnostic-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-template-diagnostic-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
