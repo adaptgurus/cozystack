@@ -1,0 +1,10 @@
+{
+  "operation": "RECONCILE_LAYERSENTRY_DC_NFS_STORAGE_V3",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_STORAGE_RECONCILIATION",
+  "expectedHyperVHost": "TESTSER",
+  "expectedVmName": "sen",
+  "expectedVmId": "29ba176b-b81a-4f47-8f51-ecec869f247f",
+  "expectedAddress": "10.10.10.14",
+  "expectedFqdn": "layersentry.lab.example",
+  "reason": "Prepare supported local NFS primary/secondary storage and seed the KVM SystemVM template without disrupting the currently registered CloudStack KVM agent."
+}
