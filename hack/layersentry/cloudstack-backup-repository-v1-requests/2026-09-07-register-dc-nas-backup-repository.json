@@ -1,0 +1,11 @@
+{
+  "operation": "REGISTER_LAYERSENTRY_NAS_BACKUP_REPOSITORY_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_BACKUP_REPOSITORY",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "name": "layersentry-dc-backup-r0",
+  "address": "10.10.10.14:/export/backup",
+  "type": "nfs",
+  "provider": "nas",
+  "mountopts": "vers=4.2",
+  "crossZoneInstanceCreation": false
+}
