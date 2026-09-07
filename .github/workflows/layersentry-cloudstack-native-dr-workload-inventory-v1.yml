@@ -53,7 +53,7 @@ jobs:
 
           function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
           function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
-            $allowed=@('listZones','listCapabilities','listServiceOfferings','listDiskOfferings','listTemplates','listNetworks','listVirtualMachines','listVolumes','listAccounts','listProjects','listSystemVms','listBackupOfferings','listBackups')
+            $allowed=@('listZones','listCapabilities','listServiceOfferings','listDiskOfferings','listTemplates','listOsTypes','listNetworks','listVirtualMachines','listVolumes','listProjects','listSystemVms','listBackupOfferings','listBackups')
             if($command -notin $allowed){throw "Command not allow-listed: $command"}
             $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'}
             foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
@@ -74,16 +74,16 @@ jobs:
             @{name='service-offerings';cmd='listServiceOfferings';params=@{listall='true';page='1';pagesize='500'};row='serviceoffering'},
             @{name='disk-offerings';cmd='listDiskOfferings';params=@{listall='true';page='1';pagesize='500'};row='diskoffering'},
             @{name='templates';cmd='listTemplates';params=@{templatefilter='all';zoneid=$expectedZoneId;page='1';pagesize='500'};row='template'},
+            @{name='os-types';cmd='listOsTypes';params=@{page='1';pagesize='1000'};row='ostype'},
             @{name='networks';cmd='listNetworks';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='network'},
             @{name='vms';cmd='listVirtualMachines';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='virtualmachine'},
             @{name='volumes';cmd='listVolumes';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='volume'},
-            @{name='accounts';cmd='listAccounts';params=@{listall='true';page='1';pagesize='500'};row='account'},
             @{name='projects';cmd='listProjects';params=@{listall='true';page='1';pagesize='500'};row='project'},
             @{name='system-vms';cmd='listSystemVms';params=@{zoneid=$expectedZoneId;page='1';pagesize='500'};row='systemvm'},
             @{name='backup-offerings';cmd='listBackupOfferings';params=@{zoneid=$expectedZoneId;page='1';pagesize='500'};row='backupoffering'},
             @{name='backups';cmd='listBackups';params=@{zoneid=$expectedZoneId;listall='true';page='1';pagesize='500'};row='backup'}
           )
-          $summary=@('LAYERSENTRY_NATIVE_DR_WORKLOAD_INVENTORY_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"ZONE_ID=$expectedZoneId", "BACKUP_OFFERING_ID=$expectedOfferingId")
+          $summary=@('LAYERSENTRY_NATIVE_DR_WORKLOAD_INVENTORY_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=false',"ZONE_ID=$expectedZoneId", "BACKUP_OFFERING_ID=$expectedOfferingId",'CREDENTIAL_BEARING_ACCOUNT_PAYLOADS=NOT_COLLECTED')
           foreach($call in $calls){
             $payload=Payload (Invoke-CS $call.cmd $call.params) $call.cmd
             Save $call.name $payload
@@ -98,4 +98,4 @@ jobs:
           name: layersentry-native-dr-workload-inventory-v1-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}\layersentry-native-dr-workload-inventory-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
