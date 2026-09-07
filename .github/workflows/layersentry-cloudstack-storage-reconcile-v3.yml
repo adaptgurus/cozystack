@@ -1,0 +1,192 @@
+name: LayerSentry CloudStack Storage Reconcile v3
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-storage-reconcile-v3-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile DC NFS storage without disrupting registered KVM agent
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out exact request and reconciliation source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Reconcile exact DC storage target
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $expectedHyperVHost = 'TESTSER'
+          $expectedVmName = 'sen'
+          $expectedVmId = '29ba176b-b81a-4f47-8f51-ecec869f247f'
+          $expectedAddress = '10.10.10.14'
+          $expectedFqdn = 'layersentry.lab.example'
+          $expectedSwitch = 'Cozystack-NAT'
+          $scriptPath = 'hack/layersentry/reconcile-cloudstack-poc-storage-v3.sh'
+
+          $evidence = Join-Path $env:RUNNER_TEMP "layersentry-storage-reconcile-v3-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          @(
+            'LAYERSENTRY_STORAGE_RECONCILE_V3_STARTED'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "EXPECTED_VM=$expectedVmName"
+            "EXPECTED_VM_ID=$expectedVmId"
+            "EXPECTED_ADDRESS=$expectedAddress"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-storage-reconcile-v3-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one v3 storage reconciliation request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -cne 'RECONCILE_LAYERSENTRY_DC_NFS_STORAGE_V3') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_STORAGE_RECONCILIATION') { throw 'Authorization mismatch.' }
+          if ([string]$request.expectedHyperVHost -cne $expectedHyperVHost -or
+              [string]$request.expectedVmName -cne $expectedVmName -or
+              [string]$request.expectedVmId -cne $expectedVmId -or
+              [string]$request.expectedAddress -cne $expectedAddress -or
+              [string]$request.expectedFqdn -cne $expectedFqdn) {
+            throw 'Request target binding mismatch.'
+          }
+          if ($env:COMPUTERNAME -cne $expectedHyperVHost) { throw 'Runner host mismatch.' }
+          if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw 'Reconciliation script missing.' }
+
+          $vm = Get-VM -Name $expectedVmName -ErrorAction Stop
+          if ([string]$vm.Id -cne $expectedVmId -or [string]$vm.State -cne 'Running') { throw 'Exact DC VM identity/state mismatch.' }
+          $processor = Get-VMProcessor -VMName $expectedVmName -ErrorAction Stop
+          if (-not [bool]$processor.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed on the exact DC VM.' }
+          $nic = Get-VMNetworkAdapter -VMName $expectedVmName -ErrorAction Stop | Select-Object -First 1
+          if ([string]$nic.SwitchName -cne $expectedSwitch -or [string]$nic.MacAddressSpoofing -cne 'On') { throw 'Exact DC VM network safety gate failed.' }
+
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-storage-v3-$env:GITHUB_RUN_ID.key"
+          $knownHosts = Join-Path $env:RUNNER_TEMP "layersentry-storage-v3-$env:GITHUB_RUN_ID.known_hosts"
+          Remove-Item -LiteralPath $key,"$key.pub",$knownHosts -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-storage-v3-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $key -PathType Leaf)) { throw 'ssh-keygen failed.' }
+
+          $helperSource = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+          $patchedHelper = Join-Path $env:RUNNER_TEMP "invoke-storage-v3-console-$env:GITHUB_RUN_ID.ps1"
+          $helper = Get-Content -LiteralPath $helperSource -Raw -Encoding UTF8
+          $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+          if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+          Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$expectedVmName')")) -Encoding UTF8
+
+          $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+          if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected generated public-key format.' }
+          $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+          $consoleRequest = [ordered]@{
+            requestId = "storage-v3-bootstrap-$env:GITHUB_RUN_ID"
+            delayAfterSeconds = 3
+            targets = @([ordered]@{
+              vm = $expectedVmName
+              actions = @(
+                [ordered]@{ kind='key'; code=13 },
+                [ordered]@{ kind='text'; value=$bootstrap },
+                [ordered]@{ kind='key'; code=13 }
+              )
+            })
+          }
+          $consolePath = Join-Path $env:RUNNER_TEMP "storage-v3-console-$env:GITHUB_RUN_ID.json"
+          $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+          & $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+          $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=accept-new','-o',"UserKnownHostsFile=$knownHosts",'-o','LogLevel=ERROR','-o','ConnectTimeout=10',"root@$expectedAddress")
+          $scp = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o',"UserKnownHostsFile=$knownHosts",'-o','LogLevel=ERROR','-o','ConnectTimeout=10')
+          $ready = $false
+          try {
+            for ($i=1; $i -le 12; $i++) {
+              $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+              $probe = & ssh.exe @ssh "test `"`$(hostname -f)`" = '$expectedFqdn' && test `"`$(systemctl is-active cloudstack-agent)`" = active && ip -4 address show cloudbr0 | grep -F 'inet $expectedAddress/24' >/dev/null && printf STORAGE_V3_READY" 2>&1
+              $rc = $LASTEXITCODE; $ErrorActionPreference = $old
+              if ($rc -eq 0 -and (($probe -join '') -match 'STORAGE_V3_READY')) { $ready = $true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Exact-guest SSH/bootstrap identity validation failed.' }
+
+            & ssh.exe @ssh "echo =====PRE=====; hostname -f; ip -4 address show cloudbr0; systemctl is-active cloudstack-management cloudstack-agent nfs-server rpcbind firewalld || true; systemctl is-enabled cloudstack-agent || true; exportfs -v || true; find /export/secondary/template/tmpl -maxdepth 6 -type f -printf '%p %s bytes\n' 2>/dev/null | head -40" 2>&1 |
+              Set-Content -LiteralPath (Join-Path $evidence 'pre.txt') -Encoding UTF8
+            if ($LASTEXITCODE -ne 0) { throw 'Pre-reconciliation inventory failed.' }
+
+            $remoteScript = '/root/reconcile-cloudstack-poc-storage-v3.sh'
+            & scp.exe @scp $scriptPath "root@${expectedAddress}:$remoteScript"
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to transfer reconciliation script.' }
+
+            $localHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $remoteHash = (& ssh.exe @ssh "sha256sum '$remoteScript' | awk '{print `$1}'").Trim().ToLowerInvariant()
+            if ($LASTEXITCODE -ne 0 -or $remoteHash -cne $localHash) { throw 'Remote reconciliation script hash mismatch.' }
+
+            $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            & ssh.exe @ssh "chmod 700 '$remoteScript' && bash -n '$remoteScript' && '$remoteScript'" 2>&1 |
+              Tee-Object -FilePath (Join-Path $evidence 'reconcile.txt')
+            $rc = $LASTEXITCODE; $ErrorActionPreference = $old
+            if ($rc -ne 0) {
+              $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+              & ssh.exe @ssh "L=`$(ls -1t /var/log/layersentry-storage-reconcile-*.log 2>/dev/null | head -1); echo LOG=`$L; test -z `"`$L`" || tail -n 500 `"`$L`"; echo =====CURRENT=====; systemctl is-active cloudstack-management cloudstack-agent nfs-server rpcbind firewalld || true; systemctl is-enabled cloudstack-agent || true; exportfs -v || true" 2>&1 |
+                Set-Content -LiteralPath (Join-Path $evidence 'failure.txt') -Encoding UTF8
+              $ErrorActionPreference = $old
+              throw "Storage reconciliation exited $rc."
+            }
+            if (-not (Select-String -LiteralPath (Join-Path $evidence 'reconcile.txt') -Pattern '\[100%\] LayerSentry non-disruptive NFS storage reconciliation completed' -Quiet)) {
+              throw 'Storage reconciliation completion marker missing.'
+            }
+
+            & ssh.exe @ssh "echo =====POST=====; systemctl is-active cloudstack-management cloudstack-agent nfs-server rpcbind firewalld; systemctl is-enabled cloudstack-agent; exportfs -v; df -hT /export/primary /export/secondary; find /export/secondary/template/tmpl -maxdepth 6 -type f -printf '%p %s bytes\n' 2>/dev/null | head -40; curl -sS -o /dev/null -w 'HTTP_%{http_code}\n' http://127.0.0.1:8080/client/" 2>&1 |
+              Set-Content -LiteralPath (Join-Path $evidence 'post.txt') -Encoding UTF8
+            if ($LASTEXITCODE -ne 0) { throw 'Post-reconciliation validation failed.' }
+
+            & 'hack/layersentry/capture-hyperv-console.ps1' -VmNames @($expectedVmName) -OutputDirectory (Join-Path $evidence 'console-post')
+            @(
+              'LAYERSENTRY_STORAGE_RECONCILE_V3_COMPLETE'
+              "RUN_ID=$env:GITHUB_RUN_ID"
+              "COMMIT=$env:GITHUB_SHA"
+              "SCRIPT_SHA256=$localHash"
+              "TARGET_VM=$expectedVmName"
+              "TARGET_VM_ID=$expectedVmId"
+              "TARGET_ADDRESS=$expectedAddress"
+              'CLOUDSTACK_AGENT_PRESERVED=true'
+              'NFS_RECONCILIATION_COMPLETE=true'
+            ) | Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+          }
+          finally {
+            if ($ready) {
+              $safeComment = $comment.Replace("'",'')
+              $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys; rm -f /root/reconcile-cloudstack-poc-storage-v3.sh" 2>&1 | Out-Null
+              $ErrorActionPreference = $old
+            }
+            Remove-Item -LiteralPath $key,"$key.pub",$knownHosts,$patchedHelper,$consolePath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-storage-reconcile-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-storage-reconcile-v3-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
