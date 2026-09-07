@@ -1,0 +1,86 @@
+name: LayerSentry CloudStack Guest Template Direct v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-guest-template-direct-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  replace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Replace exact stalled template with native KVM direct-download registration
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          $zoneId='929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $hostId='3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
+          $oldTemplateId='588ecfc9-88b3-43c9-9e04-b4fc41054d00'
+          $name='layersentry-ubuntu-24.04-dr-r0'
+          $display='LayerSentry Ubuntu 24.04 LTS DR validation'
+          $url='https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+          $sha='d1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac'
+          $checksum="{SHA-256}$sha"
+          $osTypeId='4fc70719-a832-11f1-ad7e-00155d00390a'
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY)-or[string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials unavailable.'}
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-guest-template-direct-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force};New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-guest-template-direct-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not[string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE-ne 0-or$changed.Count-ne 1){throw 'Expected exactly one direct-template request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation-cne'REPLACE_LAYERSENTRY_STALLED_TEMPLATE_WITH_KVM_DIRECT_V1'-or[string]$request.authorization-cne'USER_AUTHORIZED_DISPOSABLE_LAB_TEMPLATE_REPLACEMENT'-or[string]$request.oldTemplateId-cne$oldTemplateId-or[string]$request.zoneId-cne$zoneId-or[string]$request.url-cne$url-or[string]$request.sha256-cne$sha){throw 'Direct-template request mismatch.'}
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
+            if($command-notin@('listZones','listHosts','listTemplates','deleteTemplate','queryAsyncJobResult','registerTemplate')){throw "Command not allow-listed: $command"}
+            $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'};foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
+            $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}'-f(Enc([string]$_.Key)),(Enc([string]$_.Value))});$canonical=(($pairs-join'&').ToLowerInvariant())
+            $h=New-Object System.Security.Cryptography.HMACSHA1;try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+            return Invoke-RestMethod -Uri ('{0}?{1}&signature={2}'-f$endpoint.AbsoluteUri,($pairs-join'&'),(Enc $sig)) -Method Get -TimeoutSec 90 -MaximumRedirection 0 -ErrorAction Stop
+          }
+          function Payload([object]$r,[string]$c){$n="$($c.ToLowerInvariant())response";$p=$r.PSObject.Properties[$n];if($null-eq$p){throw "Missing response payload $n"};return $p.Value}
+          function Rows([object]$p,[string]$n){$x=$p.PSObject.Properties[$n];if($null-eq$x-or$null-eq$x.Value){return @()};return @($x.Value|Where-Object{$null-ne$_})}
+          function Optional([object]$o,[string]$n,[object]$d=$null){$p=$o.PSObject.Properties[$n];if($null-eq$p-or$null-eq$p.Value){return $d};return $p.Value}
+          function WaitJob([string]$id){for($i=0;$i-lt90;$i++){$j=Payload (Invoke-CS 'queryAsyncJobResult' @{jobid=$id}) 'queryAsyncJobResult';$j|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $evidence 'delete-job.json') -Encoding UTF8;$s=[int]$j.jobstatus;if($s-eq1){return};if($s-eq2){throw "Delete template job failed: $($j.jobresult|ConvertTo-Json -Compress -Depth 8)"};Start-Sleep -Seconds 2};throw 'Delete template job did not complete; reconcile exact job before retry.'}
+          $zones=@(Rows (Payload (Invoke-CS 'listZones' @{id=$zoneId;listall='true'}) 'listZones') 'zone');if($zones.Count-ne1-or[string]$zones[0].allocationstate-cne'Enabled'){throw 'Exact Zone is not Enabled.'}
+          $hosts=@(Rows (Payload (Invoke-CS 'listHosts' @{id=$hostId;listall='true'}) 'listHosts') 'host');if($hosts.Count-ne1-or[string]$hosts[0].state-cne'Up'-or[string]$hosts[0].resourcestate-cne'Enabled'){throw 'Exact KVM host is not Up/Enabled.'}
+          $old=@(Rows (Payload (Invoke-CS 'listTemplates' @{id=$oldTemplateId;templatefilter='all';zoneid=$zoneId}) 'listTemplates') 'template');if($old.Count-ne1){throw 'Exact stalled template does not reconcile uniquely.'}
+          $t=$old[0];if([string]$t.name-cne$name-or[string]$t.url-cne$url-or[string]$t.checksum-cne$sha-or[bool](Optional $t 'directdownload' $false)-or[bool](Optional $t 'isready' $false)-or[string]$t.status-cne'Processing'){throw 'Old template state no longer matches the proven stalled target; refusing replacement.'}
+          $allName=@(Rows (Payload (Invoke-CS 'listTemplates' @{name=$name;templatefilter='all';zoneid=$zoneId;page='1';pagesize='100'}) 'listTemplates') 'template');if(@($allName|Where-Object{[string]$_.id-cne$oldTemplateId}).Count-gt0){throw 'Another same-name template exists; refusing replacement.'}
+          $del=Invoke-CS 'deleteTemplate' @{id=$oldTemplateId;zoneid=$zoneId};$del|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $evidence 'delete-response.json') -Encoding UTF8;$dp=Payload $del 'deleteTemplate';$job=[string](Optional $dp 'jobid' '');if([string]::IsNullOrWhiteSpace($job)){throw 'deleteTemplate returned no async job ID; reconcile before retry.'};WaitJob $job
+          for($i=0;$i-lt30;$i++){$remaining=@(Rows (Payload (Invoke-CS 'listTemplates' @{id=$oldTemplateId;templatefilter='all';zoneid=$zoneId}) 'listTemplates') 'template');if($remaining.Count-eq0){break};Start-Sleep -Seconds 2};if($remaining.Count-ne0){throw 'Deleted template still visible; do not register replacement.'}
+          $reg=Invoke-CS 'registerTemplate' @{name=$name;displaytext=$display;format='QCOW2';hypervisor='KVM';url=$url;zoneid=$zoneId;ostypeid=$osTypeId;checksum=$checksum;bits='64';arch='x86_64';ispublic='false';isfeatured='false';isextractable='false';passwordenabled='false';sshkeyenabled='true';requireshvm='true';directdownload='true';templatetype='USER'};$reg|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $evidence 'register-response.json') -Encoding UTF8
+          $rp=Payload $reg 'registerTemplate';$registered=@(Rows $rp 'template');if($registered.Count-ne1-or[string]::IsNullOrWhiteSpace([string]$registered[0].id)){throw 'Direct registerTemplate did not return one template ID; reconcile before retry.'};$newId=[string]$registered[0].id
+          $new=@(Rows (Payload (Invoke-CS 'listTemplates' @{id=$newId;templatefilter='all';zoneid=$zoneId}) 'listTemplates') 'template');if($new.Count-ne1){throw 'New direct template does not reconcile uniquely.'};$n=$new[0]
+          if([string]$n.name-cne$name-or[string]$n.url-cne$url-or[string]$n.checksum-cne$sha-or-not[bool](Optional $n 'directdownload' $false)-or-not[bool](Optional $n 'isready' $false)-or[string]$n.ostypeid-cne$osTypeId){throw 'Direct template properties are not deployable as expected.'}
+          $n|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $evidence 'template-final.json') -Encoding UTF8
+          @('LAYERSENTRY_GUEST_TEMPLATE_DIRECT_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID",'MUTATION=true',"DELETE_JOB_ID=$job","OLD_TEMPLATE_ID=$oldTemplateId","TEMPLATE_ID=$newId",'DIRECT_DOWNLOAD=true','IS_READY=true',"URL=$url","SHA256=$sha")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+      - name: Upload direct-template evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-guest-template-direct-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-guest-template-direct-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
