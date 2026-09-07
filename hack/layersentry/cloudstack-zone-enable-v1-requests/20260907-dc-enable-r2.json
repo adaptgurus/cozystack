@@ -1,0 +1,11 @@
+{
+  "operation": "ENABLE_LAYERSENTRY_DC_ZONE_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_NATIVE_ZONE_ENABLE",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "zoneName": "dc",
+  "hostId": "3abb80a8-bc4a-48de-bc99-dedc5ac91bf9",
+  "primaryStorageId": "c7cd8310-ee2f-440a-8910-527bf620c1cc",
+  "secondaryStorageId": "2620c51e-d2ae-44a3-ba58-393da8f36678",
+  "systemTemplateId": "13f22f9c-61e2-4d88-93c0-5735212bccd0",
+  "targetAllocationState": "Enabled"
+}
