@@ -84,7 +84,7 @@ jobs:
           $hosts=@(Rows (Payload (Invoke-CS 'listHosts' @{id=$expectedHostId;listall='true'}) 'listHosts') 'host')
           if($hosts.Count -ne 1 -or [string]$hosts[0].state -cne 'Up' -or [string]$hosts[0].resourcestate -cne 'Enabled'){throw 'Exact KVM host is not Up/Enabled.'}
           if((Config 'backup.framework.enabled') -cne 'true' -or (Config 'backup.framework.enabled' $expectedZoneId) -cne 'true' -or (Config 'backup.framework.provider.plugin') -cne 'nas'){throw 'NAS B&R framework is not reconciled.'}
-          $providers=@(Rows (Payload (Invoke-CS 'listBackupProviders') 'listBackupProviders') 'backupprovider')
+          $providers=@(Rows (Payload (Invoke-CS 'listBackupProviders') 'listBackupProviders') 'providers')
           if(@($providers|Where-Object{[string]$_.name -ceq 'nas'}).Count -ne 1){throw 'NAS backup provider is not uniquely available.'}
 
           $before=Get-Repositories
