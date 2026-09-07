@@ -1,0 +1,8 @@
+{
+  "operation": "DIAGNOSE_LAYERSENTRY_DC_KVM_URL_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_READ_ONLY_KVM_URL_DIAGNOSTIC",
+  "vmName": "sen",
+  "address": "10.10.10.14",
+  "url": "https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img",
+  "sha256": "d1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac"
+}
