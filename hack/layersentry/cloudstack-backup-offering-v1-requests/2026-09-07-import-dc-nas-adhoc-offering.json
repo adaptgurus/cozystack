@@ -1,0 +1,10 @@
+{
+  "operation": "IMPORT_LAYERSENTRY_NAS_BACKUP_OFFERING_V1",
+  "authorization": "USER_AUTHORIZED_DISPOSABLE_LAB_BACKUP_OFFERING",
+  "zoneId": "929d1f2c-d629-41ed-96b4-6c48a288d056",
+  "repositoryId": "47515ccf-16a6-455d-aac4-634911c72936",
+  "repositoryName": "layersentry-dc-backup-r0",
+  "name": "layersentry-dc-nas-adhoc-r0",
+  "description": "LayerSentry native NAS backup offering for deterministic recovery validation",
+  "allowUserDrivenBackups": true
+}
