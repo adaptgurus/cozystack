@@ -1,0 +1,282 @@
+name: LayerSentry CloudStack Backup Framework v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-backup-framework-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-backup-framework:
+    name: Enable native CloudStack NAS B&R framework on exact DC target
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Enable and reconcile native NAS backup framework
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          Import-Module Hyper-V -ErrorAction Stop
+
+          $expectedHyperVHost = 'TESTSER'
+          $expectedVmName = 'sen'
+          $expectedVmId = '29ba176b-b81a-4f47-8f51-ecec869f247f'
+          $expectedAddress = '10.10.10.14'
+          $expectedFqdn = 'layersentry.lab.example'
+          $expectedSwitch = 'Cozystack-NAT'
+          $expectedZoneId = '929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedZoneName = 'dc'
+          $expectedPodId = '020dc658-af4e-4e2e-bed5-0607de8a787f'
+          $expectedClusterId = '7d2bb586-6b60-4c51-aa5f-3b4903f31e51'
+          $expectedHostId = '3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
+          $expectedPrimaryId = '3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7'
+          $expectedSecondaryId = 'e824ee8c-2fa1-466b-9948-629958479a78'
+          $expectedSystemTemplateId = '13f22f9c-61e2-4d88-93c0-5735212bccd0'
+          $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
+
+          if ($env:COMPUTERNAME -cne $expectedHyperVHost) { throw 'Runner host mismatch.' }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)) { throw 'Scoped CloudStack API credentials are unavailable.' }
+          if ($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api') { throw 'CloudStack API endpoint binding mismatch.' }
+
+          $evidence = Join-Path $env:RUNNER_TEMP "layersentry-backup-framework-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Recurse -Force }
+          New-Item -Path $evidence -ItemType Directory -Force | Out-Null
+
+          @(
+            'LAYERSENTRY_BACKUP_FRAMEWORK_V1_STARTED'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            "ZONE_ID=$expectedZoneId"
+            "TARGET_VM=$expectedVmName"
+            "TARGET_VM_ID=$expectedVmId"
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
+
+          [string[]]$changed = @(
+            @(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-backup-framework-v1-requests/*.json') |
+              ForEach-Object { [string]$_ } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($LASTEXITCODE -ne 0 -or $changed.Count -ne 1) { throw 'Expected exactly one B&R framework request.' }
+          $request = Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$request.operation -cne 'ENABLE_LAYERSENTRY_CLOUDSTACK_NAS_BACKUP_FRAMEWORK_V1') { throw 'Unsupported operation.' }
+          if ([string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_NATIVE_BACKUP_FRAMEWORK') { throw 'Authorization mismatch.' }
+          if ([string]$request.zoneId -cne $expectedZoneId -or [string]$request.vmId -cne $expectedVmId -or [string]$request.vmName -cne $expectedVmName -or [string]$request.address -cne $expectedAddress -or [string]$request.provider -cne 'nas') { throw 'B&R framework request target binding mismatch.' }
+
+          function ConvertTo-Rfc3986 {
+            param([Parameter(Mandatory = $true)][string]$Value)
+            return [Uri]::EscapeDataString($Value).Replace('%7E', '~')
+          }
+
+          function Invoke-CloudStackApi {
+            param([Parameter(Mandatory = $true)][string]$Command, [hashtable]$Parameters = @{}, [int]$TimeoutSec = 45)
+            $allowed = @('listZones','listHosts','listStoragePools','listImageStores','listTemplates','listConfigurations','updateConfiguration','listBackupProviders','listBackupRepositories','listBackupOfferings','listBackups')
+            if ($Command -notin $allowed) { throw "CloudStack command is not allow-listed: $Command" }
+            $query = [ordered]@{ apikey=$env:CLOUDSTACK_API_KEY; command=$Command; response='json' }
+            foreach ($name in $Parameters.Keys) { $query[[string]$name] = [string]$Parameters[$name] }
+            $pairs = @($query.GetEnumerator() | Sort-Object { ([string]$_.Key).ToLowerInvariant() } | ForEach-Object { '{0}={1}' -f (ConvertTo-Rfc3986 ([string]$_.Key)), (ConvertTo-Rfc3986 ([string]$_.Value)) })
+            $canonical = (($pairs -join '&').ToLowerInvariant())
+            $hmac = New-Object System.Security.Cryptography.HMACSHA1
+            try {
+              $hmac.Key = [Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY)
+              $signature = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))
+            } finally { $hmac.Dispose() }
+            $uri = '{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri, ($pairs -join '&'), (ConvertTo-Rfc3986 $signature)
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec $TimeoutSec -MaximumRedirection 0 -ErrorAction Stop
+          }
+
+          function Get-Payload {
+            param([object]$Response,[string]$Command)
+            $propertyName = "$($Command.ToLowerInvariant())response"
+            $property = $Response.PSObject.Properties[$propertyName]
+            if ($null -eq $property) { throw "CloudStack response for $Command did not contain $propertyName." }
+            return $property.Value
+          }
+
+          function Get-Collection {
+            param([object]$Payload,[string]$Name)
+            $property = $Payload.PSObject.Properties[$Name]
+            if ($null -eq $property -or $null -eq $property.Value) { return @() }
+            return @($property.Value | Where-Object { $null -ne $_ })
+          }
+
+          function Get-ConfigurationValue {
+            param([string]$Name,[string]$ZoneId='')
+            $args = @{ name=$Name; listall='true' }
+            if (-not [string]::IsNullOrWhiteSpace($ZoneId)) { $args.zoneid = $ZoneId }
+            $payload = Get-Payload (Invoke-CloudStackApi 'listConfigurations' $args) 'listConfigurations'
+            $rows = @(Get-Collection $payload 'configuration' | Where-Object { [string]$_.name -ceq $Name })
+            if ($rows.Count -ne 1) { throw "Configuration $Name was not uniquely returned for scope '$ZoneId'." }
+            return [string]$rows[0].value
+          }
+
+          function Set-ConfigurationExact {
+            param([string]$Name,[string]$Value,[string]$ZoneId='')
+            $before = Get-ConfigurationValue -Name $Name -ZoneId $ZoneId
+            if ($before -ceq $Value) { return [ordered]@{ name=$Name; scope=$ZoneId; before=$before; after=$before; mutation=$false } }
+            $args = @{ name=$Name; value=$Value }
+            if (-not [string]::IsNullOrWhiteSpace($ZoneId)) { $args.zoneid = $ZoneId }
+            $submitted = $true
+            try { $null = Invoke-CloudStackApi 'updateConfiguration' $args }
+            catch {
+              Start-Sleep -Seconds 2
+              $reconciled = Get-ConfigurationValue -Name $Name -ZoneId $ZoneId
+              if ($reconciled -cne $Value) { throw }
+            }
+            $after = Get-ConfigurationValue -Name $Name -ZoneId $ZoneId
+            if ($after -cne $Value) { throw "Configuration $Name failed to reconcile to $Value for scope '$ZoneId'." }
+            return [ordered]@{ name=$Name; scope=$ZoneId; before=$before; after=$after; mutation=$submitted }
+          }
+
+          function Assert-CoreReadiness {
+            $zoneRows = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listZones' @{ id=$expectedZoneId; listall='true' }) 'listZones') 'zone')
+            if ($zoneRows.Count -ne 1) { throw 'Exact DC Zone was not uniquely returned.' }
+            $zone = $zoneRows[0]
+            if ([string]$zone.id -cne $expectedZoneId -or [string]$zone.name -cne $expectedZoneName -or [string]$zone.networktype -cne 'Basic' -or [string]$zone.allocationstate -cne 'Enabled') { throw 'DC Zone identity/readiness mismatch.' }
+
+            $hostRows = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listHosts' @{ id=$expectedHostId; listall='true' }) 'listHosts') 'host')
+            if ($hostRows.Count -ne 1) { throw 'Exact KVM host was not uniquely returned.' }
+            $kvmHost = $hostRows[0]
+            if ([string]$kvmHost.state -cne 'Up' -or [string]$kvmHost.resourcestate -cne 'Enabled' -or [string]$kvmHost.zoneid -cne $expectedZoneId -or [string]$kvmHost.podid -cne $expectedPodId -or [string]$kvmHost.clusterid -cne $expectedClusterId -or [string]$kvmHost.hypervisor -cne 'KVM') { throw 'KVM host readiness/placement mismatch.' }
+
+            $primaryRows = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ id=$expectedPrimaryId; listall='true' }) 'listStoragePools') 'storagepool')
+            if ($primaryRows.Count -ne 1 -or [string]$primaryRows[0].state -cne 'Up') { throw 'Primary storage is not Up.' }
+            $secondaryRows = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listImageStores' @{ listall='true' }) 'listImageStores') 'imagestore' | Where-Object { [string]$_.id -ceq $expectedSecondaryId })
+            if ($secondaryRows.Count -ne 1 -or [string]$secondaryRows[0].zoneid -cne $expectedZoneId) { throw 'Secondary image store readiness mismatch.' }
+            $templateRows = @(Get-Collection (Get-Payload (Invoke-CloudStackApi 'listTemplates' @{ id=$expectedSystemTemplateId; zoneid=$expectedZoneId; templatefilter='all'; listall='true' }) 'listTemplates') 'template')
+            if ($templateRows.Count -ne 1 -or -not [System.Convert]::ToBoolean($templateRows[0].isready) -or [string]$templateRows[0].hypervisor -cne 'KVM') { throw 'SystemVM template readiness mismatch.' }
+          }
+
+          Assert-CoreReadiness
+
+          $vm = Get-VM -Name $expectedVmName -ErrorAction Stop
+          if ([string]$vm.Id -cne $expectedVmId -or [string]$vm.State -cne 'Running') { throw 'Exact DC VM identity/state mismatch.' }
+          $processor = Get-VMProcessor -VMName $expectedVmName -ErrorAction Stop
+          if (-not [bool]$processor.ExposeVirtualizationExtensions) { throw 'Nested virtualization is not exposed on exact DC VM.' }
+          $nic = Get-VMNetworkAdapter -VMName $expectedVmName -ErrorAction Stop | Select-Object -First 1
+          if ([string]$nic.SwitchName -cne $expectedSwitch -or [string]$nic.MacAddressSpoofing -cne 'On') { throw 'Exact DC VM network safety gate failed.' }
+
+          $configResults = @()
+          $configResults += Set-ConfigurationExact -Name 'backup.framework.provider.plugin' -Value 'nas'
+          $configResults += Set-ConfigurationExact -Name 'backup.framework.enabled' -Value 'true'
+          $configResults += Set-ConfigurationExact -Name 'backup.framework.enabled' -Value 'true' -ZoneId $expectedZoneId
+          $configResults | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'configuration-reconcile.json') -Encoding UTF8
+
+          $key = Join-Path $env:RUNNER_TEMP "layersentry-backup-framework-$env:GITHUB_RUN_ID.key"
+          $knownHosts = Join-Path $env:RUNNER_TEMP "layersentry-backup-framework-$env:GITHUB_RUN_ID.known_hosts"
+          $patchedHelper = Join-Path $env:RUNNER_TEMP "invoke-backup-framework-console-$env:GITHUB_RUN_ID.ps1"
+          $consolePath = Join-Path $env:RUNNER_TEMP "backup-framework-console-$env:GITHUB_RUN_ID.json"
+          Remove-Item -LiteralPath $key,"$key.pub",$knownHosts,$patchedHelper,$consolePath -Force -ErrorAction SilentlyContinue
+          $comment = "layersentry-backup-framework-$env:GITHUB_RUN_ID"
+          & cmd.exe /d /s /c "ssh-keygen.exe -q -t ed25519 -N `"`" -C $comment -f `"$key`""
+          if ($LASTEXITCODE -ne 0) { throw 'ssh-keygen failed.' }
+
+          $ready = $false
+          try {
+            $helperSource = (Resolve-Path -LiteralPath 'hack/layersentry/invoke-hyperv-console-command.ps1').ProviderPath
+            $helper = Get-Content -LiteralPath $helperSource -Raw -Encoding UTF8
+            $needle = "`$allowedNames = @('sen1', 'sen2', 'sen3')"
+            if (-not $helper.Contains($needle)) { throw 'Console helper allow-list guard not found.' }
+            Set-Content -LiteralPath $patchedHelper -Value ($helper.Replace($needle, "`$allowedNames = @('$expectedVmName')")) -Encoding UTF8
+
+            $pub = (Get-Content -LiteralPath "$key.pub" -Raw -Encoding ASCII).Trim()
+            if ($pub -notmatch '^ssh-ed25519\s+') { throw 'Unexpected public-key format.' }
+            $bootstrap = "install -d -m 700 /root/.ssh && echo '$pub' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+            $consoleRequest = [ordered]@{ requestId="backup-framework-bootstrap-$env:GITHUB_RUN_ID"; delayAfterSeconds=3; targets=@([ordered]@{ vm=$expectedVmName; actions=@([ordered]@{kind='key';code=13},[ordered]@{kind='text';value=$bootstrap},[ordered]@{kind='key';code=13}) }) }
+            $consoleRequest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $consolePath -Encoding UTF8
+            & $patchedHelper -RequestPath $consolePath -OutputDirectory (Join-Path $evidence 'console-bootstrap')
+
+            $ssh = @('-i',$key,'-o','BatchMode=yes','-o','StrictHostKeyChecking=accept-new','-o',"UserKnownHostsFile=$knownHosts",'-o','LogLevel=ERROR','-o','ConnectTimeout=10',"root@$expectedAddress")
+            for ($i=1; $i -le 12; $i++) {
+              $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+              $probe = & ssh.exe @ssh "test `"`$(hostname -f)`" = '$expectedFqdn' && test `"`$(systemctl is-active cloudstack-agent)`" = active && ip -4 address show cloudbr0 | grep -F 'inet $expectedAddress/24' >/dev/null && printf BACKUP_FRAMEWORK_READY" 2>&1
+              $rc = $LASTEXITCODE; $ErrorActionPreference = $old
+              if ($rc -eq 0 -and (($probe -join '') -match 'BACKUP_FRAMEWORK_READY')) { $ready=$true; break }
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) { throw 'Exact guest SSH/bootstrap identity validation failed.' }
+
+            & ssh.exe @ssh "printf 'PRE management='; systemctl is-active cloudstack-management; printf 'PRE agent='; systemctl is-active cloudstack-agent; systemctl is-enabled cloudstack-agent" 2>&1 | Set-Content -LiteralPath (Join-Path $evidence 'service-pre.txt') -Encoding UTF8
+            if ($LASTEXITCODE -ne 0) { throw 'Pre-restart service validation failed.' }
+
+            & ssh.exe @ssh "systemctl restart cloudstack-management && systemctl is-active cloudstack-management && test `"`$(systemctl is-active cloudstack-agent)`" = active && test `"`$(systemctl is-enabled cloudstack-agent)`" = enabled" 2>&1 | Set-Content -LiteralPath (Join-Path $evidence 'service-restart.txt') -Encoding UTF8
+            if ($LASTEXITCODE -ne 0) { throw 'CloudStack Management restart or agent-preservation validation failed.' }
+          }
+          finally {
+            if ($ready) {
+              $safeComment = $comment.Replace("'",'')
+              $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+              & ssh.exe @ssh "sed -i '/$safeComment`$/d' /root/.ssh/authorized_keys" 2>&1 | Out-Null
+              $ErrorActionPreference = $old
+            }
+            Remove-Item -LiteralPath $key,"$key.pub",$knownHosts,$patchedHelper,$consolePath -Force -ErrorAction SilentlyContinue
+          }
+
+          $apiReady = $false
+          for ($attempt=1; $attempt -le 30; $attempt++) {
+            try {
+              Assert-CoreReadiness
+              $apiReady = $true
+              break
+            } catch { Start-Sleep -Seconds 5 }
+          }
+          if (-not $apiReady) { throw 'CloudStack API/core readiness did not recover after management restart.' }
+
+          $globalEnabled = Get-ConfigurationValue -Name 'backup.framework.enabled'
+          $zoneEnabled = Get-ConfigurationValue -Name 'backup.framework.enabled' -ZoneId $expectedZoneId
+          $provider = Get-ConfigurationValue -Name 'backup.framework.provider.plugin'
+          if ($globalEnabled -cne 'true' -or $zoneEnabled -cne 'true' -or $provider -cne 'nas') { throw 'B&R configuration did not survive management restart.' }
+
+          $apiResults = [ordered]@{}
+          foreach ($command in @('listBackupProviders','listBackupRepositories','listBackupOfferings','listBackups')) {
+            try {
+              $payload = Get-Payload (Invoke-CloudStackApi $command @{ listall='true'; pagesize='1' }) $command
+              $apiResults[$command] = [ordered]@{ available=$true; count=if ($null -ne $payload.PSObject.Properties['count']) { [int]$payload.count } else { $null } }
+            } catch {
+              $apiResults[$command] = [ordered]@{ available=$false; error=$_.Exception.Message }
+            }
+          }
+          $apiResults | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'backup-api-reconcile.json') -Encoding UTF8
+          $unavailable = @($apiResults.Keys | Where-Object { -not [bool]$apiResults[$_].available })
+          if ($unavailable.Count -gt 0) { throw "B&R APIs remain unavailable after framework bootstrap: $($unavailable -join ', ')" }
+
+          @(
+            'LAYERSENTRY_BACKUP_FRAMEWORK_V1_COMPLETE'
+            "RUN_ID=$env:GITHUB_RUN_ID"
+            "COMMIT=$env:GITHUB_SHA"
+            'BACKUP_FRAMEWORK_GLOBAL=true'
+            'BACKUP_FRAMEWORK_ZONE=true'
+            'BACKUP_PROVIDER=nas'
+            'CLOUDSTACK_MANAGEMENT_RESTARTED=true'
+            'CLOUDSTACK_AGENT_PRESERVED=true'
+            'BACKUP_APIS_AVAILABLE=true'
+          ) | Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload B&R bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-backup-framework-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-backup-framework-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
