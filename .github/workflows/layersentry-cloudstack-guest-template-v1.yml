@@ -1,0 +1,157 @@
+name: LayerSentry CloudStack Guest Template v1
+
+on:
+  push:
+    branches:
+      - ops/layersentry-hyperv-inventory
+    paths:
+      - hack/layersentry/cloudstack-guest-template-v1-requests/*.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  register-template:
+    name: Register exact Ubuntu DR validation template
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    env:
+      CLOUDSTACK_API_ENDPOINT: http://10.10.10.14:8080/client/api
+      CLOUDSTACK_API_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_API_KEY }}
+      CLOUDSTACK_SECRET_KEY: ${{ secrets.LAYERSENTRY_CLOUDSTACK_SECRET_KEY }}
+
+    steps:
+      - name: Check out exact request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Register and reconcile exact guest template
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+
+          $expectedZoneId='929d1f2c-d629-41ed-96b4-6c48a288d056'
+          $expectedZoneName='dc'
+          $expectedName='layersentry-ubuntu-24.04-dr-r0'
+          $expectedDisplayText='LayerSentry Ubuntu 24.04 LTS DR validation'
+          $expectedUrl='https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img'
+          $expectedChecksum='{SHA-256}d1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac'
+          $expectedOsTypeId='4fc70719-a832-11f1-ad7e-00155d00390a'
+          $expectedOsTypeName='Ubuntu 24.04 LTS'
+          $expectedFormat='QCOW2'
+          $expectedHypervisor='KVM'
+          $expectedArch='x86_64'
+          $endpoint=[Uri]$env:CLOUDSTACK_API_ENDPOINT
+
+          if([string]::IsNullOrWhiteSpace($env:CLOUDSTACK_API_KEY) -or [string]::IsNullOrWhiteSpace($env:CLOUDSTACK_SECRET_KEY)){throw 'Scoped CloudStack API credentials are unavailable.'}
+          if($endpoint.AbsoluteUri -cne 'http://10.10.10.14:8080/client/api'){throw 'CloudStack endpoint binding mismatch.'}
+
+          $evidence=Join-Path $env:RUNNER_TEMP "layersentry-guest-template-v1-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if(Test-Path -LiteralPath $evidence){Remove-Item -LiteralPath $evidence -Recurse -Force}
+          New-Item -Path $evidence -ItemType Directory -Force|Out-Null
+          @('LAYERSENTRY_GUEST_TEMPLATE_V1_STARTED',"RUN_ID=$env:GITHUB_RUN_ID","COMMIT=$env:GITHUB_SHA","ZONE_ID=$expectedZoneId","NAME=$expectedName","URL=$expectedUrl","CHECKSUM=$expectedChecksum","OS_TYPE_ID=$expectedOsTypeId")|Set-Content -LiteralPath (Join-Path $evidence 'started.txt') -Encoding UTF8
+
+          [string[]]$changed=@(@(git diff-tree --no-commit-id --name-only -r $env:GITHUB_SHA -- 'hack/layersentry/cloudstack-guest-template-v1-requests/*.json')|ForEach-Object{[string]$_}|Where-Object{-not [string]::IsNullOrWhiteSpace($_)})
+          if($LASTEXITCODE -ne 0 -or $changed.Count -ne 1){throw 'Expected exactly one guest template request.'}
+          $request=Get-Content -LiteralPath $changed[0].Trim() -Raw -Encoding UTF8|ConvertFrom-Json
+          if([string]$request.operation -cne 'REGISTER_LAYERSENTRY_UBUNTU_DR_TEMPLATE_V1' -or [string]$request.authorization -cne 'USER_AUTHORIZED_DISPOSABLE_LAB_GUEST_TEMPLATE'){throw 'Guest template request authorization mismatch.'}
+          if([string]$request.zoneId -cne $expectedZoneId -or [string]$request.name -cne $expectedName -or [string]$request.displayText -cne $expectedDisplayText -or [string]$request.url -cne $expectedUrl -or [string]$request.checksum -cne $expectedChecksum -or [string]$request.osTypeId -cne $expectedOsTypeId -or [string]$request.format -cne $expectedFormat -or [string]$request.hypervisor -cne $expectedHypervisor -or [string]$request.arch -cne $expectedArch){throw 'Guest template request binding mismatch.'}
+
+          function Enc([string]$v){return [Uri]::EscapeDataString($v).Replace('%7E','~')}
+          function Invoke-CS([string]$command,[hashtable]$parameters=@{}){
+            $allowed=@('listZones','listOsTypes','listTemplates','registerTemplate')
+            if($command -notin $allowed){throw "Command not allow-listed: $command"}
+            $q=[ordered]@{apikey=$env:CLOUDSTACK_API_KEY;command=$command;response='json'}
+            foreach($n in $parameters.Keys){$q[[string]$n]=[string]$parameters[$n]}
+            $pairs=@($q.GetEnumerator()|Sort-Object{([string]$_.Key).ToLowerInvariant()}|ForEach-Object{'{0}={1}' -f (Enc([string]$_.Key)),(Enc([string]$_.Value))})
+            $canonical=(($pairs -join '&').ToLowerInvariant())
+            $h=New-Object System.Security.Cryptography.HMACSHA1
+            try{$h.Key=[Text.Encoding]::UTF8.GetBytes($env:CLOUDSTACK_SECRET_KEY);$sig=[Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)))}finally{$h.Dispose()}
+            $uri='{0}?{1}&signature={2}' -f $endpoint.AbsoluteUri,($pairs -join '&'),(Enc $sig)
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 90 -MaximumRedirection 0 -ErrorAction Stop
+          }
+          function Payload([object]$r,[string]$c){$n="$($c.ToLowerInvariant())response";$p=$r.PSObject.Properties[$n];if($null -eq $p){throw "Missing response payload $n"};return $p.Value}
+          function Rows([object]$p,[string]$n){$x=$p.PSObject.Properties[$n];if($null -eq $x -or $null -eq $x.Value){return @()};return @($x.Value|Where-Object{$null -ne $_})}
+          function Optional([object]$o,[string]$n,[object]$default=$null){$p=$o.PSObject.Properties[$n];if($null -eq $p -or $null -eq $p.Value){return $default};return $p.Value}
+          function Get-Templates(){
+            $p=Payload (Invoke-CS 'listTemplates' @{templatefilter='all';zoneid=$expectedZoneId;page='1';pagesize='500'}) 'listTemplates'
+            return @(Rows $p 'template')
+          }
+          function Find-Exact([object[]]$rows){return @($rows|Where-Object{$null -ne $_ -and $null -ne $_.PSObject.Properties['name'] -and [string]$_.name -ceq $expectedName -and [string](Optional $_ 'zoneid' '') -ceq $expectedZoneId})}
+          function Assert-Exact([object]$template){
+            if([string](Optional $template 'url' '') -cne $expectedUrl){throw 'Existing template URL does not match the pinned image.'}
+            if([string](Optional $template 'format' '') -cne $expectedFormat){throw 'Existing template format mismatch.'}
+            if([string](Optional $template 'hypervisor' '') -cne $expectedHypervisor){throw 'Existing template hypervisor mismatch.'}
+            if([string](Optional $template 'ostypeid' '') -cne $expectedOsTypeId){throw 'Existing template OS type mismatch.'}
+            $arch=[string](Optional $template 'arch' $expectedArch)
+            if($arch -cne $expectedArch){throw 'Existing template architecture mismatch.'}
+            $checksum=[string](Optional $template 'checksum' '')
+            if(-not [string]::IsNullOrWhiteSpace($checksum)){
+              $normalized=$checksum.ToLowerInvariant().Replace('{sha-256}','')
+              if($normalized -cne 'd1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac'){throw 'Existing template checksum mismatch.'}
+            }
+          }
+
+          $zones=@(Rows (Payload (Invoke-CS 'listZones' @{id=$expectedZoneId;listall='true'}) 'listZones') 'zone')
+          if($zones.Count -ne 1 -or [string]$zones[0].name -cne $expectedZoneName -or [string]$zones[0].allocationstate -cne 'Enabled'){throw 'Exact DC Zone is not Enabled.'}
+          $osTypes=@(Rows (Payload (Invoke-CS 'listOsTypes' @{id=$expectedOsTypeId;page='1';pagesize='10'}) 'listOsTypes') 'ostype')
+          if($osTypes.Count -ne 1 -or [string]$osTypes[0].name -cne $expectedOsTypeName){throw 'Exact Ubuntu 24.04 LTS OS type is not available.'}
+
+          $before=@(Get-Templates)
+          $before|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $evidence 'templates-pre.json') -Encoding UTF8
+          $exact=@(Find-Exact $before)
+          if($exact.Count -gt 1){throw 'Exact guest template name is not unique.'}
+          $mutationSubmitted=$false
+          $templateId=''
+          if($exact.Count -eq 1){
+            Assert-Exact $exact[0]
+            $templateId=[string]$exact[0].id
+          }else{
+            $nameConflicts=@($before|Where-Object{$null -ne $_ -and $null -ne $_.PSObject.Properties['name'] -and [string]$_.name -ceq $expectedName})
+            if($nameConflicts.Count -gt 0){throw 'A conflicting template with the exact name already exists outside the expected Zone.'}
+            $mutationSubmitted=$true
+            $response=Invoke-CS 'registerTemplate' @{name=$expectedName;displaytext=$expectedDisplayText;format=$expectedFormat;hypervisor=$expectedHypervisor;url=$expectedUrl;zoneid=$expectedZoneId;ostypeid=$expectedOsTypeId;checksum=$expectedChecksum;bits='64';arch=$expectedArch;ispublic='false';isfeatured='false';isextractable='false';passwordenabled='false';sshkeyenabled='true';requireshvm='true';directdownload='false';templatetype='USER'}
+            $response|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $evidence 'register-response.json') -Encoding UTF8
+            $rp=Payload $response 'registerTemplate'
+            $registered=@(Rows $rp 'template')
+            if($registered.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$registered[0].id)){throw 'registerTemplate did not return exactly one template ID; reconcile before retrying.'}
+            $templateId=[string]$registered[0].id
+          }
+
+          $last=$null
+          for($i=0;$i -lt 180;$i++){
+            $rows=@(Get-Templates)
+            $matches=@($rows|Where-Object{$null -ne $_ -and $null -ne $_.PSObject.Properties['id'] -and [string]$_.id -ceq $templateId})
+            if($matches.Count -ne 1){throw 'Registered template ID does not reconcile uniquely.'}
+            $last=$matches[0]
+            Assert-Exact $last
+            $last|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $evidence 'template-current.json') -Encoding UTF8
+            if([bool](Optional $last 'isready' $false)){break}
+            $status=[string](Optional $last 'status' '')
+            if($status -match '(?i)error|failed|abandon|destroy'){throw "Template download entered failure state: $status"}
+            Start-Sleep -Seconds 10
+          }
+          if($null -eq $last -or -not [bool](Optional $last 'isready' $false)){throw "Template $templateId is not ready after bounded reconciliation; inspect exact template state before retrying registration."}
+
+          $after=@(Get-Templates)
+          $after|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $evidence 'templates-post.json') -Encoding UTF8
+          $exact=@(Find-Exact $after)
+          if($exact.Count -ne 1 -or [string]$exact[0].id -cne $templateId){throw 'Exact ready template does not reconcile uniquely after registration.'}
+          @('LAYERSENTRY_GUEST_TEMPLATE_V1_COMPLETE',"RUN_ID=$env:GITHUB_RUN_ID","COMMIT=$env:GITHUB_SHA","MUTATION_SUBMITTED=$mutationSubmitted","TEMPLATE_ID=$templateId","NAME=$expectedName","ZONE_ID=$expectedZoneId","OS_TYPE_ID=$expectedOsTypeId","FORMAT=$expectedFormat","HYPERVISOR=$expectedHypervisor","ARCH=$expectedArch","CHECKSUM=$expectedChecksum",'IS_READY=true',"STATUS=$([string](Optional $exact[0] 'status' ''))")|Set-Content -LiteralPath (Join-Path $evidence 'summary.txt') -Encoding UTF8
+
+      - name: Upload guest template evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: layersentry-guest-template-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\layersentry-guest-template-v1-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: error
+          retention-days: 30
