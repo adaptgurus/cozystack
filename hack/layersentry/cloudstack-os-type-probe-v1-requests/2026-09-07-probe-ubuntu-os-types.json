@@ -1,0 +1,4 @@
+{
+  "operation": "PROBE_LAYERSENTRY_GUEST_OS_TYPES_V1",
+  "authorization": "USER_AUTHORIZED_READ_ONLY_OS_TYPE_PROBE"
+}
