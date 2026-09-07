@@ -43,9 +43,9 @@ jobs:
           $expectedPodId = '020dc658-af4e-4e2e-bed5-0607de8a787f'
           $expectedClusterId = '7d2bb586-6b60-4c51-aa5f-3b4903f31e51'
           $expectedHostId = '3abb80a8-bc4a-48de-bc99-dedc5ac91bf9'
-          $expectedPrimaryId = 'c7cd8310-ee2f-440a-8910-527bf620c1cc'
+          $expectedPrimaryId = '3ec8a7ea-ebbe-3c45-9f9c-f67d840318b7'
           $expectedPrimaryName = 'layersentry-dc-primary-r0'
-          $expectedSecondaryId = '2620c51e-d2ae-44a3-ba58-393da8f36678'
+          $expectedSecondaryId = 'e824ee8c-2fa1-466b-9948-629958479a78'
           $expectedSecondaryName = 'layersentry-dc-secondary-r0'
           $expectedSystemTemplateId = '13f22f9c-61e2-4d88-93c0-5735212bccd0'
           $endpoint = [Uri]$env:CLOUDSTACK_API_ENDPOINT
@@ -183,8 +183,11 @@ jobs:
               throw 'Registered KVM host readiness/placement mismatch.'
             }
 
-            $primaryPayload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ id=$expectedPrimaryId }) 'listStoragePools'
-            $primaryRows = @(Get-Collection $primaryPayload 'storagepool')
+            $primaryPayload = Get-Payload (Invoke-CloudStackApi 'listStoragePools' @{ listall='true' }) 'listStoragePools'
+            $primaryRows = @(
+              Get-Collection $primaryPayload 'storagepool' |
+                Where-Object { [string]$_.id -ceq $expectedPrimaryId }
+            )
             if ($primaryRows.Count -ne 1) { throw 'Exact primary storage was not uniquely returned.' }
             $primary = $primaryRows[0]
             if ([string]$primary.id -cne $expectedPrimaryId -or [string]$primary.name -cne $expectedPrimaryName -or [string]$primary.state -cne 'Up' -or
@@ -192,8 +195,11 @@ jobs:
               throw 'Primary storage readiness/placement mismatch.'
             }
 
-            $secondaryPayload = Get-Payload (Invoke-CloudStackApi 'listImageStores' @{ id=$expectedSecondaryId; zoneid=$expectedZoneId }) 'listImageStores'
-            $secondaryRows = @(Get-Collection $secondaryPayload 'imagestore')
+            $secondaryPayload = Get-Payload (Invoke-CloudStackApi 'listImageStores' @{ listall='true' }) 'listImageStores'
+            $secondaryRows = @(
+              Get-Collection $secondaryPayload 'imagestore' |
+                Where-Object { [string]$_.id -ceq $expectedSecondaryId }
+            )
             if ($secondaryRows.Count -ne 1) { throw 'Exact secondary image store was not uniquely returned.' }
             $secondary = $secondaryRows[0]
             if ([string]$secondary.id -cne $expectedSecondaryId -or [string]$secondary.name -cne $expectedSecondaryName -or
