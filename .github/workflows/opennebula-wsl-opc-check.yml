@@ -2,7 +2,7 @@ name: OpenNebula WSL Existing OPC Session Check
 on:
   push:
     branches: [ops/opennebula-p1-resume-20260911]
-    paths: [.github/workflows/opennebula-wsl-opc-check.yml]
+    paths: [.github/workflows/opennebula-wsl-opc-check.yml, ops/opennebula-lab/wsl-readonly.sh]
 permissions:
   contents: read
 concurrency:
@@ -14,92 +14,57 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Run a temporary elevated read-only WSL check as the logged-in opc user
+      - name: Run read-only inventory in the existing elevated opc WSL session
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
-          $account="$env:COMPUTERNAME\opc"
           $ErrorActionPreference='Continue'
-          $session=@(& quser.exe opc 2>&1)
+          $sessions=@(& quser.exe opc 2>&1)
           $sessionCode=$LASTEXITCODE
           $ErrorActionPreference='Stop'
-          $sessionText=($session | ForEach-Object { [string]$_ }) -join "`n"
-          if ($sessionCode -ne 0 -or $sessionText -notmatch '(?im)^\s*>?\s*opc\s+') { Write-Host 'OPC_INTERACTIVE_SESSION_AVAILABLE=false; NO_TASK_CREATED=true'; exit 2 }
-          Write-Host 'OPC_INTERACTIVE_SESSION_AVAILABLE=true'
+          $sessionText=($sessions | ForEach-Object { [string]$_ }) -join "`n"
+          if ($sessionCode -ne 0 -or $sessionText -notmatch '(?im)^\s*>?\s*opc\s+') { throw 'No existing opc interactive session; no task created.' }
           $user=Get-LocalUser -Name opc -ErrorAction Stop
-          if (-not $user.Enabled) { throw 'OPC account is disabled.' }
           $work=Join-Path $env:ProgramData "LayerSentry\WSLProbe\run-$env:GITHUB_RUN_ID"
           $taskName="LayerSentry-WSL-ReadOnly-$env:GITHUB_RUN_ID"
           if ((Test-Path -LiteralPath $work) -or (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { throw 'Refusing to replace existing resources.' }
           New-Item -ItemType Directory -Path $work -Force | Out-Null
-          $acl=[Security.AccessControl.DirectorySecurity]::new()
-          $acl.SetAccessRuleProtection($true,$false)
-          foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
-            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
-          }
-          Set-Acl -LiteralPath $work -AclObject $acl
           $registered=$false
+          $exitCode=1
           try {
+            $acl=[Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+            }
+            Set-Acl -LiteralPath $work -AclObject $acl
             $known='C:\ProgramData\LayerSentry\P1Resume\channel-34552987237\known_hosts'
             if (-not (Test-Path -LiteralPath $known -PathType Leaf)) { throw 'Previously pinned public SSH host keys are missing.' }
             Copy-Item -LiteralPath $known -Destination (Join-Path $work 'known_hosts')
-            $linuxWork=($work -replace '\\','/') -replace '^C:','/mnt/c'
-            $linux=@'
-          set -u
-          printf 'WSL_HOST=%s WSL_USER=%s\n' "$(hostname)" "$(id -un)"
-          uname -r
-          command -v ssh || exit 20
-          ip -4 route get 10.10.10.21 || true
-          if [ -d "$HOME/.ssh" ]; then find "$HOME/.ssh" -maxdepth 1 -type f -printf 'SSH_FILE_METADATA=%f SIZE=%s\n'; else echo WSL_SSH_DIRECTORY_PRESENT=false; fi
-          if [ -r "$HOME/.ssh/config" ]; then awk 'tolower($1) ~ /^(host|hostname|user|identityfile|proxyjump)$/ {print "SSH_CONFIG " $0}' "$HOME/.ssh/config"; fi
-          known='__LINUX_WORK__/known_hosts'
-          test -r "$known" || exit 21
-          opts=(-o BatchMode=yes -o ConnectTimeout=7 -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o LogLevel=ERROR -o "UserKnownHostsFile=$known")
-          authenticated=''
-          for login in oneadmin root; do
-            echo "WSL_SSH_PROBE_LOGIN=$login TARGET=10.10.10.21"
-            result=$(ssh -n "${opts[@]}" "$login@10.10.10.21" 'hostname; whoami' 2>&1)
-            code=$?
-            printf '%s\n' "$result"
-            echo "WSL_SSH_EXIT=$code"
-            if [ "$code" -eq 0 ] && grep -q rocky-01 <<<"$result"; then authenticated=$login; echo "WSL_SSH_AUTHENTICATED=true LOGIN=$login"; break; fi
-          done
-          if [ -z "$authenticated" ]; then echo 'WSL_SSH_AUTHENTICATED=false; SERVER_MUTATIONS=false; PASSWORD_AUTH_ATTEMPTED=false'; exit 2; fi
-          remote='bash --noprofile --norc -s'
-          if [ "$authenticated" = root ]; then remote='runuser -u oneadmin -- env HOME=/var/lib/one bash --noprofile --norc -s'; fi
-          ssh "${opts[@]}" "$authenticated@10.10.10.21" "$remote" <<'ONECHECK'
-          set -euo pipefail
-          echo OPENNEBULA_READ_ONLY_BEGIN
-          date -u +%FT%TZ
-          hostname
-          whoami
-          oned -v
-          for command in onehost onedatastore onevnet oneimage onetemplate onevm; do echo "=== $command list ==="; "$command" list; done
-          echo '=== Marketplace application 54 ==='
-          onemarketapp show 54 | head -70 || true
-          echo '=== POC-LAN ==='
-          onevnet show 0
-          for host in rocky-02 rocky-03; do
-            echo "=== $host local system datastore ==="
-            onehost show "$host" | grep -A8 -i 'LOCAL SYSTEM' || true
-            ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 "$host" 'hostname; virsh list --all; ip -br addr show br0; df -hT /var/lib/one/datastores'
-          done
-          echo OPENNEBULA_READ_ONLY_COMPLETE
-          ONECHECK
-          exit $?
-          '@
-            [IO.File]::WriteAllText((Join-Path $work 'probe.sh'),$linux.Replace('__LINUX_WORK__',$linuxWork).Replace("`r",'')+"`n",[Text.UTF8Encoding]::new($false))
+            $source="https://raw.githubusercontent.com/adaptgurus/cozystack/$env:GITHUB_SHA/ops/opennebula-lab/wsl-readonly.sh"
+            $linux=(Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30).Content
+            if ($linux -isnot [string] -or -not $linux.StartsWith('#!/usr/bin/env bash')) { throw 'Unexpected pinned diagnostic script format.' }
+            [IO.File]::WriteAllText((Join-Path $work 'probe.sh'),$linux.Replace("`r",''),[Text.UTF8Encoding]::new($false))
+            Write-Host "EXECUTING_PINNED_SCRIPT_COMMIT=$env:GITHUB_SHA"
             $child=@'
           param([Parameter(Mandatory=$true)][string]$Work)
           $ErrorActionPreference='Stop'
           $log=Join-Path $Work 'result.log'
           $result=@{exit_code=1;error='NOT_COMPLETED';windows_user='';administrator=$false}
+          $p=$null
           function Write-Log([string]$Text) { [IO.File]::AppendAllText($log,$Text+"`n",[Text.UTF8Encoding]::new($false)) }
-          function Invoke-WSL([string]$Arguments,[int]$TimeoutSeconds=30) {
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+            $result.windows_user=$identity.Name
+            $result.administrator=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            Write-Log "WINDOWS_USER=$($result.windows_user) ADMINISTRATOR=$($result.administrator) OBSERVED_UTC=$([DateTime]::UtcNow.ToString('o'))"
+            if ($identity.Name -ne "$env:COMPUTERNAME\opc" -or -not $result.administrator) { throw 'Unexpected principal or privilege level.' }
+            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
             $si=[Diagnostics.ProcessStartInfo]::new()
             $si.FileName=Join-Path $env:WINDIR 'System32\wsl.exe'
-            $si.Arguments=$Arguments
+            $si.Arguments="--distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc $linuxWork/probe.sh $linuxWork/known_hosts"
             $si.WorkingDirectory=$env:USERPROFILE
             $si.UseShellExecute=$false
             $si.CreateNoWindow=$true
@@ -110,35 +75,18 @@ jobs:
             $si.StandardErrorEncoding=[Text.Encoding]::UTF8
             $p=[Diagnostics.Process]::new()
             $p.StartInfo=$si
-            try {
-              [void]$p.Start()
-              $outTask=$p.StandardOutput.ReadToEndAsync()
-              $errTask=$p.StandardError.ReadToEndAsync()
-              $p.StandardInput.Close()
-              if (-not $p.WaitForExit($TimeoutSeconds*1000)) { $p.Kill(); [void]$p.WaitForExit(3000); throw "WSL command timed out: $Arguments" }
-              $output=$outTask.Result.Replace([string][char]0,'')
-              $errors=$errTask.Result.Replace([string][char]0,'')
-              Write-Log "WSL_COMMAND=$Arguments EXIT=$($p.ExitCode)"
-              Write-Log $output.Trim()
-              if ($errors.Trim()) { Write-Log $errors.Trim() }
-              return @{exit_code=$p.ExitCode;output=$output}
-            } finally { $p.Dispose() }
-          }
-          try {
-            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
-            $principal=[Security.Principal.WindowsPrincipal]::new($identity)
-            $result.windows_user=$identity.Name
-            $result.administrator=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            Write-Log "WINDOWS_USER=$($result.windows_user) ADMINISTRATOR=$($result.administrator) OBSERVED_UTC=$([DateTime]::UtcNow.ToString('o'))"
-            if ($identity.Name -ne "$env:COMPUTERNAME\opc" -or -not $result.administrator) { throw 'Unexpected task principal or privilege level.' }
-            $status=Invoke-WSL '--status'
-            $list=Invoke-WSL '--list --verbose'
-            if ($list.exit_code -ne 0 -or $list.output -notmatch 'Ubuntu-22\.04') { throw 'Expected existing Ubuntu-22.04 distribution is not available.' }
-            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
-            $exec=Invoke-WSL "--distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc $linuxWork/probe.sh" 100
-            $result.exit_code=$exec.exit_code
-            $result.error=if ($exec.exit_code -eq 0) { '' } else { 'SEE_RESULT_LOG' }
+            [void]$p.Start()
+            $outTask=$p.StandardOutput.ReadToEndAsync()
+            $errTask=$p.StandardError.ReadToEndAsync()
+            $p.StandardInput.Close()
+            if (-not $p.WaitForExit(150000)) { $p.Kill(); [void]$p.WaitForExit(3000); throw 'WSL diagnostic exceeded its execution limit.' }
+            Write-Log $outTask.Result.Replace([string][char]0,'').Trim()
+            $errors=$errTask.Result.Replace([string][char]0,'').Trim()
+            if ($errors) { Write-Log $errors }
+            $result.exit_code=$p.ExitCode
+            $result.error=if ($p.ExitCode -eq 0) { '' } else { 'SEE_RESULT_LOG' }
           } catch { $result.exit_code=1; $result.error=$_.Exception.Message; Write-Log "DIAGNOSTIC_ERROR=$($result.error)" } finally {
+            if ($null -ne $p) { $p.Dispose() }
             [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),($result | ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
           }
           exit $result.exit_code
@@ -146,7 +94,7 @@ jobs:
             $script=Join-Path $work 'check.ps1'
             [IO.File]::WriteAllText($script,$child,[Text.UTF8Encoding]::new($false))
             $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$script`" -Work `"$work`""
-            $principal=New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
+            $principal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\opc" -LogonType Interactive -RunLevel Highest
             $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
             Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Description 'Temporary authorized read-only OpenNebula WSL connection diagnostic; on demand only.' | Out-Null
             $registered=$true
@@ -160,10 +108,13 @@ jobs:
               $info=Get-ScheduledTaskInfo -TaskName $taskName
               if ($state -ne 'Running' -and $info.LastRunTime.Year -gt 2000 -and $info.LastTaskResult -ne 267009 -and -not (Test-Path -LiteralPath $complete)) { throw "Task exited before writing a result. LastTaskResult=$($info.LastTaskResult)" }
             } while ([DateTime]::UtcNow -lt $deadline)
-            if (-not (Test-Path -LiteralPath $complete)) { throw 'OPC WSL diagnostic did not complete within its bounded execution window.' }
-            if (Test-Path -LiteralPath (Join-Path $work 'result.log')) { Write-Host ([IO.File]::ReadAllText((Join-Path $work 'result.log'))) }
+            if (-not (Test-Path -LiteralPath $complete)) { throw 'OPC WSL diagnostic did not complete within its execution window.' }
+            $text=[IO.File]::ReadAllText((Join-Path $work 'result.log'))
+            Write-Host $text
             $report=[IO.File]::ReadAllText($complete)
             Write-Host "OPC_WSL_REPORT=$report"
+            $exitCode=($report | ConvertFrom-Json).exit_code
+            if ($env:GITHUB_STEP_SUMMARY) { [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY,"### Actual OPC WSL diagnostic result`n```````n$text`n$report`n```````n",[Text.UTF8Encoding]::new($false)) }
           } finally {
             if ($registered) {
               if ((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq 'Running') { Stop-ScheduledTask -TaskName $taskName }
@@ -173,3 +124,4 @@ jobs:
             if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
             Write-Host 'TEMPORARY_WORK_FILES_REMOVED=true; OPENNEBULA_SERVER_MUTATIONS=false; SSH_KEYS_CHANGED=false; RUNNER_SERVICE_CHANGED=false; REBOOT_REQUESTED=false'
           }
+          exit $exitCode
