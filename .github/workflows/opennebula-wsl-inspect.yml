@@ -1,0 +1,119 @@
+name: OpenNebula Elevated PowerShell WSL Inspection
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-wsl-inspect.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  inspect-wsl:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect administrative context and try existing WSL distributions
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+          $admin=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "OBSERVED_UTC=$([DateTime]::UtcNow.ToString('o')) RUNNER=$env:RUNNER_NAME USER=$($identity.Name) ADMINISTRATOR=$admin SYSTEM=$($identity.IsSystem)"
+          if (-not $admin) { throw 'Current PowerShell is not elevated; no elevation bypass or unattended UAC attempted.' }
+          foreach ($feature in @('Microsoft-Windows-Subsystem-Linux','VirtualMachinePlatform')) {
+            try { $f=Get-WindowsOptionalFeature -Online -FeatureName $feature -ErrorAction Stop; Write-Host "WINDOWS_FEATURE=$feature STATE=$($f.State)" } catch { Write-Host "WINDOWS_FEATURE=$feature INSPECTION_ERROR=$($_.Exception.Message)" }
+          }
+          foreach ($name in @('WslService','LxssManager')) {
+            $service=Get-Service -Name $name -ErrorAction SilentlyContinue
+            if ($service) { Write-Host "WSL_SERVICE=$name STATUS=$($service.Status)" } else { Write-Host "WSL_SERVICE=$name PRESENT=false" }
+          }
+          $registryRoots=@(@{label='RUNNER_CURRENT_USER';path='Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Lxss'})
+          $opc=@(Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -eq 'C:\Users\opc' })
+          foreach ($profile in $opc) {
+            Write-Host "OPC_PROFILE_LOADED=$($profile.Loaded)"
+            $registryRoots+=@{label='OPC_LOADED_HIVE';path="Registry::HKEY_USERS\$($profile.SID)\Software\Microsoft\Windows\CurrentVersion\Lxss"}
+          }
+          foreach ($item in $registryRoots) {
+            if (Test-Path -LiteralPath $item.path) {
+              foreach ($subkey in @(Get-ChildItem -LiteralPath $item.path)) {
+                $v=Get-ItemProperty -LiteralPath $subkey.PSPath
+                Write-Host "REGISTERED_WSL_CONTEXT=$($item.label) DISTRIBUTION=$($v.DistributionName) VERSION=$($v.Version)"
+              }
+            } else { Write-Host "WSL_REGISTRATION_KEY_CONTEXT=$($item.label) PRESENT=false" }
+          }
+          $wsl=Get-Command wsl.exe -ErrorAction SilentlyContinue
+          if (-not $wsl) { Write-Host 'WSL_EXECUTABLE_PRESENT=false; WSL_SSH_NOT_TESTED=true; SERVER_MUTATIONS=false'; exit 0 }
+          Write-Host "WSL_EXECUTABLE=$($wsl.Source)"
+          function Invoke-WslProbe {
+            param([string]$Arguments,[string]$InputText='',[int]$TimeoutSeconds=25)
+            $start=[Diagnostics.ProcessStartInfo]::new()
+            $start.FileName=$wsl.Source
+            $start.Arguments=$Arguments
+            $start.UseShellExecute=$false
+            $start.CreateNoWindow=$true
+            $start.RedirectStandardOutput=$true
+            $start.RedirectStandardError=$true
+            $start.RedirectStandardInput=$true
+            $start.StandardOutputEncoding=[Text.Encoding]::UTF8
+            $start.StandardErrorEncoding=[Text.Encoding]::UTF8
+            $process=[Diagnostics.Process]::new()
+            $process.StartInfo=$start
+            try {
+              [void]$process.Start()
+              $stdout=$process.StandardOutput.ReadToEndAsync()
+              $stderr=$process.StandardError.ReadToEndAsync()
+              if ($InputText) { $process.StandardInput.Write($InputText.Replace("`r",'')+"`n") }
+              $process.StandardInput.Close()
+              if (-not $process.WaitForExit($TimeoutSeconds*1000)) {
+                $process.Kill()
+                [void]$process.WaitForExit(3000)
+                Write-Host "WSL_PROBE=$Arguments TIMEOUT=true"
+                return @{exit_code=124;output='';error='TIMEOUT'}
+              }
+              $output=$stdout.Result.Replace([string][char]0,'')
+              $errorText=$stderr.Result.Replace([string][char]0,'')
+              Write-Host "WSL_PROBE=$Arguments EXIT=$($process.ExitCode)"
+              if ($output.Trim()) { Write-Host $output.Trim() }
+              if ($errorText.Trim()) { Write-Host $errorText.Trim() }
+              return @{exit_code=$process.ExitCode;output=$output;error=$errorText}
+            } finally { $process.Dispose() }
+          }
+          $version=Invoke-WslProbe -Arguments '--version'
+          $status=Invoke-WslProbe -Arguments '--status'
+          $list=Invoke-WslProbe -Arguments '--list --verbose'
+          $quiet=Invoke-WslProbe -Arguments '--list --quiet'
+          $distros=@()
+          if ($quiet.exit_code -eq 0) {
+            $distros=@($quiet.output -split "`n" | ForEach-Object { $_.Trim().Trim([char]0xfeff) } | Where-Object { $_ -match '^[A-Za-z0-9][A-Za-z0-9_.-]*$' -and $_ -notmatch '^(docker-desktop|podman)' } | Select-Object -First 3)
+          }
+          if ($distros.Count -eq 0) { Write-Host 'USABLE_WSL_DISTRIBUTIONS_IN_RUNNER_CONTEXT=0; WSL_SSH_NOT_TESTED=true; SERVER_MUTATIONS=false'; exit 0 }
+          $linux=@'
+          set -u
+          printf 'WSL_HOST=%s WSL_USER=%s\n' "$(hostname)" "$(id -un)"
+          uname -r
+          command -v ssh || exit 20
+          command -v sshpass || true
+          ip -4 route get 10.10.10.21 || true
+          if [ -d "$HOME/.ssh" ]; then find "$HOME/.ssh" -maxdepth 1 -type f -printf 'SSH_FILE_METADATA=%f SIZE=%s\n'; else echo WSL_SSH_DIRECTORY_PRESENT=false; fi
+          known=/mnt/c/ProgramData/LayerSentry/P1Resume/channel-34552987237/known_hosts
+          opts=(-n -o BatchMode=yes -o ConnectTimeout=7 -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o LogLevel=ERROR)
+          if [ -r "$known" ]; then opts+=(-o "UserKnownHostsFile=$known"); echo EXISTING_PINNED_KNOWN_HOSTS=true; fi
+          for login in oneadmin root; do
+            echo "WSL_SSH_PROBE_LOGIN=$login TARGET=10.10.10.21"
+            result=$(ssh "${opts[@]}" "$login@10.10.10.21" 'hostname; whoami' 2>&1)
+            code=$?
+            printf '%s\n' "$result"
+            echo "WSL_SSH_EXIT=$code"
+            if [ "$code" -eq 0 ]; then echo "WSL_SSH_AUTHENTICATED=true LOGIN=$login"; break; fi
+          done
+          echo SERVER_MUTATIONS=false
+          '@
+          foreach ($distro in $distros) {
+            Write-Host "TESTING_EXISTING_WSL_DISTRIBUTION=$distro"
+            $probe=Invoke-WslProbe -Arguments "--distribution $distro --exec /bin/bash --noprofile --norc -s" -InputText $linux -TimeoutSeconds 60
+          }
+          Write-Host 'WSL_DIAGNOSTICS_COMPLETED=true; WSL_INSTALLED_BY_THIS_JOB=false; REBOOT_REQUESTED=false; PRIVATE_KEYS_PRINTED=false; PASSWORD_AUTH_ATTEMPTED=false; SERVER_MUTATIONS=false'
