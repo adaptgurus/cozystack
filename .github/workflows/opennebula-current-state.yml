@@ -1,0 +1,93 @@
+name: OpenNebula Current State Read Only
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-current-state.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Read current state without changing servers or SSH trust
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
+          Write-Host "OBSERVED_UTC=$([DateTime]::UtcNow.ToString('o')) RUNNER=$env:RUNNER_NAME USER=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          $dirs = @((Join-Path $env:USERPROFILE '.ssh'),'C:\Users\opc\.ssh','C:\Users\Administrator\.ssh') | Select-Object -Unique
+          $keys = @()
+          foreach ($dir in $dirs) {
+            if (Test-Path -LiteralPath $dir -PathType Container) {
+              $items = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue)
+              Write-Host ('SSH_FILE_METADATA='+(@($items | Select-Object Name,Length,DirectoryName) | ConvertTo-Json -Compress))
+              $keys += @($items | Where-Object { $_.Name -match '(^id_(ed25519|rsa|ecdsa)$|oneadmin|opennebula|rocky)' -and $_.Name -notmatch '(\.pub$|known_hosts|config|\.bak$)' } | Select-Object -ExpandProperty FullName)
+            }
+          }
+          $known = 'C:\ProgramData\LayerSentry\P1Resume\channel-34552987237\known_hosts'
+          $baseArgs = @('-n','-o','BatchMode=yes','-o','ConnectTimeout=7','-o','ConnectionAttempts=1','-o','StrictHostKeyChecking=yes','-o','LogLevel=ERROR')
+          if (Test-Path -LiteralPath $known -PathType Leaf) {
+            $baseArgs += @('-o',"UserKnownHostsFile=$known")
+            Write-Host 'EXISTING_PINNED_KNOWN_HOSTS=true'
+          } else { Write-Host 'EXISTING_PINNED_KNOWN_HOSTS=false; USING_DEFAULT_TRUST=true' }
+          foreach ($ip in @('10.10.10.21','10.10.10.22','10.10.10.23')) {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $ok = $false
+            try { $p=$tcp.BeginConnect($ip,22,$null,$null); if ($p.AsyncWaitHandle.WaitOne(5000)) { $tcp.EndConnect($p); $ok=$tcp.Connected } } catch {} finally { $tcp.Dispose() }
+            Write-Host "SSH_TCP_TARGET=$ip CONNECTED=$ok"
+          }
+          foreach ($name in @('Rocky-01','Rocky-02','Rocky-03')) { $vm=Get-VM -Name $name -ErrorAction Stop; Write-Host "HYPERV_VM=$name STATE=$($vm.State)" }
+          $attempts = @(@{label='default';args=@()})
+          foreach ($key in @($keys | Select-Object -Unique | Select-Object -First 6)) { $attempts += @{label=[IO.Path]::GetFileName($key);args=@('-o','IdentitiesOnly=yes','-i',$key)} }
+          $chosen = $null
+          foreach ($login in @('oneadmin','root')) {
+            foreach ($attempt in $attempts) {
+              $opts = @($baseArgs) + @($attempt.args)
+              $ErrorActionPreference = 'Continue'
+              $probe = @(& ssh.exe @opts "$login@10.10.10.21" 'hostname; whoami' 2>&1)
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              $msg = ($probe | ForEach-Object { [string]$_ }) -join "`n"
+              if ($code -eq 0 -and $msg -match 'rocky-01' -and $msg -match $login) { $chosen=@{login=$login;opts=$opts}; Write-Host "SSH_AUTHENTICATED=true LOGIN=$login IDENTITY=$($attempt.label)"; break }
+              $reason = if ($msg -match 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED') { 'HOST_KEY_NOT_TRUSTED_OR_CHANGED' } elseif ($msg -match 'Permission denied') { 'PUBLIC_KEY_NOT_ACCEPTED' } elseif ($msg -match 'timed out|No route|Connection refused') { 'CONNECTIVITY_FAILURE' } else { 'SSH_FAILED' }
+              Write-Host "SSH_PROBE_LOGIN=$login IDENTITY=$($attempt.label) EXIT=$code REASON=$reason"
+              if ($reason -eq 'HOST_KEY_NOT_TRUSTED_OR_CHANGED') { break }
+            }
+            if ($null -ne $chosen) { break }
+          }
+          if ($null -eq $chosen) { Write-Host 'OPENNEBULA_STATE=NOT_AUTHENTICATED; SERVER_MUTATIONS=false; PRIVATE_KEYS_PRINTED=false'; exit 2 }
+          $linux = @'
+          set -u
+          echo LIVE_OPENNEBULA_INSPECTION_BEGIN
+          date -u +%FT%TZ
+          hostname
+          whoami
+          oned -v
+          systemctl is-active opennebula opennebula-fireedge opennebula-scheduler opennebula-flow opennebula-gate || true
+          for command in onehost onedatastore onevnet oneimage onetemplate onevm; do echo "=== $command list ==="; "$command" list; done
+          echo '=== Marketplace application 54 ==='
+          onemarketapp show 54 | head -70
+          echo '=== POC-LAN current definition ==='
+          onevnet show 0
+          for host in rocky-02 rocky-03; do
+            echo "=== $host local system datastore ==="
+            onehost show "$host" | grep -A8 -i 'LOCAL SYSTEM' || true
+            ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 "$host" 'hostname; virsh list --all; ip -br addr show br0; df -hT /var/lib/one/datastores'
+          done
+          echo LIVE_OPENNEBULA_INSPECTION_END
+          '@
+          $payload=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($linux.Replace("`r",'')))
+          $remote="printf %s $payload | base64 -d | bash"
+          if ($chosen.login -eq 'root') { $remote="printf %s $payload | base64 -d | runuser -u oneadmin -- env HOME=/var/lib/one bash" }
+          $opts=@($chosen.opts)
+          $ErrorActionPreference='Continue'
+          & ssh.exe @opts "$($chosen.login)@10.10.10.21" $remote
+          $code=$LASTEXITCODE
+          $ErrorActionPreference='Stop'
+          Write-Host "INSPECTION_EXIT=$code SERVER_MUTATIONS=false PRIVATE_KEYS_PRINTED=false"
+          exit $code
