@@ -1,0 +1,88 @@
+name: OpenNebula P1 Central Regression
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-central-regression.yml, ops/opennebula-lab/p1-central-regression.sh]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  central-regression:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - name: Test an isolated snapshot without changing the original workspace or cluster
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Wrong host.' }
+          $user=Get-LocalUser -Name opc
+          $work=Join-Path $env:ProgramData "LayerSentry\CentralRegression\run-$env:GITHUB_RUN_ID"
+          $task="LayerSentry-CentralRegression-$env:GITHUB_RUN_ID"
+          if ((Test-Path -LiteralPath $work) -or (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) { throw 'Refusing resource replacement.' }
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $registered=$false
+          $exitCode=1
+          try {
+            $acl=[Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+            }
+            Set-Acl -LiteralPath $work -AclObject $acl
+            $source="https://raw.githubusercontent.com/adaptgurus/cozystack/$env:GITHUB_SHA/ops/opennebula-lab/p1-central-regression.sh"
+            $text=(Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30).Content
+            if ($text -isnot [string] -or -not $text.StartsWith('#!/usr/bin/env bash')) { throw 'Unexpected source.' }
+            [IO.File]::WriteAllText((Join-Path $work 'run.sh'),$text.Replace("`r",''),[Text.UTF8Encoding]::new($false))
+            $child=@'
+          param([string]$Work)
+          $ErrorActionPreference='Stop'
+          $code=1
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            if ($identity.Name -ne "$env:COMPUTERNAME\opc") { throw 'Wrong Windows principal.' }
+            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
+            $p=Start-Process -FilePath "$env:WINDIR\System32\wsl.exe" -ArgumentList "--distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc $linuxWork/run.sh" -WorkingDirectory $env:USERPROFILE -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $Work 'stdout.log') -RedirectStandardError (Join-Path $Work 'stderr.log')
+            if (-not $p.WaitForExit(570000)) { $p.Kill(); $code=124 } else { $p.WaitForExit(); $code=$p.ExitCode }
+          } catch { [IO.File]::WriteAllText((Join-Path $Work 'error.txt'),$_.Exception.Message); $code=1 } finally {
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),(@{exit_code=$code;observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress))
+          }
+          exit $code
+          '@
+            $script=Join-Path $work 'run.ps1'
+            [IO.File]::WriteAllText($script,$child,[Text.UTF8Encoding]::new($false))
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$script`" -Work `"$work`""
+            $principal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\opc" -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+            Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Description 'Temporary isolated unit-test run; no lab mutations.' | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $task
+            $deadline=[DateTime]::UtcNow.AddSeconds(620)
+            do {
+              Start-Sleep -Seconds 3
+              $state=(Get-ScheduledTask -TaskName $task).State
+              if ((Test-Path -LiteralPath (Join-Path $work 'complete.json')) -and $state -ne 'Running') { break }
+              $info=Get-ScheduledTaskInfo -TaskName $task
+              if ($state -ne 'Running' -and $info.LastRunTime.Year -gt 2000 -and $info.LastTaskResult -ne 267009 -and -not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw "Task terminated without result: $($info.LastTaskResult)" }
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if (Test-Path -LiteralPath (Join-Path $work 'complete.json')) {
+              $report=[IO.File]::ReadAllText((Join-Path $work 'complete.json'))
+              Write-Host "REGRESSION_REPORT=$report"
+              $exitCode=($report | ConvertFrom-Json).exit_code
+            } else { Write-Host 'REGRESSION_OUTCOME=UNKNOWN_TIMEOUT'; $exitCode=124 }
+          } finally {
+            if ($registered) {
+              if ((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State -eq 'Running') { Stop-ScheduledTask -TaskName $task }
+              Unregister-ScheduledTask -TaskName $task -Confirm:$false
+            }
+            foreach ($file in @('stdout.log','stderr.log','error.txt')) {
+              $p=Join-Path $work $file
+              if (Test-Path -LiteralPath $p) { Write-Host "LOG=$file"; Get-Content -LiteralPath $p -Tail 140 }
+            }
+            if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+            Write-Host 'TEMPORARY_WINDOWS_RESOURCES_REMOVED=true; SERVER_MUTATIONS=false'
+          }
+          exit $exitCode
