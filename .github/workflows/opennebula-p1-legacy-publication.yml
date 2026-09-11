@@ -1,0 +1,121 @@
+name: OpenNebula P1 Legacy CLI Publication Recovery
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-p1-legacy-publication.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  publication:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 13
+    steps:
+      - name: Test compatibility reads and resume the native verified publication
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Wrong host.' }
+          $ErrorActionPreference='Continue'
+          $sessions=@(& quser.exe opc 2>&1)
+          $sessionCode=$LASTEXITCODE
+          $ErrorActionPreference='Stop'
+          if ($sessionCode -ne 0 -or (($sessions | ForEach-Object { [string]$_ }) -join "`n") -notmatch '(?im)^\s*>?\s*opc\s+') { throw 'Existing opc session required.' }
+          $user=Get-LocalUser -Name opc
+          $work=Join-Path $env:ProgramData "LayerSentry\LegacyPublication\run-$env:GITHUB_RUN_ID"
+          $task="LayerSentry-LegacyPublication-$env:GITHUB_RUN_ID"
+          if ((Test-Path -LiteralPath $work) -or (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) { throw 'Refusing replacement.' }
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $registered=$false
+          $exitCode=125
+          try {
+            $acl=[Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+            }
+            Set-Acl -LiteralPath $work -AclObject $acl
+            foreach ($name in @('legacy_gh_publication.py','test_legacy_gh_publication.py')) {
+              $source="https://raw.githubusercontent.com/adaptgurus/cozystack/$env:GITHUB_SHA/ops/opennebula-lab/$name"
+              $text=(Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30).Content
+              if ($text -is [byte[]]) { $text=[Text.Encoding]::UTF8.GetString($text) }
+              if ($text -isnot [string] -or $text.Length -lt 500) { throw 'Unexpected pinned source.' }
+              [IO.File]::WriteAllText((Join-Path $work $name),$text.Replace("`r",''),[Text.UTF8Encoding]::new($false))
+            }
+            Write-Host "ADAPTER_SOURCE_COMMIT=$env:GITHUB_SHA"
+            $bash=@'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          umask 077
+          work=${1:?working directory required}
+          case "$work" in /mnt/c/ProgramData/LayerSentry/LegacyPublication/run-*) ;; *) exit 21;; esac
+          trap 'rc=$?; printf "%s\n" "$rc" > "$work/shell-exit-code.txt"' EXIT
+          [[ $(id -un) == opc && $(hostname -s) == testser ]] || exit 20
+          cd "$work"
+          py=/tmp/layersentry-python-runtime/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12
+          "$py" -B -m unittest -v test_legacy_gh_publication
+          echo ADAPTER_UNIT_TESTS_PASSED=true
+          timeout --signal=TERM --kill-after=15s 600s "$py" -B "$work/legacy_gh_publication.py"
+          '@
+            [IO.File]::WriteAllText((Join-Path $work 'run.sh'),$bash.Replace("`r",'')+"`n",[Text.UTF8Encoding]::new($false))
+            $child=@'
+          param([string]$Work)
+          $ErrorActionPreference='Stop'
+          $code=125
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+            if ($identity.Name -ne "$env:COMPUTERNAME\opc" -or -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Wrong principal or privileges.' }
+            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
+            $ErrorActionPreference='Continue'
+            & "$env:WINDIR\System32\wsl.exe" --distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc "$linuxWork/run.sh" "$linuxWork" 1> (Join-Path $Work 'stdout.log') 2> (Join-Path $Work 'stderr.log')
+            $nativeCode=$LASTEXITCODE
+            $ErrorActionPreference='Stop'
+            $resultFile=Join-Path $Work 'shell-exit-code.txt'
+            if (-not (Test-Path -LiteralPath $resultFile)) { throw 'No independent shell exit code.' }
+            $raw=[IO.File]::ReadAllText($resultFile).Trim()
+            if ($raw -notmatch '^\d{1,3}$') { throw 'Invalid shell result.' }
+            $code=[int]$raw
+            if ($null -eq $nativeCode -or $nativeCode -ne $code) { throw 'Native and shell results disagree.' }
+          } catch { [IO.File]::WriteAllText((Join-Path $Work 'error.txt'),$_.Exception.Message); $code=125 } finally {
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),(@{exit_code=$code;observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress))
+          }
+          exit $code
+          '@
+            $script=Join-Path $work 'run.ps1'
+            [IO.File]::WriteAllText($script,$child,[Text.UTF8Encoding]::new($false))
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$script`" -Work `"$work`""
+            $principal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\opc" -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 11)
+            Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Description 'Temporary authorized P1 publication recovery; native gates retained; no merge or cluster mutation.' | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $task
+            $deadline=[DateTime]::UtcNow.AddSeconds(690)
+            do {
+              Start-Sleep -Seconds 3
+              $state=(Get-ScheduledTask -TaskName $task).State
+              if ((Test-Path -LiteralPath (Join-Path $work 'complete.json')) -and $state -ne 'Running') { break }
+              $info=Get-ScheduledTaskInfo -TaskName $task
+              if ($state -ne 'Running' -and $info.LastRunTime.Year -gt 2000 -and $info.LastTaskResult -ne 267009 -and -not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw "Task exited without result: $($info.LastTaskResult)" }
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if (-not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw 'No completed publication result; reconcile native state.' }
+            $report=[IO.File]::ReadAllText((Join-Path $work 'complete.json')) | ConvertFrom-Json
+            if ($null -eq $report.exit_code) { throw 'Null result cannot pass.' }
+            $exitCode=[int]$report.exit_code
+            Write-Host ('PUBLICATION_EXECUTION_REPORT='+($report | ConvertTo-Json -Compress))
+          } finally {
+            if ($registered) {
+              if ((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State -eq 'Running') { Stop-ScheduledTask -TaskName $task }
+              Unregister-ScheduledTask -TaskName $task -Confirm:$false
+            }
+            foreach ($file in @('stdout.log','stderr.log','error.txt')) {
+              $p=Join-Path $work $file
+              if (Test-Path -LiteralPath $p) { Write-Host "LOG=$file"; Get-Content -LiteralPath $p -Tail 120 }
+            }
+            if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+            Write-Host 'TEMPORARY_WINDOWS_RESOURCES_REMOVED=true; SERVER_MUTATIONS=false; TOOLS_REPLACED=false; MANUAL_STATE_EDITS=false; MERGES=false'
+          }
+          exit $exitCode
