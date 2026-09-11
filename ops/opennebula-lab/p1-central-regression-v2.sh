@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 [[ $(id -un) == opc && $(hostname -s) == testser ]] || exit 20
-work=${1:?Provide this job's temporary working directory}
+work=${1:?Provide the temporary working directory}
 case "$work" in /mnt/c/ProgramData/LayerSentry/CentralRegression/run-*) ;; *) exit 21;; esac
 trap 'rc=$?; printf "%s\n" "$rc" > "$work/shell-exit-code.txt"' EXIT
 expected=ab55a25f4b1421a63718242d8a8f99359d2ab24e
