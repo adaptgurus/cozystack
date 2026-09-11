@@ -1,0 +1,111 @@
+name: OpenNebula P1 Independent Audit
+on:
+  push:
+    branches: [ops/opennebula-p1-audit-20260911]
+    paths: [.github/workflows/opennebula-p1-audit.yml, ops/opennebula-lab/p1-audit.sh]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - name: Audit the existing P1 cluster without changing it
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
+          $user=Get-LocalUser -Name opc -ErrorAction Stop
+          $work=Join-Path $env:ProgramData "LayerSentry\P1Audit\run-$env:GITHUB_RUN_ID"
+          $task="LayerSentry-P1Audit-$env:GITHUB_RUN_ID"
+          if ((Test-Path -LiteralPath $work) -or (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) { throw 'Refusing replacement.' }
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $registered=$false
+          $code=125
+          try {
+            $acl=[Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+            }
+            Set-Acl -LiteralPath $work -AclObject $acl
+            $source="https://raw.githubusercontent.com/adaptgurus/cozystack/$env:GITHUB_SHA/ops/opennebula-lab/p1-audit.sh"
+            $text=(Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30).Content
+            if ($text -isnot [string] -or -not $text.StartsWith('#!/usr/bin/env bash')) { throw 'Unexpected script format.' }
+            [IO.File]::WriteAllText((Join-Path $work 'audit.sh'),$text.Replace("`r",''),[Text.UTF8Encoding]::new($false))
+            Write-Host "AUDIT_SOURCE_COMMIT=$env:GITHUB_SHA"
+            $child=@'
+          param([string]$Work)
+          $ErrorActionPreference='Stop'
+          $code=125
+          $p=$null
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $admin=([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if ($identity.Name -ne "$env:COMPUTERNAME\opc" -or -not $admin) { throw 'Wrong task principal.' }
+            $lw=($Work -replace '\\','/') -replace '^C:','/mnt/c'
+            $si=[Diagnostics.ProcessStartInfo]::new()
+            $si.FileName=Join-Path $env:WINDIR 'System32\wsl.exe'
+            $si.Arguments="--distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc $lw/audit.sh"
+            $si.WorkingDirectory=$env:USERPROFILE
+            $si.UseShellExecute=$false
+            $si.CreateNoWindow=$true
+            $si.RedirectStandardOutput=$true
+            $si.RedirectStandardError=$true
+            $si.RedirectStandardInput=$true
+            $si.StandardOutputEncoding=[Text.Encoding]::UTF8
+            $si.StandardErrorEncoding=[Text.Encoding]::UTF8
+            $p=[Diagnostics.Process]::new()
+            $p.StartInfo=$si
+            [void]$p.Start()
+            $outTask=$p.StandardOutput.ReadToEndAsync()
+            $errTask=$p.StandardError.ReadToEndAsync()
+            $p.StandardInput.Close()
+            if (-not $p.WaitForExit(240000)) { $p.Kill(); [void]$p.WaitForExit(3000); throw 'Read-only audit timeout; outcome is UNKNOWN.' }
+            [IO.File]::WriteAllText((Join-Path $Work 'stdout.log'),$outTask.Result,[Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText((Join-Path $Work 'stderr.log'),$errTask.Result,[Text.UTF8Encoding]::new($false))
+            $code=$p.ExitCode
+          } catch { [IO.File]::WriteAllText((Join-Path $Work 'error.txt'),$_.Exception.Message); $code=125 } finally {
+            if ($null -ne $p) { $p.Dispose() }
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),(@{exit_code=$code;observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress))
+          }
+          exit $code
+          '@
+            $script=Join-Path $work 'audit.ps1'
+            [IO.File]::WriteAllText($script,$child,[Text.UTF8Encoding]::new($false))
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$script`" -Work `"$work`""
+            $principal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\opc" -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+            Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Description 'Temporary authorized read-only P1 audit.' | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $task
+            $deadline=[DateTime]::UtcNow.AddSeconds(300)
+            do {
+              Start-Sleep -Seconds 2
+              $state=(Get-ScheduledTask -TaskName $task).State
+              if ((Test-Path -LiteralPath (Join-Path $work 'complete.json')) -and $state -ne 'Running') { break }
+              $info=Get-ScheduledTaskInfo -TaskName $task
+              if ($state -ne 'Running' -and $info.LastRunTime.Year -gt 2000 -and $info.LastTaskResult -ne 267009 -and -not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw 'Task exited without a result.' }
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if (-not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw 'No completed audit result.' }
+            $result=[IO.File]::ReadAllText((Join-Path $work 'complete.json')) | ConvertFrom-Json
+            if ($null -eq $result.exit_code) { throw 'Null result cannot pass.' }
+            $code=[int]$result.exit_code
+            Write-Host ('P1_AUDIT_RESULT='+($result | ConvertTo-Json -Compress))
+          } finally {
+            if ($registered) {
+              if ((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State -eq 'Running') { Stop-ScheduledTask -TaskName $task }
+              Unregister-ScheduledTask -TaskName $task -Confirm:$false
+            }
+            foreach ($name in @('stdout.log','stderr.log','error.txt')) {
+              $p=Join-Path $work $name
+              if (Test-Path -LiteralPath $p) { Write-Host "LOG=$name"; Write-Host ([IO.File]::ReadAllText($p)) }
+            }
+            if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+            Write-Host 'TEMPORARY_TASK_AND_FILES_REMOVED=true; SERVER_MUTATIONS=false'
+          }
+          exit $code
