@@ -1,0 +1,42 @@
+name: OpenNebula P1 Endpoint Reachability
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-p1-endpoint-check.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  endpoints:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Remove unused task-generated key and check documented endpoints without authentication
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
+          $key = 'C:\ProgramData\LayerSentry\P1Resume\channel-34552987237\private.xml'
+          if (Test-Path -LiteralPath $key -PathType Leaf) { Remove-Item -LiteralPath $key -Force }
+          if (Test-Path -LiteralPath $key) { throw 'Unused temporary key cleanup failed.' }
+          $results = @()
+          foreach ($row in @(@{target='10.10.10.21';port=22},@{target='10.10.10.22';port=22},@{target='10.10.10.23';port=22},@{target='10.10.10.117';port=6443},@{target='10.10.10.117';port=9345})) {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $ok = $false
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            try {
+              $pending = $tcp.BeginConnect($row.target,$row.port,$null,$null)
+              if ($pending.AsyncWaitHandle.WaitOne(5000)) { $tcp.EndConnect($pending); $ok=$tcp.Connected }
+            } catch {} finally { $tcp.Dispose(); $timer.Stop() }
+            $results += @{target=$row.target;port=$row.port;tcp_connected=$ok;elapsed_ms=$timer.ElapsedMilliseconds}
+          }
+          $vms = @(foreach ($name in @('Rocky-01','Rocky-02','Rocky-03')) {
+            $vm = Get-VM -Name $name -ErrorAction Stop
+            @{name=$vm.Name;state=[string]$vm.State}
+          })
+          $report = @{observed_utc=[DateTime]::UtcNow.ToString('o');runner=$env:RUNNER_NAME;repository=$env:GITHUB_REPOSITORY;run_id=$env:GITHUB_RUN_ID;mode='TCP_AND_HYPERV_READ_ONLY';checks=$results;hyperv_vms=$vms;unused_temporary_key_removed=$true;ssh_authentication_performed=$false;kubernetes_health_verified=$false;publication_attempted=$false;server_mutations=$false}
+          Write-Host ('P1_ENDPOINT_REPORT='+($report | ConvertTo-Json -Depth 6 -Compress))
+          if (@($results | Where-Object { -not $_.tcp_connected }).Count -gt 0) { exit 2 }
