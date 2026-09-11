@@ -1,0 +1,60 @@
+name: OpenNebula P1 Secure SSH Channel
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-p1-channel.yml]
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  bind:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Bind exact Hyper-V guests and prepare an ephemeral encrypted channel
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected execution host.' }
+          $work = Join-Path $env:ProgramData "LayerSentry\P1Resume\channel-$env:GITHUB_RUN_ID"
+          if (Test-Path -LiteralPath $work) { throw 'Channel already exists; refusing replacement.' }
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $who = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $acl = New-Object Security.AccessControl.DirectorySecurity
+          $acl.SetAccessRuleProtection($true,$false)
+          $acl.SetOwner([Security.Principal.NTAccount]::new($who))
+          $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($who,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+          Set-Acl -LiteralPath $work -AclObject $acl
+          $known = Join-Path $work 'known_hosts'
+          $bound = @()
+          foreach ($row in @(@{ip='10.10.10.21';vm='Rocky-01'},@{ip='10.10.10.22';vm='Rocky-02'})) {
+            $vm = Get-VM -Name $row.vm -ErrorAction Stop
+            if ([string]$vm.State -ne 'Running') { throw 'Expected guest is not running.' }
+            $macs = @(Get-VMNetworkAdapter -VM $vm | ForEach-Object { $_.MacAddress.ToUpperInvariant() })
+            $n = @(Get-NetNeighbor -IPAddress $row.ip -ErrorAction Stop | Where-Object { $_.State -ne 'Unreachable' -and $_.State -ne 'Incomplete' })
+            $match = @($n | Where-Object { ($_.LinkLayerAddress -replace '[:-]','').ToUpperInvariant() -in $macs })
+            Write-Host "HYPERV_BINDING=$($row.ip) VM=$($row.vm) MAC_MATCH=$($match.Count -gt 0)"
+            if ($match.Count -eq 0) { throw 'Guest/IP MAC association could not be verified; no authentication attempted.' }
+            $ErrorActionPreference = 'Continue'
+            $scan = @(& ssh-keyscan.exe -T 5 -t ed25519 $row.ip 2>$null)
+            $ErrorActionPreference = 'Stop'
+            $lines = @($scan | ForEach-Object { [string]$_ } | Where-Object { $_ -match ('^'+[regex]::Escape($row.ip)+'\s+ssh-ed25519\s+[A-Za-z0-9+/=]+$') })
+            if ($lines.Count -ne 1) { throw 'Expected exactly one ED25519 host key.' }
+            [IO.File]::AppendAllText($known,$lines[0]+"`n",[Text.UTF8Encoding]::new($false))
+            $bound += @{ip=$row.ip; vm=$row.vm; vm_id=[string]$vm.Id; mac_verified=$true}
+          }
+          & ssh-keygen.exe -l -E sha256 -f $known
+          if ($LASTEXITCODE -ne 0) { throw 'Host-key fingerprint calculation failed.' }
+          $rsa = [Security.Cryptography.RSACryptoServiceProvider]::new(3072)
+          $rsa.PersistKeyInCsp = $false
+          try {
+            [IO.File]::WriteAllText((Join-Path $work 'private.xml'),$rsa.ToXmlString($true),[Text.UTF8Encoding]::new($false))
+            $public = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rsa.ToXmlString($false)))
+            @{runner='TESTSER';created_utc=[DateTime]::UtcNow.ToString('o');expires_utc=[DateTime]::UtcNow.AddHours(1).ToString('o');targets=$bound} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $work 'binding.json') -Encoding UTF8
+            Write-Host "CHANNEL_DIR=$work"
+            Write-Host "PUBLIC_KEY_XML_BASE64=$public"
+            Write-Host 'CHANNEL_READY=true; SERVER_MUTATIONS=false; PRIVATE_KEY_EXPORTED=false'
+          } finally { $rsa.Dispose() }
