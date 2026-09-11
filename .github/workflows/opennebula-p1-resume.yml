@@ -1,0 +1,80 @@
+name: OpenNebula P1 Windows Resume
+
+on:
+  push:
+    branches: [ops/opennebula-p1-resume-20260911]
+    paths: [.github/workflows/opennebula-p1-resume.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - name: Bind runner identity and inspect lab access without changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER') { throw 'Runner identity differs from the observed authorized TESTSER host.' }
+          Write-Host "RUNNER=$env:RUNNER_NAME COMPUTER=$env:COMPUTERNAME"
+          Write-Host "UTC=$([DateTime]::UtcNow.ToString('o'))"
+          $ssh = Get-Command ssh.exe -ErrorAction SilentlyContinue
+          Write-Host "SSH_CLIENT_PRESENT=$([bool]$ssh)"
+          Write-Host "POSH_SSH_PRESENT=$([bool](Get-Module -ListAvailable Posh-SSH))"
+          $profileDirs = @($HOME, 'C:\Users\opc', 'C:\Users\Administrator') | Select-Object -Unique
+          foreach ($profileDir in $profileDirs) {
+            $dir = Join-Path $profileDir '.ssh'
+            if (Test-Path -LiteralPath $dir) {
+              foreach ($name in @('config','known_hosts','id_ed25519','id_rsa')) {
+                if (Test-Path -LiteralPath (Join-Path $dir $name)) { Write-Host "SSH_FILE_PRESENT=$dir\$name" }
+              }
+            }
+          }
+          if (Get-Command Get-VM -ErrorAction SilentlyContinue) {
+            Get-VM | Where-Object { $_.Name -match '(?i)(rocky|ubuntu|bastion|jump)' } | ForEach-Object {
+              Write-Host "LAB_VM_NAME=$($_.Name) STATE=$($_.State)"
+              Get-VMNetworkAdapter -VM $_ | ForEach-Object {
+                $ips = @($_.IPAddresses | Where-Object { $_ -like '10.10.10.*' }) -join ','
+                Write-Host "LAB_VM_IPS=$ips"
+              }
+            }
+          }
+          foreach ($ip in @('10.10.10.21','10.10.10.22','10.10.10.23')) {
+            $tcp = New-Object Net.Sockets.TcpClient
+            $ok = $false
+            try {
+              $pending = $tcp.BeginConnect($ip,22,$null,$null)
+              if ($pending.AsyncWaitHandle.WaitOne(3000)) { $tcp.EndConnect($pending); $ok = $tcp.Connected }
+            } catch {} finally { $tcp.Dispose() }
+            Write-Host "TCP22_TARGET=$ip REACHABLE=$ok"
+          }
+          if (-not $ssh) { throw 'SSH client is unavailable; no installation or server changes attempted.' }
+          $success = $false
+          foreach ($target in @('rocky-01','oneadmin@10.10.10.21','root@10.10.10.21','oneadmin@10.10.10.22','root@10.10.10.22','oneadmin@10.10.10.23')) {
+            $ErrorActionPreference = 'Continue'
+            $raw = @(& $ssh.Source -n -o BatchMode=yes -o ConnectTimeout=6 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=1 -o StrictHostKeyChecking=yes -o LogLevel=ERROR $target 'hostname; id -un' 2>&1)
+            $rc = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+            $reason = 'SSH_FAILED'
+            if ($text -match 'Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED') { $reason = 'HOST_KEY_NOT_TRUSTED_OR_CHANGED' }
+            elseif ($text -match 'Permission denied') { $reason = 'KEY_AUTH_NOT_AVAILABLE' }
+            elseif ($text -match 'Could not resolve hostname') { $reason = 'ALIAS_NOT_CONFIGURED' }
+            elseif ($text -match 'Connection refused') { $reason = 'TCP_REFUSED' }
+            elseif ($text -match 'timed out') { $reason = 'TIMEOUT' }
+            if ($rc -eq 0 -and $text -match '(?m)^rocky-0[123](\.[A-Za-z0-9.-]+)?\s*$') {
+              $reason = 'SSH_IDENTITY_CONFIRMED'
+              if ($target -in @('rocky-01','oneadmin@10.10.10.21','root@10.10.10.21')) { $success = $true }
+            }
+            Write-Host "SSH_TARGET=$target RESULT=$reason EXIT=$rc"
+          }
+          Write-Host "MANAGEMENT_SSH_CONFIRMED=$success"
+          Write-Host 'LAB_MUTATIONS=false; PUBLICATION_ATTEMPTED=false; CREDENTIALS_PRINTED=false'
+          if (-not $success) { exit 2 }
