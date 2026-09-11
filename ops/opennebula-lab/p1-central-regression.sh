@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+expected=ab55a25f4b1421a63718242d8a8f99359d2ab24e
+[[ $(id -un) == opc && $(hostname -s) == testser ]] || exit 20
+printf 'CENTRAL_REGRESSION_TARGET=%s\n' "$expected"
+source=''
+while IFS= read -r candidate; do
+  if [[ -d "$candidate/.git" || -f "$candidate/.git" ]]; then
+    remote=$(git -C "$candidate" remote get-url origin 2>/dev/null || true)
+    case "$remote" in
+      https://github.com/adaptgurus/codexagentlogic|https://github.com/adaptgurus/codexagentlogic.git|git@github.com:adaptgurus/codexagentlogic.git)
+        if git -C "$candidate" cat-file -e "$expected^{commit}" 2>/dev/null; then source=$candidate; break; fi;;
+    esac
+  fi
+done < <(find /home/opc/layersentry -maxdepth 5 -type d -name codexagentlogic -print 2>/dev/null)
+[[ -n "$source" ]] || { echo 'REGRESSION_BLOCKED=PINNED_LOCAL_CENTRAL_REPOSITORY_NOT_FOUND'; exit 21; }
+printf 'CENTRAL_SOURCE_PATH=%s\n' "$source"
+printf 'CENTRAL_SOURCE_HEAD=%s\n' "$(git -C "$source" rev-parse HEAD)"
+scratch=$(mktemp -d /tmp/layersentry-central-regression.XXXXXXXX)
+trap 'rm -rf -- "$scratch"' EXIT
+mkdir "$scratch/home" "$scratch/tmp"
+git clone --quiet --no-hardlinks --no-checkout "$source" "$scratch/repo"
+git -C "$scratch/repo" checkout --quiet --detach "$expected"
+[[ $(git -C "$scratch/repo" rev-parse HEAD) == "$expected" ]] || exit 22
+cd "$scratch/repo"
+echo 'REGRESSION_SCOPE=existing tests/test_*.py; MODEL_SSH_GITHUB_BEHAVIOR=synthetic fixtures; SOURCE_WORKTREE_CHANGED=false'
+set +e
+timeout --signal=TERM --kill-after=10s 480s env -i HOME="$scratch/home" TMPDIR="$scratch/tmp" PATH=/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests -p 'test_*.py' -v >"$scratch/tests.log" 2>&1
+code=$?
+set -e
+tail -n 100 "$scratch/tests.log"
+printf 'CENTRAL_FULL_UNIT_SUITE_EXIT=%s\n' "$code"
+echo 'OPENNEBULA_MUTATIONS=false; GUEST_MUTATIONS=false; PAID_MODEL_CALLS=0; LIVE_RKE2_CERTIFICATION=false'
+exit "$code"
