@@ -36,7 +36,7 @@ print('BOUND_HELPER_HASHES=PASS')
 for t in b['verification']:
  print('BOUND_VERIFIER='+json.dumps({k:t.get(k) for k in ['id','name','kind','coverage','covers'] if k in t}))
 PY
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 rocky-01 'test "$(hostname -s)" = rocky-01 && test "$(id -un)" = oneadmin && oned -v | head -1; onehost list; onedatastore list; onevm list; onehost show rocky-02 | grep -A5 "LOCAL SYSTEM"; onehost show rocky-03 | grep -A5 "LOCAL SYSTEM"'
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 rocky-01 'set -e; test "$(hostname -s)" = rocky-01; test "$(id -un)" = oneadmin; oned -v | head -1; onehost list; onedatastore list; onevm list; onehost show rocky-02 | grep -A5 "LOCAL SYSTEM"; onehost show rocky-03 | grep -A5 "LOCAL SYSTEM"'
 python3 -u - <<'PY'
 import json,subprocess
 k='/tmp/ls-poc-kubectl'
@@ -69,9 +69,11 @@ rke2 --version | head -1
 free -m
 awk '/^nameserver / { print "GUEST_NAMESERVER=" $2 }' /etc/resolv.conf
 ip -4 route
-ping -c 2 -W 2 10.10.10.1 >/dev/null && echo GATEWAY_PING=PASS
+ping -c 2 -W 2 10.10.10.1 >/dev/null
+echo GATEWAY_PING=PASS
 code=$(curl -fsS --max-time 10 --output /dev/null --write-out '%{http_code}' https://example.com)
-[[ $code == 200 ]] && echo HTTPS_INTERNET=PASS
+[[ $code == 200 ]]
+echo HTTPS_INTERNET=PASS
 python3 - <<'DNS'
 import socket,struct,json,secrets
 for server in ['8.8.8.8','1.1.1.1']:
