@@ -82,7 +82,9 @@ fi
 echo '=== DAY2_PLATFORM_SOURCE_GATE ==='
 state=/home/opc/.local/state/layersentry-runner
 repo="$state/capabilities/d5db2181-14e4-4ab0-8464-493b643130b9/source/layersentry-platform"
-test -d "$repo/.git"
+git -C "$repo" rev-parse --is-inside-work-tree >/dev/null
+printf 'PLATFORM_LOCAL_HEAD=%s\n' "$(git -C "$repo" rev-parse HEAD)"
+printf 'PLATFORM_LOCAL_BRANCH=%s\n' "$(git -C "$repo" branch --show-current)"
 expected=aa47337fb5141ade8bcacb9d5251e917d055b740
 git -C "$repo" fetch --no-prune origin layersentry/p1-rke2-day2-production-20260913
 test "$(git -C "$repo" rev-parse 'origin/layersentry/p1-rke2-day2-production-20260913^{commit}')" = "$expected"
