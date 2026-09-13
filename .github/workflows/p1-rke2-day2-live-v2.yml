@@ -1,0 +1,108 @@
+name: P1 RKE2 Day-2 Live Readonly Validation V2
+on:
+  push:
+    branches: [ops/p1-rke2-day2-live-20260913]
+    paths:
+      - .github/workflows/p1-rke2-day2-live-v2.yml
+permissions:
+  contents: read
+concurrency:
+  group: layersentry-live-environment
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == 'adaptgurus/cozystack' && github.actor == 'adaptgurus'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    steps:
+      - name: Execute pinned WSL validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER') { throw 'Unexpected runner identity.' }
+          $ErrorActionPreference='Continue'
+          $sessions=@(& quser.exe opc 2>&1)
+          $sessionCode=$LASTEXITCODE
+          $ErrorActionPreference='Stop'
+          if ($sessionCode -ne 0 -or (($sessions | ForEach-Object { [string]$_ }) -join "`n") -notmatch '(?im)^\s*>?\s*opc\s+') { throw 'Existing opc session is required.' }
+          $user=Get-LocalUser -Name opc
+          $work=Join-Path $env:ProgramData "LayerSentry\P1Day2LiveV2\run-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $task="LayerSentry-P1Day2LiveV2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if ((Test-Path -LiteralPath $work) -or (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)) { throw 'Refusing to replace an existing task or directory.' }
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $registered=$false
+          $exitCode=125
+          try {
+            $acl=[Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true,$false)
+            foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)) {
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+            }
+            Set-Acl -LiteralPath $work -AclObject $acl
+            $uri="https://raw.githubusercontent.com/adaptgurus/cozystack/$env:GITHUB_SHA/ops/opennebula-lab/p1-day2-live.sh"
+            $text=(Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 30).Content
+            if ($text -is [byte[]]) { $text=[Text.Encoding]::UTF8.GetString($text) }
+            if ($text -isnot [string] -or -not $text.StartsWith('#!/usr/bin/env bash')) { throw 'Invalid pinned WSL script.' }
+            [IO.File]::WriteAllText((Join-Path $work 'run.sh'),$text.Replace("`r",''),[Text.UTF8Encoding]::new($false))
+            $child=@'
+          param([string]$Work)
+          $ErrorActionPreference='Stop'
+          $code=125
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+            if ($identity.Name -ne "$env:COMPUTERNAME\opc" -or -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Unexpected child principal.' }
+            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
+            $ErrorActionPreference='Continue'
+            & "$env:WINDIR\System32\wsl.exe" --distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc "$linuxWork/run.sh" "$linuxWork" 1> (Join-Path $Work 'stdout.log') 2> (Join-Path $Work 'stderr.log')
+            $nativeCode=$LASTEXITCODE
+            $ErrorActionPreference='Stop'
+            $resultFile=Join-Path $Work 'shell-exit-code.txt'
+            if (-not (Test-Path -LiteralPath $resultFile)) { throw 'Missing independent shell exit code.' }
+            $raw=[IO.File]::ReadAllText($resultFile).Trim()
+            if ($raw -notmatch '^\d{1,3}$') { throw 'Invalid shell result.' }
+            $code=[int]$raw
+            if ($null -eq $nativeCode -or $nativeCode -ne $code) { throw 'Native and shell results disagree.' }
+          } catch {
+            [IO.File]::WriteAllText((Join-Path $Work 'error.txt'),$_.Exception.Message)
+            $code=125
+          } finally {
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),(@{exit_code=$code;observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress))
+          }
+          exit $code
+          '@
+            $script=Join-Path $work 'run.ps1'
+            [IO.File]::WriteAllText($script,$child,[Text.UTF8Encoding]::new($false))
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -File `"$script`" -Work `"$work`""
+            $principal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\opc" -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 23)
+            Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Description 'Owner-authorized P1 Day-2 exact source validation and read-only OpenNebula lab inventory.' | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $task
+            $deadline=[DateTime]::UtcNow.AddSeconds(1380)
+            do {
+              Start-Sleep -Seconds 3
+              $taskState=(Get-ScheduledTask -TaskName $task).State
+              if ((Test-Path -LiteralPath (Join-Path $work 'complete.json')) -and $taskState -ne 'Running') { break }
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if (-not (Test-Path -LiteralPath (Join-Path $work 'complete.json'))) { throw 'Timed out: reconcile state before any retry.' }
+            $report=[IO.File]::ReadAllText((Join-Path $work 'complete.json')) | ConvertFrom-Json
+            if ($null -eq $report.exit_code) { throw 'Null exit code is not success.' }
+            $exitCode=[int]$report.exit_code
+            Write-Host ('P1_DAY2_LIVE_EXECUTION='+($report | ConvertTo-Json -Compress))
+          } finally {
+            if ($registered) {
+              if ((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State -eq 'Running') { Stop-ScheduledTask -TaskName $task }
+              Unregister-ScheduledTask -TaskName $task -Confirm:$false
+            }
+            foreach ($file in @('stdout.log','stderr.log','error.txt')) {
+              $p=Join-Path $work $file
+              if (Test-Path -LiteralPath $p) {
+                Write-Host "LOG=$file"
+                Get-Content -LiteralPath $p -Tail 1200 | ForEach-Object { $_ -replace '(?i)(gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)','[REDACTED]' }
+              }
+            }
+            if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+            Write-Host 'TEMPORARY_WINDOWS_RESOURCES_REMOVED=true; GUEST_MUTATIONS=false; FORCE_PUSH=false; SECRETS_PRINTED=false'
+          }
+          exit $exitCode
