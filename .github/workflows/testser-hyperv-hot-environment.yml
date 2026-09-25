@@ -141,7 +141,8 @@ jobs:
           '@
 
           $probePath=Join-Path $work 'probe.sh'
-          [IO.File]::WriteAllText($probePath,$probe.Replace([char]13,''),[Text.UTF8Encoding]::new($false))
+          $probeClean=$probe -replace "\\r",""
+          [IO.File]::WriteAllText($probePath,$probeClean,[Text.UTF8Encoding]::new($false))
 
           $child=@'
           param([Parameter(Mandatory=$true)][string]$Work)
