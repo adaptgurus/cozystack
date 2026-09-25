@@ -1,0 +1,205 @@
+name: TESTSER HyperV Hot Migration Bootstrap and Test
+
+on:
+  push:
+    branches:
+      - qual/testser-hyperv-hot-migration-20260925
+    paths:
+      - '.github/workflows/testser-hyperv-hot-bootstrap.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testser-hyperv-hot-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    steps:
+      - name: Bind exact TESTSER
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER'){throw 'Unexpected runner; TESTSER only'}
+          Write-Host 'TESTSER_BIND=PASS'
+
+      - name: Install Linux migration toolchain and test OneSwap
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $sessions=@(& quser.exe opc 2>&1)
+          if($LASTEXITCODE -ne 0 -or (($sessions | ForEach-Object {[string]$_}) -join [Environment]::NewLine) -notmatch '(?im)^\s*>?\s*opc\s+'){throw 'Existing opc session required'}
+          $user=Get-LocalUser -Name opc -ErrorAction Stop
+          $work=Join-Path $env:ProgramData ("LayerSentry\TestserHyperVBootstrap\run-"+$env:GITHUB_RUN_ID)
+          $taskName="LayerSentry-Testser-HyperV-Bootstrap-$env:GITHUB_RUN_ID"
+          if(Test-Path $work){Remove-Item $work -Recurse -Force}
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          $acl=[Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetAccessRuleProtection($true,$false)
+          foreach($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)){
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+          }
+          Set-Acl $work $acl
+
+          $bootstrap=@'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          echo "BOOTSTRAP_USER=$(id -un)"
+          apt-get update
+          apt-get install -y ruby-full libguestfs-tools qemu-utils qemu-system-x86 libvirt-clients
+          if ! command -v virt-v2v >/dev/null 2>&1; then
+            apt-get install -y virt-v2v
+          fi
+          for x in ruby guestfish virt-v2v virt-v2v-in-place qemu-img qemu-system-x86_64; do
+            command -v "$x"
+          done
+          usermod -aG kvm opc || true
+          echo TESTSER_TOOLCHAIN_BOOTSTRAP=PASS
+          '@
+
+          $qual=@'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          echo "QUAL_USER=$(id -un)"
+          echo "QUAL_HOST=$(hostname)"
+          echo "===RESOURCE==="
+          nproc
+          free -m
+          df -h / /home /var/tmp
+          ls -l /dev/kvm
+          echo "===VERSIONS==="
+          ruby --version
+          guestfish --version
+          virt-v2v --version
+          virt-v2v-in-place --version
+          qemu-img --version | head -n 1
+
+          dst=/home/opc/t9-platform-oneswap-appliance/oneswap-hot-testser-20260925
+          if [ ! -d "$dst/.git" ]; then
+            mkdir -p "$(dirname "$dst")"
+            git clone --no-tags --branch fix/hyperv-morphing-post-oom-clone-recovery-20260925 https://github.com/adaptgurus/one-swap.git "$dst"
+          fi
+          cd "$dst"
+          git fetch origin fix/hyperv-morphing-post-oom-clone-recovery-20260925
+          git checkout -f fix/hyperv-morphing-post-oom-clone-recovery-20260925
+          git reset --hard origin/fix/hyperv-morphing-post-oom-clone-recovery-20260925
+          echo "ONESWAP_HEAD=$(git rev-parse HEAD)"
+          test -z "$(git status --porcelain)"
+
+          grep -Fq 'CreateFileW' hyperv_hot_helper.rb
+          grep -Fq 'run_remote_script_capture' hyperv_helper.rb
+          grep -Fq 'recover_morphing_no_write' hyperv_import_recovery.rb
+          grep -Fq 'recover_morphing_post_oom' hyperv_import_recovery.rb
+          grep -Fq -- '--recover-morphing-post-oom-clone' oneswap-hyperv
+
+          echo "===SYNTAX==="
+          for f in hyperv_helper.rb hyperv_hot_helper.rb hyperv_hot_hardening.rb hyperv_import_recovery.rb hyperv_import_recovery_hardening.rb hyperv_virtio_hardening.rb hyperv_network_hardening.rb oneswap_helper.rb oneswap-hyperv; do
+            ruby -c "$f"
+          done
+
+          echo "===TESTS==="
+          for t in tests/hyperv_helper_test.rb tests/hyperv_hot_helper_test.rb tests/hyperv_hot_hardening_test.rb tests/hyperv_state_hardening_test.rb tests/hyperv_import_recovery_test.rb tests/hyperv_virtio_hardening_test.rb tests/hyperv_final_safety_hardening_test.rb tests/hyperv_network_hardening_test.rb; do
+            if [ -f "$t" ]; then ruby -I. "$t"; fi
+          done
+
+          echo "===LIBGUESTFS==="
+          tmp=$(mktemp -d /var/tmp/ls-testser-guestfs.XXXXXX)
+          trap 'rm -rf "$tmp"' EXIT
+          raw="$tmp/test.raw"
+          truncate -s 1G "$raw"
+          mkfs.ext4 -F "$raw" >/dev/null 2>&1
+          LIBGUESTFS_BACKEND=direct timeout 180s guestfish --ro -a "$raw" run
+          echo TESTSER_GUESTFISH_RUN=PASS
+
+          echo "===OPENNEBULA==="
+          ssh -o BatchMode=yes -o ConnectTimeout=8 rocky-01 'hostname; onehost list; onedatastore list; onevnet list'
+          echo TESTSER_OPENNEBULA_REACHABILITY=PASS
+          echo TESTSER_ONESWAP_SOURCE_TESTS=PASS
+          '@
+
+          $bootstrapPath=Join-Path $work 'bootstrap.sh'
+          $qualPath=Join-Path $work 'qual.sh'
+          [IO.File]::WriteAllText($bootstrapPath,$bootstrap.Replace([string][char]13,[string]::Empty),[Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($qualPath,$qual.Replace([string][char]13,[string]::Empty),[Text.UTF8Encoding]::new($false))
+
+          $child=@'
+          param([Parameter(Mandatory=$true)][string]$Work)
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $Work 'result.log'
+          $report=@{exit_code=1;error='NOT_COMPLETED'}
+          function Run-WSL([string]$User,[string]$ScriptPath,[int]$TimeoutMs){
+            $linuxPath=($ScriptPath -replace '\\','/') -replace '^C:','/mnt/c'
+            $psi=[Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName=Join-Path $env:WINDIR 'System32\wsl.exe'
+            $psi.Arguments="--distribution Ubuntu-22.04 --user $User --exec /bin/bash $linuxPath"
+            $psi.UseShellExecute=$false
+            $psi.CreateNoWindow=$true
+            $psi.RedirectStandardOutput=$true
+            $psi.RedirectStandardError=$true
+            $p=[Diagnostics.Process]::new()
+            $p.StartInfo=$psi
+            [void]$p.Start()
+            $o=$p.StandardOutput.ReadToEndAsync()
+            $e=$p.StandardError.ReadToEndAsync()
+            if(-not $p.WaitForExit($TimeoutMs)){ $p.Kill(); throw "WSL $User phase timeout" }
+            $body=$o.Result+[Environment]::NewLine+$e.Result
+            [IO.File]::AppendAllText($log,$body,[Text.UTF8Encoding]::new($false))
+            if($p.ExitCode -ne 0){throw "WSL $User phase failed rc=$($p.ExitCode)"}
+          }
+          try{
+            Run-WSL 'root' (Join-Path $Work 'bootstrap.sh') 1200000
+            Run-WSL 'opc' (Join-Path $Work 'qual.sh') 1200000
+            $report.exit_code=0
+            $report.error=''
+          }catch{
+            $report.exit_code=1
+            $report.error=$_.Exception.Message
+            [IO.File]::AppendAllText($log,[Environment]::NewLine+'BOOTSTRAP_ERROR='+$report.error+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))
+          }finally{
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),($report|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+          }
+          exit $report.exit_code
+          '@
+
+          $childPath=Join-Path $work 'run.ps1'
+          [IO.File]::WriteAllText($childPath,$child,[Text.UTF8Encoding]::new($false))
+          $registered=$false
+          try{
+            $arg='-NoProfile -NonInteractive -File "'+$childPath+'" -Work "'+$work+'"'
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arg
+            $principal=New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME+'\opc') -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 40)
+            Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $taskName
+            $complete=Join-Path $work 'complete.json'
+            $deadline=[DateTime]::UtcNow.AddMinutes(38)
+            do{
+              Start-Sleep -Seconds 3
+              $state=(Get-ScheduledTask -TaskName $taskName).State
+              if((Test-Path $complete) -and $state -ne 'Running'){break}
+            }while([DateTime]::UtcNow -lt $deadline)
+            if(-not (Test-Path $complete)){throw 'TESTSER bootstrap did not complete'}
+            $text=[IO.File]::ReadAllText((Join-Path $work 'result.log'))
+            Write-Host $text
+            $json=[IO.File]::ReadAllText($complete)
+            Write-Host "TESTSER_BOOTSTRAP_REPORT=$json"
+            $rc=($json|ConvertFrom-Json).exit_code
+            if($rc -ne 0){throw "TESTSER bootstrap/test failed rc=$rc"}
+          }finally{
+            if($registered){
+              if((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq 'Running'){Stop-ScheduledTask -TaskName $taskName}
+              Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+            }
+            if(Test-Path $work){Remove-Item $work -Recurse -Force}
+          }
+
+      - name: Final tester evidence
+        shell: powershell
+        run: |
+          if($env:RUNNER_NAME -ne 'TESTSER'){throw 'Wrong runner'}
+          Write-Host 'TESTSER_HYPERV_HOT_BOOTSTRAP_AND_TEST=PASS'
