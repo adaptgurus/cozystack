@@ -1,0 +1,223 @@
+name: TESTSER HyperV Hot Migration Environment Qualification
+
+on:
+  push:
+    branches:
+      - qual/testser-hyperv-hot-migration-20260925
+    paths:
+      - '.github/workflows/testser-hyperv-hot-environment.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testser-hyperv-hot-environment
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Bind exact TESTSER and audit Hyper-V
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "COMPUTERNAME=$env:COMPUTERNAME"
+          if($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER'){throw 'Unexpected runner; TESTSER only'}
+          $os=Get-CimInstance Win32_OperatingSystem
+          $cs=Get-CimInstance Win32_ComputerSystem
+          $cpu=Get-CimInstance Win32_Processor
+          Write-Host "HOST_TOTAL_RAM_MB=$([math]::Round($cs.TotalPhysicalMemory/1MB))"
+          Write-Host "HOST_FREE_RAM_MB=$([math]::Round($os.FreePhysicalMemory/1024))"
+          Write-Host "HOST_LOGICAL_CPUS=$(($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum)"
+          Write-Host '=== VMS ==='
+          Get-VM | Sort-Object Name | Select-Object Name,State,CPUUsage,MemoryAssigned,MemoryStartup,ProcessorCount,Version | Format-Table -AutoSize
+          Write-Host '=== SWITCHES ==='
+          Get-VMSwitch | Select-Object Name,SwitchType,NetAdapterInterfaceDescription | Format-Table -AutoSize
+          Write-Host 'TESTSER_HYPERV_AUDIT=PASS'
+
+      - name: Copy and qualify OneSwap inside tester OPC WSL
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $sessions=@(& quser.exe opc 2>&1)
+          $sessionCode=$LASTEXITCODE
+          $sessionText=($sessions | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+          if($sessionCode -ne 0 -or $sessionText -notmatch '(?im)^\s*>?\s*opc\s+'){throw 'Existing opc interactive session is required for TESTSER WSL'}
+          $user=Get-LocalUser -Name opc -ErrorAction Stop
+          $work=Join-Path $env:ProgramData ("LayerSentry\TestserHyperV\run-"+$env:GITHUB_RUN_ID)
+          $taskName="LayerSentry-Testser-HyperV-$env:GITHUB_RUN_ID"
+          if(Test-Path -LiteralPath $work){Remove-Item -LiteralPath $work -Recurse -Force}
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+
+          $acl=[Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetAccessRuleProtection($true,$false)
+          foreach($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'),$user.SID)){
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))
+          }
+          Set-Acl -LiteralPath $work -AclObject $acl
+
+          $probe=@'
+          #!/usr/bin/env bash
+          set -u
+          fail=0
+          echo "WSL_USER=$(id -un)"
+          echo "WSL_HOST=$(hostname)"
+          uname -a || true
+          echo "===CPU==="
+          nproc || true
+          lscpu || true
+          echo "===MEMORY==="
+          free -m || true
+          grep -E '^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo || true
+          echo "===DISK==="
+          df -hT / /home /var/tmp 2>/dev/null || true
+          echo "===VIRTUALIZATION==="
+          test -c /dev/kvm && echo DEV_KVM_PRESENT=true || echo DEV_KVM_PRESENT=false
+          grep -m1 -Eo '\b(vmx|svm)\b' /proc/cpuinfo || true
+          echo "===TOOLS==="
+          for x in git ruby gcc qemu-img qemu-system-x86_64 guestfish virt-v2v virt-v2v-in-place ssh; do
+            if command -v "$x" >/dev/null 2>&1; then
+              echo "TOOL $x=$(command -v "$x")"
+              "$x" --version 2>&1 | head -n 2 || true
+            else
+              echo "TOOL_MISSING $x"
+            fi
+          done
+
+          base=/home/opc/t9-platform-oneswap-appliance
+          dst="$base/oneswap-hot-testser-20260925"
+          mkdir -p "$base"
+          rm -rf "$dst"
+          git clone --no-tags --branch fix/hyperv-morphing-post-oom-clone-recovery-20260925 https://github.com/adaptgurus/one-swap.git "$dst" || exit 41
+          cd "$dst"
+          echo "ONESWAP_HEAD=$(git rev-parse HEAD)"
+          echo "ONESWAP_BRANCH=$(git branch --show-current)"
+          test -z "$(git status --porcelain)" || fail=1
+
+          echo "===FIX_MARKERS==="
+          grep -F 'CreateFileW' hyperv_hot_helper.rb | head -n 2 || fail=1
+          grep -F 'run_remote_script_capture' hyperv_helper.rb | head -n 2 || fail=1
+          grep -F 'recover_morphing_no_write' hyperv_import_recovery.rb | head -n 2 || fail=1
+          grep -F 'recover_morphing_post_oom' hyperv_import_recovery.rb | head -n 2 || fail=1
+          grep -F -- '--recover-morphing-post-oom' oneswap-hyperv | head -n 2 || fail=1
+
+          if command -v ruby >/dev/null 2>&1; then
+            echo "===RUBY_SYNTAX==="
+            for f in hyperv_helper.rb hyperv_hot_helper.rb hyperv_hot_hardening.rb hyperv_import_recovery.rb hyperv_import_recovery_hardening.rb hyperv_virtio_hardening.rb hyperv_network_hardening.rb oneswap_helper.rb oneswap-hyperv; do
+              ruby -c "$f" || fail=1
+            done
+            echo "===HYPERV_TESTS==="
+            for t in tests/hyperv_helper_test.rb tests/hyperv_hot_helper_test.rb tests/hyperv_hot_hardening_test.rb tests/hyperv_state_hardening_test.rb tests/hyperv_import_recovery_test.rb tests/hyperv_virtio_hardening_test.rb tests/hyperv_final_safety_hardening_test.rb tests/hyperv_network_hardening_test.rb; do
+              if [ -f "$t" ]; then ruby -I. "$t" || fail=1; fi
+            done
+          else
+            fail=1
+          fi
+
+          echo "===LIBGUESTFS_PROBE==="
+          if command -v guestfish >/dev/null 2>&1; then
+            tmp=$(mktemp -d /var/tmp/ls-testser-guestfs.XXXXXX)
+            raw="$tmp/test.raw"
+            truncate -s 1G "$raw"
+            if command -v mkfs.ext4 >/dev/null 2>&1; then mkfs.ext4 -F "$raw" >/dev/null 2>&1 || fail=1; fi
+            timeout 180s guestfish --ro -a "$raw" run && echo TESTSER_GUESTFISH_RUN=PASS || fail=1
+            rm -rf "$tmp"
+          else
+            fail=1
+          fi
+
+          echo "===OPENNEBULA_READONLY==="
+          ssh -o BatchMode=yes -o ConnectTimeout=8 rocky-01 'hostname; onehost list; onedatastore list; onevnet list' && echo TESTSER_OPENNEBULA_REACHABILITY=PASS || fail=1
+
+          if [ "$fail" -eq 0 ]; then
+            echo TESTSER_ONESWAP_CODE_QUALIFICATION=PASS
+          else
+            echo TESTSER_ONESWAP_CODE_QUALIFICATION=FAIL
+          fi
+          exit "$fail"
+          '@
+
+          $probePath=Join-Path $work 'probe.sh'
+          [IO.File]::WriteAllText($probePath,$probe.Replace([char]13,''),[Text.UTF8Encoding]::new($false))
+
+          $child=@'
+          param([Parameter(Mandatory=$true)][string]$Work)
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $Work 'result.log'
+          $report=@{exit_code=1;error='NOT_COMPLETED';windows_user='';administrator=$false}
+          try{
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal=[Security.Principal.WindowsPrincipal]::new($identity)
+            $report.windows_user=$identity.Name
+            $report.administrator=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if($identity.Name -ne ($env:COMPUTERNAME+'\opc') -or -not $report.administrator){throw 'Unexpected OPC principal/elevation'}
+            $linuxWork=($Work -replace '\\','/') -replace '^C:','/mnt/c'
+            $psi=[Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName=Join-Path $env:WINDIR 'System32\wsl.exe'
+            $psi.Arguments="--distribution Ubuntu-22.04 --exec /bin/bash --noprofile --norc $linuxWork/probe.sh"
+            $psi.UseShellExecute=$false
+            $psi.CreateNoWindow=$true
+            $psi.RedirectStandardOutput=$true
+            $psi.RedirectStandardError=$true
+            $p=[Diagnostics.Process]::new()
+            $p.StartInfo=$psi
+            [void]$p.Start()
+            $outTask=$p.StandardOutput.ReadToEndAsync()
+            $errTask=$p.StandardError.ReadToEndAsync()
+            if(-not $p.WaitForExit(1200000)){ $p.Kill(); throw 'WSL qualification exceeded 20 minutes' }
+            $body=$outTask.Result+[Environment]::NewLine+$errTask.Result
+            [IO.File]::WriteAllText($log,$body,[Text.UTF8Encoding]::new($false))
+            $report.exit_code=$p.ExitCode
+            $report.error=if($p.ExitCode -eq 0){''}else{'SEE_RESULT_LOG'}
+          }catch{
+            $report.exit_code=1
+            $report.error=$_.Exception.Message
+            [IO.File]::AppendAllText($log,[Environment]::NewLine+'QUAL_ERROR='+$report.error+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))
+          }finally{
+            [IO.File]::WriteAllText((Join-Path $Work 'complete.json'),($report|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+          }
+          exit $report.exit_code
+          '@
+          $childPath=Join-Path $work 'run.ps1'
+          [IO.File]::WriteAllText($childPath,$child,[Text.UTF8Encoding]::new($false))
+
+          $registered=$false
+          try{
+            $arg='-NoProfile -NonInteractive -File "'+$childPath+'" -Work "'+$work+'"'
+            $action=New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument $arg
+            $principal=New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME+'\opc') -LogonType Interactive -RunLevel Highest
+            $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 25) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+            Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+            $registered=$true
+            Start-ScheduledTask -TaskName $taskName
+            $complete=Join-Path $work 'complete.json'
+            $deadline=[DateTime]::UtcNow.AddMinutes(23)
+            do{
+              Start-Sleep -Seconds 3
+              $state=(Get-ScheduledTask -TaskName $taskName).State
+              if((Test-Path $complete) -and $state -ne 'Running'){break}
+            }while([DateTime]::UtcNow -lt $deadline)
+            if(-not (Test-Path $complete)){throw 'TESTSER WSL qualification did not complete'}
+            $text=[IO.File]::ReadAllText((Join-Path $work 'result.log'))
+            Write-Host $text
+            $json=[IO.File]::ReadAllText($complete)
+            Write-Host "TESTSER_WSL_REPORT=$json"
+            $rc=($json|ConvertFrom-Json).exit_code
+            if($rc -ne 0){throw "TESTSER WSL qualification failed rc=$rc"}
+          }finally{
+            if($registered){
+              if((Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State -eq 'Running'){Stop-ScheduledTask -TaskName $taskName}
+              Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+            }
+            if(Test-Path $work){Remove-Item $work -Recurse -Force}
+          }
+
+      - name: Final TESTSER evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:RUNNER_NAME -ne 'TESTSER' -or $env:COMPUTERNAME -ne 'TESTSER'){throw 'Unexpected runner'}
+          Write-Host 'TESTSER_HYPERV_HOT_ENVIRONMENT_QUALIFICATION=PASS'
